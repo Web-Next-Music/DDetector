@@ -121,13 +121,13 @@ source versions. To force another full rebuild, remove that account's cache whil
   by ID using insert/move/remove/dataChanged, never whole-model resets. Unchanged
   state/model data does not emit change notifications.
 - Settings use `appConfig`, a shared QObject storing `musicToken`, `hideIgnored`, `hideWindowControls`, and
-  `volume` in `QStandardPaths::AppConfigLocation/Config.json` (normally
-  `~/.config/DDetector/DDetector/Config.json` on Linux). The Yandex token is
+  `volume` in `QStandardPaths::GenericConfigLocation/DDetector/Config.json` (normally
+  `~/.config/DDetector/Config.json` on Linux). Existing nested Config.json is moved automatically. The Yandex token is
   plaintext, not encrypted: the directory is owner-only (0700), and atomic
   QSaveFile writes create an owner-readable/writable file (0600). Keep backups
   private. Safe persistence errors are exposed as `appConfig.error`; malformed
   configurations are preserved and block writes until repaired and the app restarted.
-  Legacy real-app QSettings hideIgnored is migrated only when no JSON file exists.
+  Legacy Desktop.conf is removed and is no longer created or used.
 
   After app login/access verification, the saved token is applied to the player and
   local library backend automatically. Subsequent token changes update both.

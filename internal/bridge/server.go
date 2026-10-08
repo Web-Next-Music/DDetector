@@ -564,14 +564,15 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 	send(w, 200, map[string]any{"ok": true, "track_id": in.ID, "ignored": *in.Ignored})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if !s.op.TryLock() {
-		failure(w, 409, "operation in progress")
-		return
+	// Serialize deletion with operations that can refresh and persist the session.
+	for !s.op.TryLock() {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	defer s.op.Unlock()
-	s.mu.Lock()
-	sess := s.session
-	s.mu.Unlock()
 	err := os.Remove(s.path)
 	if err != nil && !os.IsNotExist(err) {
 		failure(w, 500, "unable to remove saved session")
@@ -583,13 +584,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.login = nil
 	s.state = State{Tracks: []Result{}}
 	s.mu.Unlock()
-	revoked := true
-	if sess != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		revoked = s.client.request(ctx, "POST", "/auth/v1/logout?scope=local", sess.Access, nil, nil, nil) == nil
-	}
-	send(w, 200, map[string]any{"ok": true, "remote_revoked": revoked})
+	send(w, 200, map[string]any{"ok": true})
 }
 func Listen() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") }
 

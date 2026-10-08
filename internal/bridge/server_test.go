@@ -150,6 +150,34 @@ func TestPKCERefreshLogout(t *testing.T) {
 		t.Fatal("session remains")
 	}
 }
+func TestLogoutWaitsForOperation(t *testing.T) {
+	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("local logout must not contact the auth server")
+	})
+	install(s)
+	s.op.Lock()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- api(s, "POST", "/api/logout", "", "bridge-key") }()
+	select {
+	case <-done:
+		s.op.Unlock()
+		t.Fatal("logout did not wait for the active operation")
+	case <-time.After(30 * time.Millisecond):
+	}
+	s.op.Unlock()
+	select {
+	case w := <-done:
+		if w.Code != 200 || s.session != nil || s.state.Authenticated {
+			t.Fatal(w.Body)
+		}
+		if _, err := os.Stat(s.path); !os.IsNotExist(err) {
+			t.Fatal("session remains")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("logout did not finish")
+	}
+}
+
 func TestBanFailsClosed(t *testing.T) {
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/auth/v1/user" {

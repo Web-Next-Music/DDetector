@@ -5,7 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
-#include <QSettings>
+
 #include <QStandardPaths>
 #include <cmath>
 
@@ -13,19 +13,22 @@ namespace {
 constexpr auto filePermissions = QFileDevice::ReadOwner | QFileDevice::WriteOwner;
 constexpr auto directoryPermissions = filePermissions | QFileDevice::ExeOwner;
 QString defaultPath() {
-    const auto directory = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    return directory.isEmpty() ? QString() : directory + "/Config.json";
+    const auto root = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (root.isEmpty()) return {};
+    const auto directory = root + "/DDetector";
+    const auto path = directory + "/Config.json";
+    const auto legacyPath = directory + "/DDetector/Config.json";
+    if (!QFileInfo::exists(path) && QFileInfo::exists(legacyPath)) {
+        if (!QFile::rename(legacyPath, path)) return legacyPath;
+        QDir().rmdir(directory + "/DDetector");
+    }
+    QFile::remove(directory + "/Desktop.conf");
+    return path;
 }
 }
 Config::Config(QObject *parent) : Config(defaultPath(), parent) {
     if (m_path.isEmpty()) { m_blocked = true; fail("Configuration location is unavailable."); }
-    else if (!m_blocked && !QFileInfo::exists(m_path)) {
-        QSettings legacy("DDetector", "Desktop");
-        if (legacy.contains("hideIgnored")) {
-            m_hideIgnored = legacy.value("hideIgnored", false).toBool();
-            save();
-        }
-    }
+
 }
 Config::Config(const QString &path, QObject *parent) : QObject(parent), m_path(path) { load(); }
 void Config::fail(const QString &message) {
