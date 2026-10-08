@@ -21,6 +21,21 @@ ApplicationWindow {
     font.family: "DDetector Nunito"
     font.pixelSize: 13
     font.weight: Font.Bold
+    property int rightPage: 0
+    property bool workspaceCloseApproved: false
+    onClosing: function(event) {
+        if (typeof localUploader !== "undefined" && localUploader.busy) {
+            event.accepted = false;
+            notify("Wait for Send to finish before closing.");
+            return;
+        }
+        if (workspaceCloseApproved) return;
+        event.accepted = false;
+        workspaceView.requestClose(function() {
+            workspaceCloseApproved = true;
+            Qt.callLater(function() { appUi.close(); });
+        });
+    }
     property bool mobile: width <= 600
     property bool compactHeader: width < 950
     property color bg: "#000000"
@@ -153,55 +168,11 @@ ApplicationWindow {
             border.color: parent.accented || parent.hovered || parent.activeFocus ? appUi.accentBorder : appUi.borderColor
         }
     }
-    component MenuEntry: MenuItem {
-        id: menuEntry
-        property string glyph: ""
-        property bool danger: false
-                property bool green: false
-                opacity: enabled ? 1 : 0.45
-        HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
-        font.family: "DDetector Nunito"
-        font.pixelSize: 12
-        font.weight: Font.Bold
-        implicitHeight: 32
-        contentItem: RowLayout {
-            spacing: 8
-
-            Image {
-                visible: menuEntry.glyph !== ""
-                Layout.preferredWidth: 16
-                Layout.preferredHeight: 16
-                source: menuEntry.glyph ? "qrc:/assets/lucide-" + menuEntry.glyph + ".svg" : ""
-                layer.enabled: true
-                layer.effect: MultiEffect {
-                    brightness: 1
-                    colorization: 1
-                    colorizationColor: menuEntry.green ? "#35d078" : menuEntry.danger ? appUi.ignoredColor : menuEntry.highlighted ? appUi.accent : appUi.muted
-                }
-            }
-            Text {
-                Layout.fillWidth: true
-                text: menuEntry.text
-                font: menuEntry.font
-                color: menuEntry.green ? "#35d078" : menuEntry.danger ? appUi.ignoredColor : menuEntry.highlighted ? appUi.accent : appUi.ink
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
-        background: Rectangle {
-            radius: 6
-            color: parent.highlighted ? (parent.green ? "#2035d078" : parent.danger ? "#20dc5050" : appUi.accentBg) : "transparent"
-        }
-    }
-    Menu {
+    SiteMenu {
         id: trackMenu
         width: 190
-        padding: 8
-        spacing: 2
-        background: Rectangle {
-            color: appUi.surface2
-            radius: 10
-            border.color: appUi.borderColor
-        }
+        surfaceColor: appUi.surface2
+        borderColor: appUi.borderColor
         Control {
             width: trackMenu.availableWidth
             padding: 6
@@ -224,13 +195,13 @@ ApplicationWindow {
                 }
             }
         }
-        MenuSeparator {
-            contentItem: Rectangle {
-                implicitHeight: 1
-                color: appUi.borderColor
-            }
-        }
-        MenuEntry {
+        SiteMenuSeparator { borderColor: appUi.borderColor }
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             objectName: "playTrackEntry"
             text: "Play"
             glyph: "play"
@@ -238,58 +209,77 @@ ApplicationWindow {
             enabled: musicPlayer.enabled && !musicPlayer.busy
             onTriggered: musicPlayer.playTrack(appUi.menuTrack.id)
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: appUi.borderColor }
-        }
-        MenuEntry {
+        SiteMenuSeparator { borderColor: appUi.borderColor }
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             text: "Search on Yandex"
             glyph: "search"
             onTriggered: backend.searchYandex(appUi.menuTrack.title, appUi.menuTrack.artist)
         }
-        MenuEntry {
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             text: "Copy track ID"
             glyph: "copy"
             onTriggered: backend.copyId(appUi.menuTrack.id)
         }
-        MenuEntry {
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             glyph: "maximize"
             visible: appUi.menuFullLyrics
             height: visible ? implicitHeight : 0
             text: appUi.expanded[appUi.menuTrack.id] ? "Collapse" : "Full lyrics"
             onTriggered: appUi.toggleExpanded(appUi.menuTrack.id)
         }
-        MenuSeparator {
-            contentItem: Rectangle {
-                implicitHeight: 1
-                color: appUi.borderColor
-            }
-        }
-        MenuEntry {
+        SiteMenuSeparator { borderColor: appUi.borderColor }
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             text: appUi.menuTrack.ignored ? "Unignore" : "Ignore"
             glyph: appUi.menuTrack.ignored ? "shield-check" : "shield"
             danger: !appUi.menuTrack.ignored
             onTriggered: backend.ignore(appUi.menuTrack.id, !appUi.menuTrack.ignored)
         }
     }
-    Menu {
+    SiteMenu {
         id: headerMenu
         objectName: "accountMenu"
         width: 210
-        padding: 8
-        spacing: 2
-        background: Rectangle {
-            color: appUi.surface
-            radius: 12
-            border.color: appUi.borderColor
-        }
-        MenuEntry {
+        surfaceColor: appUi.surface
+        cornerRadius: 12
+        borderColor: appUi.borderColor
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             objectName: "accountSettingsEntry"
             glyph: "settings"
             text: "Settings"
             onTriggered: settingsDialog.open()
         }
 
-        MenuEntry {
+        SiteMenuItem {
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            dangerColor: appUi.ignoredColor
             text: "Sign out"
             glyph: "log-out"
             danger: true
@@ -350,7 +340,7 @@ ApplicationWindow {
                     required property int index
                     property string modelData: ["Minimize", "Maximize", "Close"][index]
                     objectName: "window" + modelData + "Button"
-                    width: 48
+                    width: activityBar.width
                     height: 48
                     padding: 0
                     Accessible.name: index === 1 && appUi.visibility === Window.Maximized ? "Restore" : modelData
@@ -440,10 +430,10 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.right: parent.right
-            anchors.rightMargin: appUi.compactHeader ? 10 : windowControls.width + windowControls.anchors.rightMargin + 8
+            anchors.rightMargin: appConfig.hideWindowControls ? 8 : appUi.compactHeader ? 10 : windowControls.width + 8
             visible: appUi.privileged
             y: appUi.compactHeader ? 48 : 9
-            width: appUi.compactHeader ? parent.width - 20 : parent.width - windowControls.width - 238
+            width: appUi.compactHeader ? parent.width - (appConfig.hideWindowControls ? 10 : 20) : parent.width - (appConfig.hideWindowControls ? 0 : windowControls.width) - 238
             height: 30
             spacing: 8
             Item {
@@ -583,9 +573,14 @@ ApplicationWindow {
         SmallButton {
             id: avatarButton
             objectName: "avatarButton"
+            parent: appUi.contentItem
+            z: 40
             visible: !!appUi.state.authenticated
             width: 32; height: 32
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.bottom: playerPanel.top
+            anchors.bottomMargin: 8
             padding: 0
             leftPadding: 0
             rightPadding: 0
@@ -599,7 +594,8 @@ ApplicationWindow {
             ToolTip.text: appUi.userName
             onClicked: {
                 headerMenu.x = appUi.width - headerMenu.width - 10;
-                headerMenu.y = mainHeader.y + 44;
+                const point = avatarButton.mapToItem(appUi.contentItem, 0, 0);
+                headerMenu.y = Math.max(8, point.y - headerMenu.implicitHeight - 8);
                 headerMenu.open();
             }
             contentItem: Item {
@@ -619,93 +615,77 @@ ApplicationWindow {
 
             }
         }
-        Item { width: appUi.state.authenticated && !appConfig.hideWindowControls ? 8 : 0; height: 48 }
+        Item { width: 0; height: 48 }
         WindowButton { index: 0; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
         WindowButton { index: 1; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
         WindowButton { index: 2; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
     }
-    Dialog {
+    SiteDialog {
         id: settingsDialog
         objectName: "settingsDialog"
         anchors.centerIn: Overlay.overlay
         width: Math.min(appUi.width - 32, 560)
-        padding: 10
-        topPadding: 0
-        background: Rectangle {
-            color: appUi.surface
-            radius: 18
-            border.color: appUi.borderColor
-        }
-        Overlay.modal: Rectangle { color: "#a3000000" }
-        header: Rectangle {
-            implicitHeight: 70
-            color: "transparent"
+        icon: "qrc:/assets/lucide-settings.svg"
+        title: "Settings"
+        surface: appUi.surface
+        surface2: appUi.surface2
+        borderColor: appUi.borderColor
+        ink: appUi.ink
+        muted: appUi.muted
+        accentBg: appUi.accentBg
+        accentBorder: appUi.accentBorder
+        closeButtonObjectName: "closeSettingsButton"
+        closeButtonAccessibleName: "Close settings"
+        contentItem: ColumnLayout {
+            spacing: 8
             Rectangle {
-                anchors.fill: parent
-                anchors.margins: 10
-                color: appUi.surface2
+                Layout.fillWidth: true
+                implicitHeight: repositoryCardContent.implicitHeight + 32
                 radius: 14
+                color: appUi.surface2
                 border.color: appUi.borderColor
-            }
-            Image {
-                id: settingsIcon
-                anchors.left: parent.left
-                anchors.leftMargin: 26
-                anchors.verticalCenter: parent.verticalCenter
-                width: 18; height: 18
-                source: "qrc:/assets/lucide-settings.svg"
-                layer.enabled: true
-                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-            }
-            Text {
-                anchors.left: settingsIcon.right
-                anchors.leftMargin: 12
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Settings"
-                color: appUi.ink
-                font.pixelSize: 16
-            }
-            SmallButton {
-                anchors.right: parent.right
-                anchors.rightMargin: 22
-                anchors.verticalCenter: parent.verticalCenter
-                width: 30
-                height: 30
-                objectName: "closeSettingsButton"
-                padding: 0
-                contentItem: Item {
-                    Canvas {
-                        anchors.centerIn: parent
-                        width: 12; height: 12
-                        property color strokeColor: appUi.muted
-                        onStrokeColorChanged: requestPaint()
-                        onPaint: {
-                            const ctx = getContext("2d");
-                            ctx.clearRect(0, 0, width, height);
-                            ctx.strokeStyle = strokeColor;
-                            ctx.lineWidth = 1.5;
-                            ctx.lineCap = "round";
-                            ctx.beginPath();
-                            ctx.moveTo(2, 2); ctx.lineTo(10, 10);
-                            ctx.moveTo(10, 2); ctx.lineTo(2, 10);
-                            ctx.stroke();
+                ColumnLayout {
+                    id: repositoryCardContent
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 12
+                    Label { text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
+                    TextField {
+                        id: repositoryPathInput
+                        Layout.fillWidth: true
+                        implicitHeight: 36
+                        leftPadding: 12
+                        rightPadding: 12
+                        text: appConfig.repositoryPath || ""
+                        placeholderText: Qt.platform.os === "windows" ? "D:/FckCensorData" : "/run/media/admin/DATA/FckCensorData/"
+                        color: appUi.ink
+                        placeholderTextColor: appUi.muted
+                        selectionColor: appUi.accentBg
+                        selectedTextColor: appUi.ink
+                        selectByMouse: true
+                        enabled: typeof localUploader === "undefined" || !localUploader.busy
+                        function applyPath() {
+                            const path = text.trim();
+                            if (path === appConfig.repositoryPath || changeRepositoryDialog.visible) return;
+                            if (typeof gitWorkspace !== "undefined" && gitWorkspace.dirty) {
+                                appUi.notify("Save or discard file changes before changing the repository.");
+                                return;
+                            }
+                            if (typeof gitWorkspace !== "undefined" && gitWorkspace.terminalRunning) {
+                                changeRepositoryDialog.pendingPath = path;
+                                changeRepositoryDialog.open();
+                            } else appConfig.repositoryPath = path;
+                        }
+                        onEditingFinished: applyPath()
+                        onAccepted: applyPath()
+                        background: Rectangle {
+                            color: appUi.surface
+                            radius: 8
+                            border.color: repositoryPathInput.activeFocus ? appUi.accentBorder : appUi.borderColor
                         }
                     }
                 }
-                Accessible.name: "Close settings"
-                onClicked: settingsDialog.close()
             }
-        }
-        footer: Item { implicitHeight: 0 }
-        title: "Settings"
-        modal: true
-        focus: true
-        standardButtons: Dialog.NoButton
-        palette.window: appUi.surface
-        palette.windowText: appUi.ink
-        palette.text: appUi.ink
-        contentItem: ColumnLayout {
-            spacing: 8
             Rectangle {
                 objectName: "musicTokenCard"
                 Layout.fillWidth: true
@@ -861,6 +841,46 @@ ApplicationWindow {
             }
         }
     }
+    SiteDialog {
+        id: changeRepositoryDialog
+        property string pendingPath: ""
+        anchors.centerIn: Overlay.overlay
+        title: "Change Git repository?"
+        icon: "qrc:/assets/lucide-folder.svg"
+        width: Math.min(appUi.width - 32, 400)
+        surface: appUi.surface
+        surface2: appUi.surface2
+        borderColor: appUi.borderColor
+        ink: appUi.ink
+        muted: appUi.muted
+        accentBg: appUi.accentBg
+        accentBorder: appUi.accentBorder
+        onCloseRequested: reject()
+        contentItem: ColumnLayout {
+            spacing: 16
+            Label {
+                Layout.fillWidth: true
+                text: "The current terminal will be stopped, including any running commands. Continue?"
+                color: appUi.ink
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                SiteButton { text: "No"; onClicked: changeRepositoryDialog.reject() }
+                SiteButton { text: "Yes"; accented: true; onClicked: changeRepositoryDialog.accept() }
+            }
+        }
+        onAccepted: {
+            if (gitWorkspace.dirty || (typeof localUploader !== "undefined" && localUploader.busy)) {
+                appUi.notify("Save file changes and wait for Send before changing the repository.");
+                return;
+            }
+            gitWorkspace.stopTerminal();
+            appConfig.repositoryPath = pendingPath;
+        }
+        onRejected: repositoryPathInput.text = appConfig.repositoryPath
+    }
     component ScrollEdgeShadow: Item {
         z: 1
         Rectangle {
@@ -944,23 +964,83 @@ ApplicationWindow {
                 visible: appUi.mobile
                 width: parent.width
                 height: appUi.mobile ? 36 : 0
-                text: appUi.sheetOpen ? "⌄" : "⌃"
-                contentItem: Text {
-                    text: parent.text
-                    color: appUi.muted
-                    font.pixelSize: 20
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                contentItem: Item {
+                    Image {
+                        anchors.centerIn: parent
+                        width: 20; height: 20
+                        source: "qrc:/assets/lucide-" + (appUi.sheetOpen ? "chevron-down" : "chevron-up") + ".svg"
+                        layer.enabled: true
+                        layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
+                    }
                 }
                 background: Item {}
                 onClicked: appUi.sheetOpen = !appUi.sheetOpen
                 Accessible.name: appUi.sheetOpen ? "Collapse results" : "Expand results"
             }
+            Rectangle {
+                anchors.fill: activityBar
+                color: appUi.surface
+                Rectangle {
+                    anchors.left: parent.left
+                    width: 1
+                    height: parent.height
+                    color: appUi.borderColor
+                    z: 1
+                }
+            }
+            Column {
+                id: activityBar
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 48
+                spacing: 0
+
+                Repeater {
+                    model: ["music", "git-branch"]
+                    Button {
+                        id: activityButton
+                        objectName: index === 0 ? "lyricsPageButton" : "gitPageButton"
+                        required property string modelData
+                        required property int index
+                        width: 48; height: 48
+                        padding: 0
+                        contentItem: Item {
+                            Image {
+                                anchors.centerIn: parent
+                                width: 24; height: 24
+                                source: "qrc:/assets/lucide-" + activityButton.modelData + ".svg"
+                                layer.enabled: true
+                                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.rightPage === activityButton.index ? appUi.accent : activityButton.hovered ? appUi.ink : appUi.muted }
+                            }
+                        }
+                        background: Rectangle {
+                            color: activityButton.hovered || appUi.rightPage === activityButton.index ? appUi.surface2 : appUi.surface
+                            Rectangle { width: 2; height: parent.height; anchors.right: parent.right; color: appUi.rightPage === activityButton.index ? appUi.accent : "transparent" }
+                            Rectangle { width: 1; height: parent.height; anchors.left: parent.left; color: appUi.borderColor }
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.text: index === 0 ? "Lyrics" : "Git"
+                        Accessible.name: index === 0 ? "Lyrics" : "Git"
+                        onClicked: appUi.rightPage = index
+                    }
+                }
+            }
+            GitWorkspace {
+                id: workspaceView
+                objectName: "gitWorkspaceView"
+                x: 0; y: appUi.mobile ? 36 : 0
+                width: parent.width - activityBar.width
+                height: parent.height - y
+                visible: appUi.rightPage === 1
+                workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
+            }
             RowLayout {
                 id: progress
+                visible: appUi.rightPage === 0
                 x: 20
                 y: appUi.mobile ? 36 : 10
-                width: parent.width - 40
+                width: parent.width - 40 - activityBar.width
                 height: appUi.mobile ? 24 : 26
                 spacing: 10
                 Text {
@@ -994,16 +1074,18 @@ ApplicationWindow {
             }
             Rectangle {
                 x: 10
+                visible: appUi.rightPage === 0
                 y: progress.y + progress.height
-                width: parent.width - 20
+                width: parent.width - 20 - activityBar.width
                 height: 1
                 color: appUi.borderColor
             }
             ListView {
                 id: results
+                visible: appUi.rightPage === 0
                 x: 10
                 y: progress.y + progress.height + 10
-                width: parent.width - 20
+                width: parent.width - 20 - activityBar.width
                 height: Math.max(0, parent.height - y - 10)
                 model: backend.cards
                 topMargin: 6
@@ -1030,6 +1112,7 @@ ApplicationWindow {
                 }
             }
             ScrollEdgeShadow {
+                visible: appUi.rightPage === 0
                 anchors.fill: results
             }
         }
@@ -1132,7 +1215,7 @@ ApplicationWindow {
                 Text { Layout.fillWidth: true; text: musicPlayer.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
                 Text {
                     Layout.fillWidth: true
-                    text: musicPlayer.artist || (musicPlayer.enabled ? "Select a track · Play" : "Add a token in Settings")
+                    text: musicPlayer.artist || (musicPlayer.enabled ? "Select a track" : "Add a token in Settings")
                     color: "#888888"; font.pixelSize: 11; elide: Text.ElideRight
                 }
             }
@@ -1171,6 +1254,18 @@ ApplicationWindow {
                 }
             }
             PlayerButton {
+                anchors.right: volumeButton.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                glyph: "music-standard"
+                Accessible.name: "Send"
+                ToolTip.visible: hovered
+                ToolTip.text: "Send track"
+                enabled: musicPlayer.trackId !== "" && (typeof localUploader !== "undefined") && !localUploader.busy
+                onClicked: sendDialog.openTrack(musicPlayer.trackId, musicPlayer.title, musicPlayer.artist, musicPlayer.cover ? "image://trackcovers/" + encodeURIComponent(musicPlayer.cover) : "")
+            }
+            PlayerButton {
+                id: volumeButton
                 anchors.right: volumeSlider.left
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
@@ -1188,6 +1283,11 @@ ApplicationWindow {
 
             }
         }
+    }
+    SendDialog {
+        id: sendDialog
+        uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
+        onSent: function(action) { appUi.notify("Send: " + action); }
     }
     SiteView {
         anchors.top: mainHeader.bottom
@@ -1323,7 +1423,15 @@ ApplicationWindow {
                 y: 14
                 width: 32
                 height: 32
-                text: "×"
+                contentItem: Item {
+                    Image {
+                        anchors.centerIn: parent
+                        width: 12; height: 12
+                        source: "qrc:/assets/lucide-x.svg"
+                        layer.enabled: true
+                        layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: parent.parent.hovered ? appUi.accent : appUi.muted }
+                    }
+                }
                 onClicked: auth.close()
                 Accessible.name: "Close"
             }

@@ -7,7 +7,9 @@ The source website is not modified; the Go backend owns local library synchroniz
 ## Build and run
 
 Requires CMake 3.21+, C++17, and Qt6 6.4+ with Quick, Quick Controls 2, Network, Multimedia,
-and Test (for the default test build). Provider icons use Qt's SVG image plugin;
+Widgets, and Test (for the default test build). Unix builds also require the Qt6
+QTermWidget development library (`qtermwidget6` CMake package) and its runtime
+keyboard/color-scheme data. On Arch Linux this is the `qtermwidget` package. Provider icons use Qt's SVG image plugin;
 the source WebP artwork needs its WebP image plugin. Both are installed here.
 
 From the `ddetector-go` root:
@@ -37,6 +39,21 @@ forwarding the authorization URL to QML. External site links and Yandex searches
 also use the system browser. Covers use an asynchronous native image provider and a
 128 MiB disk cache under Qt's CacheLocation/track-covers. OAuth and bridge credentials
 are never sent to the public Yandex artwork CDN.
+
+## Git workspace and embedded terminal
+
+Settings → Git repository selects a local checkout. The Git page provides rounded
+file-tree/editor cards, repository-relative breadcrumbs, atomic Ctrl+S saves, and
+Save/Discard/Cancel protection for unsaved edits. The bottom terminal remains at
+least 120 px tall. It uses QTermWidget on a real Unix PTY and starts the default
+system shell (`SHELL`, then passwd, then `/bin/sh`) in the Git root. ANSI colors,
+alternate-screen applications, Ctrl+C, selection and bracketed paste are supported.
+Terminal commands are unrestricted local commands, not sandboxed. Stop the shell
+and save edits before changing the checkout. Windows ConPTY is not implemented;
+Windows shows an explicit unsupported-platform error rather than a pipe fallback.
+
+Settings and Send share `DialogHeader.qml`. The player's music-note button opens
+Send; see `UPLOADER.md` for the local file-update and commit rules.
 
 ## Standalone Yandex Music player
 

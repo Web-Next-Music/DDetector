@@ -1,6 +1,10 @@
 #include "bridge.h"
 #include "player.h"
 #include "avatarimage.h"
+#include "workspace.h"
+#include "terminal.h"
+#include "syntaxhighlighter.h"
+#include "uploader.h"
 #include <QAbstractItemModelTester>
 #include <QClipboard>
 #include <QFile>
@@ -86,6 +90,27 @@ public:
     QUrl url() const { return QUrl("http://127.0.0.1:" + QString::number(serverPort())); }
 };
 
+struct LocalContexts {
+    GitWorkspace workspace;
+    Uploader uploader;
+
+    explicit LocalContexts(Config &config) {
+        const auto applyRepository = [this, &config] {
+            workspace.setRepositoryPath(config.repositoryPath());
+            uploader.setDirectory(workspace.rootPath());
+        };
+        applyRepository();
+        QObject::connect(&config, &Config::settingsChanged, &workspace, applyRepository);
+        QObject::connect(&uploader, &Uploader::completed, &workspace,
+                         [this](const QString &) { workspace.refreshTree(); });
+    }
+
+    void attach(QQmlApplicationEngine &engine) {
+        engine.rootContext()->setContextProperty("gitWorkspace", &workspace);
+        engine.rootContext()->setContextProperty("localUploader", &uploader);
+    }
+};
+
 class NativeTests final : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
@@ -95,6 +120,9 @@ private slots:
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
         QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SyntaxHighlighter>("DDetector.Syntax", 1, 0, "SyntaxHighlighter");
+        qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
+        qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
         qmlRegisterType<AvatarImage>("DDetector", 1, 0, "AvatarImage");
         QDirIterator fonts(":/assets", {"*.ttf", "*.otf"}, QDir::Files);
         while (fonts.hasNext()) QFontDatabase::addApplicationFont(fonts.next());
@@ -139,14 +167,21 @@ private slots:
         const auto path = directory.path() + "/private/Config.json";
         Config config(path);
         QSignalSpy changed(&config, &Config::settingsChanged);
+        QVERIFY(config.repositoryPath().isEmpty());
+        const auto repositoryPath = directory.path() + "/repository with spaces";
+        config.setRepositoryPath("  " + repositoryPath + "  ");
+        QCOMPARE(config.repositoryPath(), repositoryPath);
+        config.setRepositoryPath(repositoryPath);
+        QCOMPARE(changed.count(), 1);
         config.setMusicToken("test-private-token");
         config.setHideIgnored(true);
         QVERIFY(!config.hideWindowControls());
         config.setHideWindowControls(true);
         config.setVolume(0.75);
         QVERIFY(config.error().isEmpty());
-        QCOMPARE(changed.count(), 4);
+        QCOMPARE(changed.count(), 5);
         Config restored(path);
+        QCOMPARE(restored.repositoryPath(), repositoryPath);
         QCOMPARE(restored.musicToken(), QString("test-private-token"));
         QVERIFY(restored.hideIgnored());
         QVERIFY(restored.hideWindowControls());
@@ -157,6 +192,13 @@ private slots:
         QVERIFY(::stat(QFile::encodeName(directory.path() + "/private").constData(), &info) == 0);
         QCOMPARE(info.st_mode & 0777, mode_t(0700));
         QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(file.readAll()).object().value("repositoryPath").toString(), repositoryPath);
+        file.close();
+        config.setRepositoryPath(QString());
+        Config cleared(path);
+        QVERIFY(cleared.repositoryPath().isEmpty());
+        QCOMPARE(changed.count(), 6);
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
         const QByteArray invalid = "{\"musicToken\":\"test-private-token\",\"volume\":\"bad\"}";
         QCOMPARE(file.write(invalid), invalid.size()); file.close();
@@ -312,7 +354,9 @@ private slots:
         QTRY_COMPARE(bridge.tracks()->count(), 6);
         bridge.setHideIgnored(false);
         MusicPlayer musicPlayer;
+        LocalContexts local(config);
         QQmlApplicationEngine engine;
+        local.attach(engine);
         engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
         engine.rootContext()->setContextProperty("backend", &bridge);
@@ -386,6 +430,57 @@ private slots:
                 if (!screenshots.isEmpty()) QVERIFY(window->grabWindow().save(screenshots + "/mobile-expanded-dark.png"));
         window->resize(1200, 800); QTest::qWait(50);
         QCOMPARE(window->property("mobile").toBool(), false);
+        QCOMPARE(engine.rootContext()->contextProperty("gitWorkspace").value<QObject *>(),
+                 static_cast<QObject *>(&local.workspace));
+        QCOMPARE(engine.rootContext()->contextProperty("localUploader").value<QObject *>(),
+                 static_cast<QObject *>(&local.uploader));
+        QQuickItem *workspaceView = nullptr;
+        QQuickItem *lyricsButton = nullptr;
+        QQuickItem *gitButton = nullptr;
+        QObject *sendDialog = nullptr;
+        for (auto object : window->findChildren<QObject *>()) {
+            if (object->objectName() == "gitWorkspaceView")
+                workspaceView = qobject_cast<QQuickItem *>(object);
+            if (object->metaObject()->indexOfProperty("uploadBackend") >= 0)
+                sendDialog = object;
+        }
+        const auto findPageButtons = [&](auto &&visit, QQuickItem *item) -> void {
+            if (item->metaObject()->indexOfSignal("clicked()") >= 0) {
+                if (item->objectName() == "lyricsPageButton") lyricsButton = item;
+                if (item->objectName() == "gitPageButton") gitButton = item;
+            }
+            for (auto child : item->childItems()) visit(visit, child);
+        };
+        findPageButtons(findPageButtons, window->contentItem());
+        QVERIFY(workspaceView); QVERIFY(lyricsButton); QVERIFY(gitButton);
+        QCOMPARE(workspaceView->property("workspaceBackend").value<QObject *>(),
+                 static_cast<QObject *>(&local.workspace));
+        QCOMPARE(window->property("rightPage").toInt(), 0);
+        QVERIFY(!workspaceView->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(gitButton, "clicked"));
+        QCOMPARE(window->property("rightPage").toInt(), 1);
+        QTRY_VERIFY(workspaceView->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(lyricsButton, "clicked"));
+        QCOMPARE(window->property("rightPage").toInt(), 0);
+        QTRY_VERIFY(!workspaceView->isVisible());
+
+        QVERIFY(sendDialog);
+        QCOMPARE(sendDialog->property("uploadBackend").value<QObject *>(),
+                 static_cast<QObject *>(&local.uploader));
+        const auto snapshot = track.toMap();
+        QVERIFY(!snapshot.isEmpty());
+        QVERIFY(QMetaObject::invokeMethod(sendDialog, "openTrack",
+                                         Q_ARG(QVariant, snapshot.value("id")),
+                                         Q_ARG(QVariant, snapshot.value("title")),
+                                         Q_ARG(QVariant, snapshot.value("artist")),
+                                         Q_ARG(QVariant, QVariant(QString()))));
+        QTRY_VERIFY(sendDialog->property("visible").toBool());
+        QCOMPARE(sendDialog->property("trackId").toString(), snapshot.value("id").toString());
+        QCOMPARE(sendDialog->property("originalTitle").toString(), snapshot.value("title").toString());
+        QVERIFY(!sendDialog->property("busy").toBool());
+        QVERIFY(!local.uploader.busy());
+        QVERIFY(QMetaObject::invokeMethod(sendDialog, "close"));
+        QTRY_VERIFY(!sendDialog->property("visible").toBool());
         QCOMPARE(warnings.count(), 0);
     }
     void preferredAvatarPriority() {
@@ -394,7 +489,9 @@ private slots:
         Bridge bridge(server.url(), "test-random-key", nullptr, &config);
         QTRY_COMPARE(bridge.tracks()->count(), 6);
         MusicPlayer musicPlayer;
+        LocalContexts local(config);
         QQmlApplicationEngine engine;
+        local.attach(engine);
         engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("backend", &bridge);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
@@ -438,7 +535,9 @@ private slots:
         QTRY_COMPARE(bridge.tracks()->count(), 6);
         bridge.setHideIgnored(false);
         MusicPlayer musicPlayer;
+        LocalContexts local(config);
         QQmlApplicationEngine engine;
+        local.attach(engine);
         engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("backend", &bridge);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
@@ -525,7 +624,9 @@ private slots:
         Bridge bridge(server.url(), "test-random-key", nullptr, &config);
         QTRY_COMPARE(bridge.tracks()->count(), 6);
         MusicPlayer musicPlayer;
+        LocalContexts local(config);
         QQmlApplicationEngine engine;
+        local.attach(engine);
         engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
         engine.rootContext()->setContextProperty("backend", &bridge);
@@ -550,7 +651,9 @@ private slots:
         Bridge bridge(server.url(), "test-random-key", nullptr, &config);
         QTRY_VERIFY(bridge.state().contains("authenticated"));
         MusicPlayer musicPlayer;
+        LocalContexts local(config);
         QQmlApplicationEngine engine;
+        local.attach(engine);
         engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
         engine.rootContext()->setContextProperty("backend", &bridge);

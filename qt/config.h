@@ -5,6 +5,7 @@
 class Config final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString musicToken READ musicToken WRITE setMusicToken NOTIFY settingsChanged)
+    Q_PROPERTY(QString repositoryPath READ repositoryPath WRITE setRepositoryPath NOTIFY settingsChanged)
     Q_PROPERTY(bool hideIgnored READ hideIgnored WRITE setHideIgnored NOTIFY settingsChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY settingsChanged)
         Q_PROPERTY(bool hideWindowControls READ hideWindowControls WRITE setHideWindowControls NOTIFY settingsChanged)
@@ -14,6 +15,8 @@ public:
     // An empty path is strictly in-memory; overrides never migrate legacy settings.
     explicit Config(const QString &path, QObject *parent = nullptr);
     QString musicToken() const { return m_token; }
+    QString repositoryPath() const { return m_repositoryPath; }
+    void setRepositoryPath(const QString &value);
     bool hideIgnored() const { return m_hideIgnored; }
         bool hideWindowControls() const { return m_hideWindowControls; }
         void setHideWindowControls(bool value);
@@ -29,7 +32,7 @@ private:
     void load();
     void save();
     void fail(const QString &message);
-    QString m_path, m_token, m_error;
+    QString m_path, m_token, m_error, m_repositoryPath;
     bool m_hideIgnored = false, m_hideWindowControls = false, m_blocked = false;
     double m_volume = 0.5;
 };

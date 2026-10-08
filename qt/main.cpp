@@ -2,10 +2,14 @@
 #include "player.h"
 #include "coverimageprovider.h"
 #include "avatarimage.h"
+#include "workspace.h"
+#include "uploader.h"
 #include <QCommandLineParser>
 #include <QDirIterator>
 #include <QFontDatabase>
-#include <QGuiApplication>
+#include <QApplication>
+#include "terminal.h"
+#include "syntaxhighlighter.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -14,7 +18,10 @@
 #include <memory>
 
 int main(int argc, char **argv) {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
+    qmlRegisterType<SyntaxHighlighter>("DDetector.Syntax", 1, 0, "SyntaxHighlighter");
+    qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
+    qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
     app.setApplicationName("DDetector");
     app.setOrganizationName("DDetector");
     QQuickStyle::setStyle("Basic");
@@ -42,6 +49,15 @@ int main(int argc, char **argv) {
     QFont font("DDetector Nunito"); font.setWeight(QFont::Bold); font.setPixelSize(13); app.setFont(font);
     Config config;
     Bridge bridge(base, parser.value("bridge-key").toUtf8(), nullptr, &config);
+    GitWorkspace workspace;
+    Uploader uploader;
+    auto applyRepository = [&] {
+        workspace.setRepositoryPath(config.repositoryPath());
+        uploader.setDirectory(workspace.rootPath());
+    };
+    applyRepository();
+    QObject::connect(&config, &Config::settingsChanged, &workspace, applyRepository);
+    QObject::connect(&uploader, &Uploader::completed, &workspace, [&](const QString &) { workspace.refreshTree(); });
     MusicPlayer musicPlayer;
     musicPlayer.setVolume(config.volume());
 
@@ -68,6 +84,8 @@ int main(int argc, char **argv) {
     engine.rootContext()->setContextProperty("appConfig", &config);
     engine.rootContext()->setContextProperty("backend", &bridge);
     engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+    engine.rootContext()->setContextProperty("gitWorkspace", &workspace);
+    engine.rootContext()->setContextProperty("localUploader", &uploader);
 
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;

@@ -3,6 +3,17 @@
 These assets originate from `/home/admin/Documents/Git/Next-Music-Website`.
 No assets are downloaded at application startup.
 
+## Editor menu icons (Lucide)
+
+`lucide-undo-2.svg`, `lucide-redo-2.svg`, `lucide-scissors.svg`,
+`lucide-trash-2.svg`, and `lucide-text-select.svg` were exported from the
+installed `lucide-react` 1.52.0 package's `dist/esm/icons/` icon data.
+In that version, `trash-2` aliases `trash` and `text-select` aliases
+`square-dashed-text`. SVGs retain the standard 24px view box, 2px stroke,
+and round line caps/joins. See `LUCIDE-LICENSE.txt` for the preserved
+ISC and MIT license notices. The protected activity-bar Music and Git
+branch assets are not changed by these exports.
+
 ## Native font derivatives (SIL Open Font License 1.1)
 
 The website's cached Google Fonts WOFF2 subsets were instantiated at the used
