@@ -43,8 +43,8 @@ Rectangle {
         implicitWidth: 32
         implicitHeight: 32
         Accessible.name: text
-        ToolTip.visible: hovered
-        ToolTip.text: text
+        property string tooltipText: text
+        SiteToolTip { text: control.tooltipText }
         leftPadding: root.compact ? 6 : 10
         rightPadding: leftPadding
         font.family: "DDetector Quicksand"
@@ -104,16 +104,14 @@ Rectangle {
                 glyph: "copy"
                 enabled: !!root.terminalSession
                 onClicked: terminal.copy()
-                ToolTip.visible: hovered
-                ToolTip.text: "Copy selection (Ctrl+Shift+C)"
+                tooltipText: "Copy selection (Ctrl+Shift+C)"
             }
             TerminalButton {
                 text: "Paste"
                 glyph: "clipboard"
                 enabled: !!root.terminalSession && root.terminalSession.running
                 onClicked: { terminal.paste(); terminal.forceActiveFocus() }
-                ToolTip.visible: hovered
-                ToolTip.text: "Paste into shell (Ctrl+Shift+V); commands are not sandboxed"
+                tooltipText: "Paste into shell (Ctrl+Shift+V); commands are not sandboxed"
             }
             TerminalButton {
                 text: "Clear"
@@ -129,8 +127,10 @@ Rectangle {
             color: "#ff8585"
             font.pixelSize: 12
             elide: Text.ElideRight
-            ToolTip.visible: errorHover.hovered
-            ToolTip.text: text
+            SiteToolTip {
+                visible: errorHover.hovered && parent.visible && text.length > 0
+                text: parent.text
+            }
             HoverHandler { id: errorHover }
         }
         Rectangle {

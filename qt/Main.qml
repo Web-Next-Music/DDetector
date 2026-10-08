@@ -576,8 +576,7 @@ ApplicationWindow {
                 text: appUi.state.fetching ? "Fetching" : "Fetch"
                 enabled: !appUi.state.fetching && !appUi.state.loading
                 onClicked: backend.fetch()
-                ToolTip.visible: hovered
-                ToolTip.text: "Rebuild track list from external source"
+                SiteToolTip { text: "Rebuild track list from external source" }
             }
         }
     }
@@ -609,8 +608,7 @@ ApplicationWindow {
                 border.color: avatarButton.hovered ? appUi.accentBorder : appUi.borderColor
             }
             Accessible.name: "Account menu for " + appUi.userName
-            ToolTip.visible: hovered
-            ToolTip.text: appUi.userName
+            SiteToolTip { text: appUi.userName }
             onClicked: {
                 headerMenu.x = appUi.width - headerMenu.width - 10;
                 const point = avatarButton.mapToItem(appUi.contentItem, 0, 0);
@@ -1038,8 +1036,7 @@ ApplicationWindow {
                             Rectangle { width: 2; height: parent.height; anchors.right: parent.right; color: appUi.rightPage === activityButton.index ? appUi.accent : "transparent" }
                             Rectangle { width: 1; height: parent.height; anchors.left: parent.left; color: appUi.borderColor }
                         }
-                        ToolTip.visible: hovered
-                        ToolTip.text: index === 0 ? "Lyrics" : "Git"
+                        SiteToolTip { text: activityButton.index === 0 ? "Lyrics" : "Git" }
                         Accessible.name: index === 0 ? "Lyrics" : "Git"
                         onClicked: appUi.rightPage = index
                     }
@@ -1279,8 +1276,7 @@ ApplicationWindow {
                 anchors.verticalCenter: parent.verticalCenter
                 glyph: "music-standard"
                 Accessible.name: "Send"
-                ToolTip.visible: hovered
-                ToolTip.text: "Send track"
+                SiteToolTip { text: "Send track" }
                 enabled: musicPlayer.trackId !== "" && (typeof localUploader !== "undefined") && !localUploader.busy
                 onClicked: sendDialog.openTrack(musicPlayer.trackId, musicPlayer.title, musicPlayer.artist, musicPlayer.cover ? "image://trackcovers/" + encodeURIComponent(musicPlayer.cover) : "")
             }

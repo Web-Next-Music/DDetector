@@ -207,8 +207,7 @@ Item {
                                 text: "Save"
                                 glyph: "save"
                                 iconOnly: true
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Save (Ctrl+S)"
+                                SiteToolTip { text: "Save (Ctrl+S)" }
                                 enabled: root.available && !!root.workspaceBackend.filePath && root.workspaceBackend.dirty
                                 onClicked: root.workspaceBackend.save()
                             }
