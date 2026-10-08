@@ -921,6 +921,7 @@ ApplicationWindow {
     }
     Item {
         id: panels
+        readonly property real leftPanelWidth: width * 0.40
         visible: appUi.privileged
         anchors.top: mainHeader.bottom
         anchors.bottom: playerPanel.top
@@ -930,7 +931,7 @@ ApplicationWindow {
             id: trackList
             x: 10
             y: 10
-            width: appUi.mobile ? panels.width - 20 : panels.width / 2 - 20
+            width: appUi.mobile ? panels.width - 20 : panels.leftPanelWidth - 20
             height: panels.height - (appUi.mobile ? 82 : 20)
             model: backend.tracks
             topMargin: 6
@@ -952,16 +953,16 @@ ApplicationWindow {
         }
         Rectangle {
             visible: !appUi.mobile
-            x: panels.width / 2
+            x: panels.leftPanelWidth
             height: panels.height
             width: 1
             color: appUi.borderColor
         }
         Rectangle {
             id: right
-            x: appUi.mobile ? 0 : panels.width / 2 + 1
+            x: appUi.mobile ? 0 : panels.leftPanelWidth + 1
             y: appUi.mobile && !appUi.sheetOpen ? panels.height - 60 : 0
-            width: appUi.mobile ? panels.width : panels.width / 2 - 1
+            width: appUi.mobile ? panels.width : panels.width - panels.leftPanelWidth - 1
             height: panels.height
             color: appUi.bg
             Behavior on y {
