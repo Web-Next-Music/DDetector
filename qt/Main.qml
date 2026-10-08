@@ -52,7 +52,7 @@ ApplicationWindow {
     property var state: backend.state
     property bool privileged: !!state.authenticated && !!state.hasAccess && !state.isBanned
         readonly property bool checkingAccess: (state.authenticated === undefined || (!!state.authenticated && !state.accessChecked && !state.isBanned)) && !state.error && backend.connectionError === ""
-        readonly property bool showShell: privileged || checkingAccess
+        readonly property bool showShell: privileged || checkingAccess || state.authenticated === false
         readonly property bool tracksPending: checkingAccess || (!!state.loading && !state.processing && total === 0)
     property string selectedId: ""
     property bool sheetOpen: false
@@ -146,7 +146,9 @@ ApplicationWindow {
                 appUi.sheetOpen = false;
                 trackMenu.close();
             }
-            if (appUi.state.authenticated)
+            if (appUi.state.authenticated === false)
+                auth.open();
+            else if (appUi.state.authenticated)
                 auth.close();
         }
     }
@@ -1211,7 +1213,7 @@ ApplicationWindow {
         objectName: "playerPanel"
         anchors.bottom: parent.bottom
         width: parent.width
-        visible: appUi.showShell && (appUi.checkingAccess || musicPlayer.enabled)
+        visible: appUi.showShell && (appUi.checkingAccess || appUi.state.authenticated === false || musicPlayer.enabled)
         height: visible ? 88 : 0
         color: appUi.playerSurface
         enabled: visible && appUi.privileged
@@ -1318,21 +1320,23 @@ ApplicationWindow {
         anchors.top: mainHeader.bottom
         anchors.bottom: playerPanel.top
         width: parent.width
-        visible: !appUi.showShell
+        visible: !appUi.showShell && appUi.state.authenticated !== false
         ui: appUi
-        onSignIn: auth.open()
     }
 
-    Popup {
+    SiteDialog {
         id: auth
         objectName: "authPopup"
-        anchors.centerIn: Overlay.overlay
-        width: Math.min(appUi.width - 32, 400)
-        height: appUi.width <= 480 ? 320 : 368
+        Component.onCompleted: { if (appUi.state.authenticated === false) open(); }
+        header: Item { implicitHeight: 0 }
+        footer: Item { implicitHeight: 0 }
+        width: Math.min(appUi.width - 32, 704)
+        height: Math.max(appUi.width <= 480 ? 304 : 368, authPanel.height + (appUi.width <= 480 ? 88 : 100) + 2)
         modal: true
         focus: true
         padding: 0
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        topPadding: 0
+        closePolicy: appUi.state.authenticated === false ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             radius: 20
             color: appUi.surface
@@ -1342,26 +1346,49 @@ ApplicationWindow {
             color: "#99000000"
         }
         contentItem: Item {
-            Image {
+            id: authContent
+            layer.enabled: true
+            layer.effect: MultiEffect {
+                maskEnabled: true
+                maskSource: authMask
+            }
+            Rectangle {
+                id: authMask
+                anchors.fill: parent
+                radius: 20
+                layer.enabled: true
                 visible: false
+            }
+            Item {
+                id: authArtwork
+                objectName: "authArtwork"
+                visible: appUi.width > 480
                 x: 1
                 y: 1
-                width: parent.width * 0.474
+                width: (parent.width - 2) * 0.9 / 1.9
                 height: parent.height - 2
-                source: "qrc:/assets/Kagami.webp"
-                fillMode: Image.PreserveAspectCrop
                 clip: true
+                Image {
+                    width: Math.max(parent.width, parent.height * implicitWidth / Math.max(1, implicitHeight))
+                    height: parent.height
+                    x: (parent.width - width) * 0.2
+                    source: "qrc:/assets/Kagami.webp"
+                    fillMode: Image.PreserveAspectCrop
+                }
             }
             Column {
-                x: 24
-                width: parent.width - 48
+                id: authPanel
+                readonly property real horizontalPadding: appUi.width <= 480 ? 24 : 32
+                x: (authArtwork.visible ? authArtwork.x + authArtwork.width : 1) + horizontalPadding
+                width: parent.width - x - horizontalPadding - 1
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 10
                 Text {
+                    objectName: "authTitle"
                     text: "Sign in"
                     color: appUi.ink
-                    font.family: "DDetector Quicksand"
-                    font.weight: Font.Bold
+                    font.family: "Luckystar"
+                    font.weight: Font.Normal
                     font.pixelSize: appUi.width <= 480 ? 34 : 40
                     bottomPadding: 18
                 }
@@ -1383,6 +1410,7 @@ ApplicationWindow {
                     SmallButton {
                         id: providerButton
                         required property var modelData
+                        objectName: "login-" + modelData.provider
                         width: parent.width
                         height: 46
                         text: backend.pendingProvider === modelData.provider ? "Redirecting…" : "Continue with " + modelData.name
@@ -1424,23 +1452,7 @@ ApplicationWindow {
                     font.pixelSize: 13
                 }
             }
-            SmallButton {
-                x: parent.width - 46
-                y: 14
-                width: 32
-                height: 32
-                contentItem: Item {
-                    Image {
-                        anchors.centerIn: parent
-                        width: 12; height: 12
-                        source: "qrc:/assets/lucide-x.svg"
-                        layer.enabled: true
-                        layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: parent.parent.hovered ? appUi.accent : appUi.muted }
-                    }
-                }
-                onClicked: auth.close()
-                Accessible.name: "Close"
-            }
+
         }
     }
     Column {
