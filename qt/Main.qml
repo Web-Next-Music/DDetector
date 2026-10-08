@@ -646,6 +646,8 @@ ApplicationWindow {
     SiteDialog {
         id: settingsDialog
         objectName: "settingsDialog"
+        padding: 8
+        topPadding: 0
         anchors.centerIn: Overlay.overlay
         width: Math.min(appUi.width - 32, 560)
         icon: "qrc:/assets/lucide-settings.svg"

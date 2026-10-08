@@ -19,42 +19,45 @@ Rectangle {
     property alias closeEnabled: closeButton.enabled
     signal closeRequested()
 
-    implicitHeight: 70
+    implicitHeight: 64
     color: "transparent"
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: 10
+        anchors.margins: 8
         color: header.surface2
-        radius: 14
+        radius: 12
         border.color: header.borderColor
     }
     Image {
         id: headerIcon
         anchors.left: parent.left
-        anchors.leftMargin: 26
+        anchors.leftMargin: 24
         anchors.verticalCenter: parent.verticalCenter
         width: 18
         height: 18
         source: header.icon
+                visible: header.icon.toString().length > 0
         layer.enabled: true
         layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: header.muted }
     }
     Text {
-        anchors.left: headerIcon.right
-        anchors.leftMargin: 12
+        anchors.left: headerIcon.visible ? headerIcon.right : parent.left
+        anchors.leftMargin: headerIcon.visible ? 12 : 24
         anchors.right: closeButton.left
         anchors.rightMargin: 12
         anchors.verticalCenter: parent.verticalCenter
         text: header.title
         color: header.ink
+        font.family: "DDetector Nunito"
         font.pixelSize: 16
+        font.weight: Font.Bold
         elide: Text.ElideRight
     }
     Button {
         id: closeButton
         anchors.right: parent.right
-        anchors.rightMargin: 22
+        anchors.rightMargin: 24
         anchors.verticalCenter: parent.verticalCenter
         width: 30
         height: 30
@@ -65,17 +68,27 @@ Rectangle {
         contentItem: Item {
             Image {
                 anchors.centerIn: parent
-                width: 12
-                height: 12
+                width: 16
+                height: 16
                 source: "qrc:/assets/lucide-x.svg"
                 layer.enabled: true
-                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: header.muted }
+                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: closeButton.hovered ? header.ink : header.muted }
             }
         }
         background: Rectangle {
             radius: 8
-            color: closeButton.hovered ? header.accentBg : header.surface
-            border.color: closeButton.hovered || closeButton.activeFocus ? header.accentBorder : header.borderColor
+            color: closeButton.hovered ? header.surface : "transparent"
+            border.color: closeButton.visualFocus ? header.accentBorder : "transparent"
+            Behavior on color { ColorAnimation { duration: 150 } }
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -3
+                radius: 11
+                color: "transparent"
+                border.width: 2
+                border.color: "#2bfef5"
+                visible: closeButton.visualFocus
+            }
         }
         onClicked: header.closeRequested()
     }
