@@ -861,6 +861,27 @@ ApplicationWindow {
             }
         }
     }
+    component ScrollEdgeShadow: Item {
+        z: 1
+        Rectangle {
+            anchors.top: parent.top
+            width: parent.width
+            height: 8
+            gradient: Gradient {
+                GradientStop { position: 0; color: "#ff000000" }
+                GradientStop { position: 1; color: "#00000000" }
+            }
+        }
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 8
+            gradient: Gradient {
+                GradientStop { position: 0; color: "#00000000" }
+                GradientStop { position: 1; color: "#ff000000" }
+            }
+        }
+    }
     Item {
         id: panels
         visible: appUi.privileged
@@ -875,6 +896,8 @@ ApplicationWindow {
             width: appUi.mobile ? panels.width - 20 : panels.width / 2 - 20
             height: panels.height - (appUi.mobile ? 82 : 20)
             model: backend.tracks
+            topMargin: 6
+            bottomMargin: 6
             clip: true
             reuseItems: true
             delegate: TrackRow {
@@ -886,6 +909,9 @@ ApplicationWindow {
                 number: index + 1
             }
             ScrollBar.vertical: ScrollBar {}
+        }
+        ScrollEdgeShadow {
+            anchors.fill: trackList
         }
         Rectangle {
             visible: !appUi.mobile
@@ -980,6 +1006,8 @@ ApplicationWindow {
                 width: parent.width - 20
                 height: Math.max(0, parent.height - y - 10)
                 model: backend.cards
+                topMargin: 6
+                bottomMargin: 6
                 spacing: 10
                 clip: true
                 delegate: ResultCard {
@@ -1000,6 +1028,9 @@ ApplicationWindow {
                     font.pixelSize: 13
                     text: appUi.total ? "No drug references found" : "No tracks. Press Fetch to load."
                 }
+            }
+            ScrollEdgeShadow {
+                anchors.fill: results
             }
         }
         Rectangle {
