@@ -112,7 +112,7 @@ source versions. To force another full rebuild, remove that account's cache whil
 - Row click copies its ID and scrolls the matching result card into view; on
   narrow screens it opens the results sheet. Cards support highlights,
   timestamps, timestamp suppression on unsynced tracks, expandable full lyrics,
-  context-line dimming, Copy ID, and Yandex's `title artist скачать mp3` query.
+  context-line dimming, Copy ID, and Yandex's `title artist download mp3` query.
 - Track/card context menus: Yandex, copy, ignore/unignore; full lyrics appears
   only for unsynced result cards.
 - Right-side utility buttons reload data and open Settings;

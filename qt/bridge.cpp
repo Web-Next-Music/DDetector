@@ -285,7 +285,7 @@ void Bridge::ignore(const QString &id, bool ignored) {
 void Bridge::copyId(const QString &id) { QGuiApplication::clipboard()->setText(id); emit toast("ID copied: " + id); }
 void Bridge::searchYandex(const QString &title, const QString &artist) {
     QUrl url("https://yandex.ru/search/"); QUrlQuery query;
-    query.addQueryItem("text", title + " " + artist + " скачать mp3"); url.setQuery(query); openBrowser(url);
+    query.addQueryItem("text", title + " " + artist + " download mp3"); url.setQuery(query); openBrowser(url);
 }
 void Bridge::openBrowser(const QUrl &url) {
     if ((url.scheme() != "https" && url.scheme() != "http") || !QDesktopServices::openUrl(url)) emit toast("Unable to open system browser");

@@ -52,7 +52,7 @@ ApplicationWindow {
     property var state: backend.state
     property bool privileged: !!state.authenticated && !!state.hasAccess && !state.isBanned
         readonly property bool checkingAccess: (state.authenticated === undefined || (!!state.authenticated && !state.accessChecked && !state.isBanned)) && !state.error && backend.connectionError === ""
-        readonly property bool showShell: privileged || checkingAccess || state.authenticated === false
+        readonly property bool showShell: true
         readonly property bool tracksPending: checkingAccess || (!!state.loading && !state.processing && total === 0)
     property string selectedId: ""
     property bool sheetOpen: false
@@ -1213,7 +1213,7 @@ ApplicationWindow {
         objectName: "playerPanel"
         anchors.bottom: parent.bottom
         width: parent.width
-        visible: appUi.showShell && (appUi.checkingAccess || appUi.state.authenticated === false || musicPlayer.enabled)
+        visible: !appUi.privileged || musicPlayer.enabled
         height: visible ? 88 : 0
         color: appUi.playerSurface
         enabled: visible && appUi.privileged
@@ -1317,10 +1317,6 @@ ApplicationWindow {
         onSent: function(action) { appUi.notify("Send: " + action); }
     }
     SiteView {
-        anchors.top: mainHeader.bottom
-        anchors.bottom: playerPanel.top
-        width: parent.width
-        visible: !appUi.showShell && appUi.state.authenticated !== false
         ui: appUi
     }
 

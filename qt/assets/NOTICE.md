@@ -1,6 +1,6 @@
 # Bundled source assets
 
-These assets originate from `/home/admin/Documents/Git/Next-Music-Website`.
+Unless noted otherwise, these assets originate from `/home/admin/Documents/Git/Next-Music-Website`.
 No assets are downloaded at application startup.
 
 ## Editor menu icons (Lucide)
@@ -39,6 +39,14 @@ Use `../import_assets.py` to reproduce the conversions from the source build.
 icon data, using the same Lucide library rather than substitute glyphs.
 Qt renders the SVGs natively; React is not needed at runtime.
 See `LUCIDE-LICENSE.txt` for ISC and applicable Feather MIT notices.
+
+## Access-denied artwork
+
+`Kagami-access-denied.jpg` was downloaded unchanged from the user-specified URL:
+https://get.wallhere.com/photo/illustration-anime-cartoon-Lucky-Star-angry-Hiiragi-Kagami-girl-finger-mangaka-threat-702683.jpg
+
+Redistribution rights have not been verified. Verify permission before distributing
+this artwork. It is bundled locally; no runtime download is required.
 
 ## Source artwork and Lucky Star font
 

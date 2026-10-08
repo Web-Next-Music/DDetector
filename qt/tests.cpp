@@ -643,6 +643,50 @@ private slots:
         server.state.insert("processing", true);
         QTRY_VERIFY(!overlay->isVisible());
     }
+    void accessDeniedModal() {
+        MockBackend server;
+        server.state.insert("authenticated", true);
+        server.state.insert("hasAccess", false);
+        server.state.insert("accessChecked", true);
+        server.state.insert("error", "DDetector access denied");
+        Config config{QString()};
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_VERIFY(bridge.state().contains("authenticated"));
+        MusicPlayer musicPlayer;
+        LocalContexts local(config);
+        QQmlApplicationEngine engine;
+        local.attach(engine);
+        engine.rootContext()->setContextProperty("appConfig", &config);
+        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+        engine.rootContext()->setContextProperty("backend", &bridge);
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        auto popup = window->findChild<QObject *>("accessPopup");
+        QVERIFY(popup);
+        QTRY_VERIFY(popup->property("visible").toBool());
+        auto artwork = visualChild(window->contentItem(), "accessArtwork");
+        QVERIFY(artwork);
+        QVERIFY(artwork->isVisible());
+        QCOMPARE(artwork->property("source").toUrl(), QUrl("qrc:/assets/Kagami-access-denied.jpg"));
+        QTRY_COMPARE(artwork->property("status").toInt(), 1); // Image.Ready
+        auto message = visualChild(window->contentItem(), "accessMessage");
+        QVERIFY(message);
+        QCOMPARE(message->property("text").toString(), QString("Access denied"));
+        QCOMPARE(message->property("font").value<QFont>().family(), QString("Luckystar"));
+        auto logout = visualChild(window->contentItem(), "accessSwitchAccount");
+        QVERIFY(logout);
+        QCOMPARE(logout->property("text").toString(), QString("Sign in with another account"));
+        QCOMPARE(logout->height(), 46.0);
+        QCOMPARE(logout->width(), message->width());
+        QVERIFY(QMetaObject::invokeMethod(logout, "clicked"));
+        QTRY_VERIFY(std::any_of(server.requests.cbegin(), server.requests.cend(), [](const QByteArray &request) {
+            return request.startsWith("POST /api/logout ");
+        }));
+        QCOMPARE(warnings.count(), 0);
+    }
     void unavailableAndAuthModal() {
         MockBackend server;
         server.state.insert("authenticated", false); server.state.insert("hasAccess", false);
