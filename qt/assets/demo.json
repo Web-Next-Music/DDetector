@@ -1,0 +1,22 @@
+{
+  "authenticated": true,
+  "user": {"id": "demo", "email": "demo@example.invalid"},
+  "accessChecked": true,
+  "hasAccess": true,
+  "isBanned": false,
+  "loginPending": false,
+  "loading": false,
+  "fetching": false,
+  "processing": false,
+  "processed": 6,
+  "foundCount": 3,
+  "error": "",
+  "tracks": [
+    {"id": 101, "title": "Neon nights", "artist": "Demo Artist", "cover": null, "added_at": "2026-10-08T12:00:00Z", "status": "found", "ignored": false, "lyrics": [{"ts":"00:42", "text":"A demo lyric with cocaine in the neon light"}], "lines": [{"ts":"00:42", "isDrug":true, "parts":[{"text":"A demo lyric with ","marked":false},{"text":"cocaine","marked":true},{"text":" in the neon light","marked":false}]}]},
+    {"id": 102, "title": "Без синхронизации", "artist": "Demo Artist", "cover": null, "added_at": "2026-10-07T12:00:00Z", "status": "found", "ignored": false, "lyrics": [{"ts":null,"text":"Это демонстрация: марихуана"}], "lines": [{"ts":null,"isDrug":true,"parts":[{"text":"Это демонстрация: ","marked":false},{"text":"марихуана","marked":true}]}], "allLines": [{"ts":null,"isDrug":false,"parts":[{"text":"Первая строка полного текста","marked":false}]},{"ts":null,"isDrug":true,"parts":[{"text":"Это демонстрация: ","marked":false},{"text":"марихуана","marked":true}]},{"ts":null,"isDrug":false,"parts":[{"text":"Последняя строка полного текста","marked":false}]}]},
+    {"id": 103, "title": "Ignored reference", "artist": "Another Artist", "cover": null, "added_at": "2026-10-06T12:00:00Z", "status": "found", "ignored": true, "lyrics":[], "lines":[{"ts":"01:17","isDrug":true,"parts":[{"text":"An ignored demo ","marked":false},{"text":"drug","marked":true},{"text":" reference","marked":false}]}]},
+    {"id": 104, "title": "Clear skies", "artist": "Another Artist", "cover": null, "added_at": "2026-10-05T12:00:00Z", "status": "none", "ignored":false,"lyrics":[],"lines":[]},
+    {"id": 105, "title": "Instrumental", "artist": "Third Artist", "cover": null, "added_at": "2026-10-04T12:00:00Z", "status":"error","ignored":false,"lyrics":null,"lines":[]},
+    {"id": 106, "title": "Waiting for analysis", "artist": "Demo Artist", "cover": null, "added_at": "2026-10-03T12:00:00Z", "status":"pending","ignored":false,"lyrics":[],"lines":[]}
+  ]
+}

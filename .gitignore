@@ -1,0 +1,6 @@
+/build/
+/qt/build/
+.env
+.env.*
+!.env.example
+session.json
