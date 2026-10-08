@@ -21,6 +21,7 @@ Item {
     readonly property color raised: "#171719"
     readonly property color accent: "#2bfef5"
     signal closeApproved()
+    signal notify(string message)
 
 
 
@@ -46,6 +47,10 @@ Item {
         target: root.workspaceBackend
         function onUnsavedPrompt() { unsaved.open() }
         function onCloseApproved() { root.approveClose() }
+        function onErrorChanged() {
+            if (root.available && root.workspaceBackend.error)
+                root.notify(root.workspaceBackend.error)
+        }
     }
     // The host provides the workspace background; each surface is drawn only once.
     Label {
@@ -70,15 +75,7 @@ Item {
         anchors.fill: parent
         anchors.margins: 0
         spacing: 0
-        Label {
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            visible: root.available && !!root.workspaceBackend.error
-            text: root.available ? root.workspaceBackend.error : ""
-            color: "#ff8585"
-            wrapMode: Text.Wrap
-        }
+
         SplitView {
             Layout.fillWidth: true
             Layout.fillHeight: true

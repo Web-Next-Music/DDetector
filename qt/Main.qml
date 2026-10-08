@@ -56,7 +56,10 @@ ApplicationWindow {
     property var expanded: ({})
     property var menuTrack: ({})
     property bool menuFullLyrics: false
-    property string toastText: ""
+    property var toastQueue: []
+    property int nextToastId: 0
+    property string stateError: state.error || ""
+    onStateErrorChanged: { if (privileged && stateError) notify(stateError); }
     property int total: state.trackCount || 0
         property var userMetadata: (state.user || {}).user_metadata || ({})
         property string userName: userMetadata.full_name || userMetadata.name || userMetadata.preferred_username || (state.user || {}).email || "Account"
@@ -105,13 +108,33 @@ ApplicationWindow {
         trackMenu.open();
     }
     function notify(message) {
-        toastText = message;
-        toastTimer.restart();
+        if (!message || message === "Yandex Music token required") return;
+        for (let i = 0; i < toastModel.count; ++i) {
+            if (toastModel.get(i).message === message) return;
+        }
+        if (toastQueue.indexOf(message) < 0) toastQueue.push(message);
+        fillToastSlots();
+    }
+    function fillToastSlots() {
+        while (toastModel.count < 5 && toastQueue.length)
+            toastModel.insert(0, { toastId: nextToastId++, message: toastQueue.shift() });
+    }
+    function removeToast(toastId) {
+        for (let i = 0; i < toastModel.count; ++i) {
+            if (toastModel.get(i).toastId === toastId) {
+                toastModel.remove(i);
+                break;
+            }
+        }
+        fillToastSlots();
     }
     Connections {
         target: backend
         function onToast(message) {
             appUi.notify(message);
+        }
+        function onConnectionErrorChanged() {
+            if (backend.connectionError) appUi.notify(backend.connectionError);
         }
         function onStateChanged() {
             if (!appUi.privileged) {
@@ -137,11 +160,7 @@ ApplicationWindow {
             lastError = musicPlayer.error;
         }
     }
-    Timer {
-        id: toastTimer
-        interval: 3500
-        onTriggered: appUi.toastText = ""
-    }
+    ListModel { id: toastModel }
 
     component SmallButton: Button {
         HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
@@ -1034,6 +1053,7 @@ ApplicationWindow {
                 height: parent.height - y
                 visible: appUi.rightPage === 1
                 workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
+                onNotify: function(message) { appUi.notify(message); }
             }
             RowLayout {
                 id: progress
@@ -1297,26 +1317,7 @@ ApplicationWindow {
         ui: appUi
         onSignIn: auth.open()
     }
-    Rectangle {
-        visible: appUi.privileged && (!!appUi.state.error || backend.connectionError !== "")
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: playerPanel.height + 12
-        width: Math.min(parent.width - 24, errorLabel.implicitWidth + 32)
-        height: errorLabel.implicitHeight + 20
-        color: appUi.surface2
-        border.color: "#66dc5050"
-        radius: 8
-        Text {
-            id: errorLabel
-            anchors.centerIn: parent
-            width: parent.width - 32
-            wrapMode: Text.Wrap
-            text: backend.connectionError || appUi.state.error || ""
-            color: appUi.ignoredColor
-            font.pixelSize: 12
-        }
-    }
+
     Popup {
         id: auth
         objectName: "authPopup"
@@ -1437,22 +1438,65 @@ ApplicationWindow {
             }
         }
     }
-    Rectangle {
+    Column {
+        id: toastStack
+        objectName: "notificationStack"
         z: 500
-        visible: appUi.toastText !== ""
-        y: 9
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(parent.width - 20, toastLabel.implicitWidth + 32)
-        height: toastLabel.implicitHeight + 16
-        radius: 4
-        color: appUi.surface2
-        border.color: appUi.borderColor
-        Text {
-            id: toastLabel
-            anchors.centerIn: parent
-            text: appUi.toastText
-            color: appUi.ink
-            font.pixelSize: 12
+        x: 16
+        anchors.bottom: playerPanel.top
+        anchors.bottomMargin: 16
+        spacing: 8
+        width: Math.min(appUi.width - 32, 380)
+        // Update height and row positions together so inserting at the top
+        // keeps existing cards stationary relative to the player.
+        Repeater {
+            model: toastModel
+            delegate: Rectangle {
+                id: toastCard
+                required property int toastId
+                required property string message
+                property bool open: false
+                objectName: "notificationToast"
+                // Column owns item positions; animate only the visual offset.
+                transform: Translate {
+                    x: toastCard.open ? 0 : -toastCard.width - 16
+                    Behavior on x {
+                        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                    }
+                }
+                width: Math.min(toastStack.width, toastLabel.implicitWidth + 32)
+                height: toastLabel.implicitHeight + 24
+                radius: 8
+                opacity: open ? 1 : 0
+                color: appUi.surface2
+                border.color: appUi.borderColor
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: message
+                Behavior on opacity { NumberAnimation { duration: 180 } }
+                Component.onCompleted: open = true
+                Timer {
+                    interval: 3500
+                    running: true
+                    onTriggered: {
+                        toastCard.open = false;
+                        exitTimer.start();
+                    }
+                }
+                Timer {
+                    id: exitTimer
+                    interval: 220
+                    onTriggered: appUi.removeToast(toastCard.toastId)
+                }
+                Text {
+                    id: toastLabel
+                    anchors.centerIn: parent
+                    width: Math.min(toastStack.width - 32, implicitWidth)
+                    wrapMode: Text.Wrap
+                    text: toastCard.message
+                    color: appUi.ink
+                    font.pixelSize: 12
+                }
+            }
         }
     }
 }
