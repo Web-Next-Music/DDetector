@@ -1298,7 +1298,8 @@ ApplicationWindow {
                 anchors.right: volumeSlider.left
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                glyph: "volume-2"; Accessible.name: "Mute"
+                glyph: musicPlayer.volume > 0 ? "volume-2" : "volume-off"
+                                Accessible.name: musicPlayer.volume > 0 ? "Mute" : "Unmute"
                 onClicked: musicPlayer.volume = musicPlayer.volume > 0 ? 0 : 0.7
             }
             PlayerSlider {
