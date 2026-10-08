@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,20 +24,21 @@ import (
 )
 
 type State struct {
-	Authenticated bool         `json:"authenticated"`
-	User          *User        `json:"user"`
-	AccessChecked bool         `json:"accessChecked"`
-	HasAccess     bool         `json:"hasAccess"`
-	IsBanned      bool         `json:"isBanned"`
-	LoginPending  bool         `json:"loginPending"`
-	Loading       bool         `json:"loading"`
-	Fetching      bool         `json:"fetching"`
-	Processing    bool         `json:"processing"`
-	Processed     int          `json:"processed"`
-	FoundCount    int          `json:"foundCount"`
-	Tracks        []Result     `json:"tracks"`
-	Error         string       `json:"error"`
-	LastFetch     *FetchResult `json:"lastFetch,omitempty"`
+	YandexConnected bool         `json:"yandexConnected"`
+	Authenticated   bool         `json:"authenticated"`
+	User            *User        `json:"user"`
+	AccessChecked   bool         `json:"accessChecked"`
+	HasAccess       bool         `json:"hasAccess"`
+	IsBanned        bool         `json:"isBanned"`
+	LoginPending    bool         `json:"loginPending"`
+	Loading         bool         `json:"loading"`
+	Fetching        bool         `json:"fetching"`
+	Processing      bool         `json:"processing"`
+	Processed       int          `json:"processed"`
+	FoundCount      int          `json:"foundCount"`
+	Tracks          []Result     `json:"tracks"`
+	Error           string       `json:"error"`
+	LastFetch       *FetchResult `json:"lastFetch,omitempty"`
 }
 type FetchResult struct {
 	Total         int    `json:"total"`
@@ -52,12 +55,22 @@ type Server struct {
 	mu              sync.Mutex
 	op              sync.Mutex
 	client          *Client
+	yandex          *yandexClient
+	jobCancel       context.CancelFunc
+	jobDone         chan struct{}
+	yandexFactory   func(string) *yandexClient
 	key, base, path string
 	session         *Session
 	state           State
 	login           *pendingLogin
 	detector        *Detector
 	OpenBrowser     func(string) error
+	tracksRevision  uint64
+	cachedRevision  uint64
+	cachedState     State
+	cachedTracks    []Result
+	stateJSON       []byte
+	stateETag       string
 }
 
 func RandomKey() string {
@@ -130,7 +143,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.state.LoginPending = false
 			s.state.Error = "Login expired"
 		}
-		send(w, 200, s.state)
+		s.sendState(w, r)
 		s.mu.Unlock()
 		return
 	}
@@ -140,6 +153,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/yandex/token":
+		s.setYandexToken(w, r)
 	case "/api/login":
 		s.startLogin(w, r)
 	case "/api/logout":
@@ -154,6 +169,47 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		failure(w, 404, "not found")
 	}
 }
+
+// sendState is called with mu held. User values are immutable session snapshots;
+// LastFetch is copied so even direct scalar writes invalidate the encoding.
+// Track replacements (including publishResults) change the backing slice; all
+// in-place track edits must increment tracksRevision under mu.
+func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
+	current := s.state
+	current.Tracks = nil
+	if current.LastFetch != nil {
+		fetch := *current.LastFetch
+		current.LastFetch = &fetch
+	}
+	sameTracks := len(s.state.Tracks) == len(s.cachedTracks) && (s.state.Tracks == nil) == (s.cachedTracks == nil)
+	if sameTracks && len(s.state.Tracks) > 0 {
+		sameTracks = &s.state.Tracks[0] == &s.cachedTracks[0]
+	}
+	if s.stateJSON == nil || !sameTracks || s.tracksRevision != s.cachedRevision || !reflect.DeepEqual(current, s.cachedState) {
+		encoded, err := json.Marshal(s.state)
+		if err != nil {
+			failure(w, 500, "unable to encode state")
+			return
+		}
+		s.stateJSON = append(encoded, '\n')
+		s.stateETag = fmt.Sprintf(`"%x"`, sha256.Sum256(s.stateJSON))
+		s.cachedState = current
+		s.cachedTracks = s.state.Tracks
+		s.cachedRevision = s.tracksRevision
+	}
+	w.Header().Set("ETag", s.stateETag)
+	for _, tag := range strings.Split(r.Header.Get("If-None-Match"), ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "*" || strings.TrimPrefix(tag, "W/") == s.stateETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(s.stateJSON)
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	d := json.NewDecoder(r.Body)
@@ -242,6 +298,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.session = &sess
+	s.yandex = nil
 	u := sess.User
 	s.state = State{Authenticated: true, User: &u, Tracks: []Result{}}
 	s.mu.Unlock()
@@ -299,6 +356,7 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 	}
 	allowed, banned, err := s.client.permitted(ctx, sess.Access, user.ID)
 	s.mu.Lock()
+	s.state.User = &user
 	s.state.AccessChecked = err == nil
 	s.state.HasAccess = err == nil && allowed
 	s.state.IsBanned = banned
@@ -328,14 +386,22 @@ func (s *Server) startJob(w http.ResponseWriter, fetch bool) {
 		failure(w, 401, "login required")
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	done := make(chan struct{})
+	s.jobCancel, s.jobDone = cancel, done
 	s.state.Loading = true
 	s.state.Fetching = fetch
 	s.state.Error = ""
 	s.mu.Unlock()
 	go func() {
-		defer s.op.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+		defer func() {
+			cancel()
+			s.mu.Lock()
+			s.jobCancel, s.jobDone = nil, nil
+			s.op.Unlock()
+			close(done)
+			s.mu.Unlock()
+		}()
 		err := s.load(ctx, fetch)
 		s.mu.Lock()
 		s.state.Loading = false
@@ -353,27 +419,37 @@ func (s *Server) load(ctx context.Context, fetch bool) error {
 	if err != nil {
 		return err
 	}
-	if fetch {
-		var result FetchResult
-		if err = s.client.request(ctx, "POST", "/functions/v1/ddetector-fetch", token, nil, nil, &result); err != nil {
-			return err
-		}
-		if result.Error != "" {
-			return errors.New("Fetch function reported an error")
-		}
-		s.mu.Lock()
-		s.state.LastFetch = &result
-		s.mu.Unlock()
+	s.mu.Lock()
+	c := s.yandex
+	uid := s.session.User.ID
+	s.mu.Unlock()
+	if c == nil {
+		return errors.New("Yandex Music token required")
 	}
-	tracks, err := rows[Track](ctx, s.client, "ddetector_tracks", "id,title,artist,cover,added_at", "added_at.desc,id.asc", token)
+	cachePath := s.path + ".yandex-" + c.uid + ".tracks-cache.json"
+	cache, cacheErr := readTracksCache(cachePath, uid, c.base+"/users/"+c.uid)
+	if cacheErr != nil {
+		log.Print("Yandex cache unavailable; rebuilding")
+	}
+	s.publishResults(cache.Tracks)
+	cached := map[int64]Result{}
+	for _, r := range cache.Tracks {
+		cached[r.ID] = r
+	}
+	tracks, err := rows[Track](ctx, s.client, "ddetector_tracks", "id,added_at", "added_at.desc,id.asc", token)
 	if err != nil {
 		return err
 	}
-	type entry struct {
-		ID     int64   `json:"track_id"`
-		Lyrics []Lyric `json:"lyrics"`
+	missing := []string{}
+	for _, t := range tracks {
+		if t.ID <= 0 {
+			return errors.New("invalid Supabase library track ID")
+		}
+		if _, ok := cached[t.ID]; !ok || fetch {
+			missing = append(missing, strconv.FormatInt(t.ID, 10))
+		}
 	}
-	lyrics, err := rows[entry](ctx, s.client, "ddetector_lyrics_cache", "track_id,lyrics", "track_id.asc", token)
+	metadata, err := c.metadata(ctx, missing)
 	if err != nil {
 		return err
 	}
@@ -383,36 +459,52 @@ func (s *Server) load(ctx context.Context, fetch bool) error {
 	if err != nil {
 		return err
 	}
-	lm := map[int64][]Lyric{}
 	im := map[int64]bool{}
-	for _, l := range lyrics {
-		lm[l.ID] = l.Lyrics
+	for _, v := range ignored {
+		im[v.ID] = true
 	}
-	for _, i := range ignored {
-		im[i.ID] = true
-	}
-	s.mu.Lock()
-	s.state.Tracks = make([]Result, len(tracks))
-	s.state.Processed = 0
-	s.state.FoundCount = 0
-	s.state.Processing = true
-	for i, t := range tracks {
-		s.state.Tracks[i] = Result{Track: t, Status: "pending", Ignored: im[t.ID], Lines: []Line{}}
-	}
-	s.mu.Unlock()
-	for i, t := range tracks {
-		if err = ctx.Err(); err != nil {
+	results := []Result{}
+	pending := []int{}
+	stats := FetchResult{Total: len(tracks)}
+	present := map[int64]bool{}
+	for _, member := range tracks {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		result := s.detector.Process(t, lm[t.ID], im[t.ID])
-		s.mu.Lock()
-		s.state.Tracks[i] = result
-		s.state.Processed++
-		if result.Status == "found" {
-			s.state.FoundCount++
+		id := member.ID
+		present[id] = true
+		old, ok := cached[id]
+		t := old.Track
+		if fresh, exists := metadata[id]; exists {
+			t = fresh
 		}
-		s.mu.Unlock()
+		if t.ID == 0 {
+			return errors.New("Yandex metadata missing for library track")
+		}
+		t.AddedAt = member.AddedAt
+		r := old
+		r.Track = t
+		r.Ignored = im[id]
+		if !ok {
+			r = Result{Track: t, Ignored: im[id], Status: "pending"}
+			pending = append(pending, len(results))
+			stats.Added++
+		} else if needsLyricsAcquisition(r, cache) {
+			pending = append(pending, len(results))
+		}
+		results = append(results, r)
 	}
+	for _, r := range cache.Tracks {
+		if !present[r.ID] {
+			stats.Removed++
+		}
+	}
+	if err := s.processLyrics(ctx, c, cachePath, cache, results, pending, &stats); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.state.LastFetch = &stats
+	s.mu.Unlock()
 	return nil
 }
 func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
@@ -462,7 +554,10 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	for i := range s.state.Tracks {
 		if s.state.Tracks[i].ID == in.ID {
-			s.state.Tracks[i].Ignored = *in.Ignored
+			if s.state.Tracks[i].Ignored != *in.Ignored {
+				s.state.Tracks[i].Ignored = *in.Ignored
+				s.tracksRevision++
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -484,6 +579,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.session = nil
+	s.yandex = nil
 	s.login = nil
 	s.state = State{Tracks: []Result{}}
 	s.mu.Unlock()

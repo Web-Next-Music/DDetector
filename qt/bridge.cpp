@@ -1,6 +1,6 @@
 #include "bridge.h"
 #include <QClipboard>
-#include <QFile>
+
 
 #include <QSet>
 #include <QCollator>
@@ -53,22 +53,26 @@ void TrackModel::sync(const QList<QJsonObject> &rows) {
     }
     if (oldCount != count()) emit countChanged();
 }
-Bridge::Bridge(const QUrl &base, const QByteArray &key, bool demo, QObject *parent)
-    : QObject(parent), m_base(base), m_key(key), m_demo(demo),
-      m_settings(demo ? "DDetectorDemo" : "DDetector", "Desktop"), m_tracks(this), m_cards(this) {
-    if (demo) {
-        QFile file(":/assets/demo.json");
-        if (file.open(QIODevice::ReadOnly)) acceptState(QJsonDocument::fromJson(file.readAll()).object());
-        return;
-    }
+Bridge::Bridge(const QUrl &base, const QByteArray &key, QObject *parent, Config *config)
+    : QObject(parent), m_base(base), m_key(key),
+      m_config(config ? config : new Config(this)), m_tracks(this), m_cards(this) {
+    m_cachedHideIgnored = hideIgnored();
+    connect(m_config, &Config::settingsChanged, this, [this] {
+        emit settingsChanged();
+        syncYandexToken();
+        if (m_cachedHideIgnored != hideIgnored()) {
+            m_cachedHideIgnored = hideIgnored();
+            rebuild();
+        }
+    });
+
     connect(&m_poll, &QTimer::timeout, this, [this] { request("/api/state", {}, true); });
     m_poll.start(750);
     request("/api/state", {}, true);
 }
 
 void Bridge::setHideIgnored(bool value) {
-    if (value == hideIgnored()) return;
-    m_settings.setValue("hideIgnored", value); emit settingsChanged(); rebuild();
+    m_config->setHideIgnored(value);
 }
 
 void Bridge::setSearch(const QString &value) { if (m_search != value) { m_search = value; rebuild(); } }
@@ -77,16 +81,28 @@ void Bridge::setConnectionError(const QString &error) {
     if (m_connectionError != error) { m_connectionError = error; emit connectionErrorChanged(); }
 }
 void Bridge::request(const QString &path, const QJsonObject &body, bool get) {
-    if (m_demo || (get && m_polling)) return;
+    if (get && m_polling) return;
     if (get) m_polling = true;
     QNetworkRequest req(m_base.resolved(QUrl(path)));
     req.setRawHeader("Authorization", "Bearer " + m_key);
+    const bool forced = get && m_forceRefresh;
+    if (get) {
+        m_forceRefresh = false;
+        if (!forced && !m_stateETag.isEmpty()) req.setRawHeader("If-None-Match", m_stateETag);
+    }
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     req.setTransferTimeout(100000);
     auto reply = get ? m_network.get(req) : m_network.post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, get, path] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, get, path, body] {
         if (get) m_polling = false;
+        if (get && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304
+                && reply->error() == QNetworkReply::NoError && !m_stateETag.isEmpty()) {
+            setConnectionError({});
+            reply->deleteLater();
+            if (m_forceRefresh) request("/api/state", {}, true);
+            return;
+        }
         const auto bytes = reply->readAll();
         const auto object = QJsonDocument::fromJson(bytes).object();
         if (reply->error() != QNetworkReply::NoError) {
@@ -97,20 +113,44 @@ void Bridge::request(const QString &path, const QJsonObject &body, bool get) {
         } else if (get) {
             if (!object.contains("authenticated") || !object.value("tracks").isArray())
                 setConnectionError("Invalid backend state response");
-            else { setConnectionError({}); acceptState(object); }
+            else {
+                m_stateETag = reply->rawHeader("ETag");
+                setConnectionError({}); acceptState(object);
+            }
         } else {
             if (path == "/api/login" && !object.value("browser_opened").toBool())
                 openBrowser(QUrl(object.value("authorization_url").toString()));
-            request("/api/state", {}, true);
+        }
+        if (path == "/api/logout") m_signingOut = false;
+        if (path == "/api/yandex/token") {
+            m_yandexSyncing = false;
+            const auto sentToken = body.value("access_token").toString();
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 409) {
+                m_yandexAttemptedToken.clear();
+                m_yandexAccount.clear();
+                QTimer::singleShot(1000, this, &Bridge::syncYandexToken);
+            } else {
+                if (reply->error() == QNetworkReply::NoError && !sentToken.isEmpty()
+                    && sentToken == m_config->musicToken() && m_state.value("authenticated").toBool()
+                    && m_state.value("hasAccess").toBool()) request("/api/load");
+                syncYandexToken();
+            }
         }
         reply->deleteLater();
+        // Failed POSTs can also change state (for example access revocation).
+        if (!get) m_forceRefresh = true;
+        if (m_forceRefresh) request("/api/state", {}, true);
     });
 }
 void Bridge::acceptState(QJsonObject state) {
+    if (m_signingOut) {
+        state.insert("authenticated", false);
+        state.insert("hasAccess", false);
+    }
     auto source = state.take("tracks").toArray();
     // Explicit allowlist: neither backend session tokens nor arbitrary fields reach QML.
     QJsonObject safe;
-    for (const auto &name : {"authenticated", "user", "accessChecked", "hasAccess", "isBanned", "loginPending", "loading", "fetching", "processing", "processed", "foundCount", "error", "lastFetch"}) {
+    for (const auto &name : {"authenticated", "yandexConnected", "user", "accessChecked", "hasAccess", "isBanned", "loginPending", "loading", "fetching", "processing", "processed", "foundCount", "error", "lastFetch"}) {
         if (state.contains(name)) safe.insert(name, state.value(name));
     }
     if (safe.value("user").isObject()) {
@@ -124,11 +164,28 @@ void Bridge::acceptState(QJsonObject state) {
                                             const auto value = metadata.value(name).toString();
                                             if (QString(name) == "avatar_url" || QString(name) == "picture") {
                                                 const QUrl url(value);
-                                                if (!url.isValid() || url.scheme() != "https" || !url.userInfo().isEmpty()) continue;
+                                                if (!url.isValid() || url.scheme() != "https" || url.host().isEmpty() || !url.userInfo().isEmpty()) continue;
                                             }
                                             publicMetadata.insert(name, value);
                                         }
                 publicUser.insert("user_metadata", publicMetadata);
+        QJsonArray publicIdentities;
+        for (const auto &value : user.value("identities").toArray()) {
+            const auto identity = value.toObject();
+            QJsonObject publicIdentity, publicData;
+            if (identity.value("provider").isString())
+                publicIdentity.insert("provider", identity.value("provider"));
+            const auto data = identity.value("identity_data").toObject();
+            for (const auto &name : {"avatar_url", "picture"}) {
+                if (!data.value(name).isString()) continue;
+                const QUrl url(data.value(name).toString());
+                if (url.isValid() && url.scheme() == "https" && !url.host().isEmpty() && url.userInfo().isEmpty())
+                    publicData.insert(name, data.value(name));
+            }
+            publicIdentity.insert("identity_data", publicData);
+            publicIdentities.append(publicIdentity);
+        }
+        publicUser.insert("identities", publicIdentities);
         safe.insert("user", publicUser);
     }
     if (!safe.value("authenticated").toBool() || !safe.value("hasAccess").toBool() || safe.value("isBanned").toBool()) source = {};
@@ -156,6 +213,7 @@ void Bridge::acceptState(QJsonObject state) {
     m_source = source;
     if (safe != m_state) { m_state = safe; emit stateChanged(); }
     if (changed) rebuild();
+    syncYandexToken();
 }
 void Bridge::rebuild() {
     QList<QJsonObject> tracks, cards;
@@ -183,23 +241,44 @@ void Bridge::rebuild() {
     m_tracks.sync(tracks); m_cards.sync(cards);
 }
 void Bridge::login(const QString &provider) {
-    if (m_demo || !m_pendingProvider.isEmpty() || m_state.value("loginPending").toBool()) return;
+    if (!m_pendingProvider.isEmpty() || m_state.value("loginPending").toBool()) return;
         if (provider == "github" || provider == "discord" || provider == "spotify") {
             m_pendingProvider = provider; emit pendingProviderChanged();
             request("/api/login", {{"provider", provider}});
         }
 }
-void Bridge::logout() { request("/api/logout"); }
+void Bridge::syncYandexToken() {
+    if (m_yandexSyncing) return;
+    const bool allowed = m_state.value("authenticated").toBool() && m_state.value("hasAccess").toBool()
+        && !m_state.value("isBanned").toBool();
+    const QString account = allowed ? m_state.value("user").toObject().value("id").toString() : QString();
+    const QString token = allowed ? m_config->musicToken() : QString();
+    if (token.isEmpty() && m_yandexAttemptedToken.isEmpty()) {
+        m_yandexAccount = account;
+        return;
+    }
+    if (token == m_yandexAttemptedToken && account == m_yandexAccount) return;
+    m_yandexAttemptedToken = token;
+    m_yandexAccount = account;
+    m_yandexSyncing = true;
+    request("/api/yandex/token", {{"access_token", token}});
+}
+void Bridge::logout() {
+
+    m_signingOut = true;
+    // Stop local playback through stateChanged immediately, without waiting for the network.
+    m_state.insert("authenticated", false);
+    m_state.insert("hasAccess", false);
+    m_source = {};
+    rebuild();
+    emit stateChanged();
+    request("/api/logout");
+    syncYandexToken();
+}
 void Bridge::load() { request("/api/load"); }
 void Bridge::fetch() { request("/api/fetch"); }
 void Bridge::ignore(const QString &id, bool ignored) {
-    if (m_demo) {
-        for (int i = 0; i < m_source.size(); ++i) {
-            auto row = m_source[i].toObject();
-            if (trackId(row) == id) { row.insert("ignored", ignored); m_source[i] = row; rebuild(); return; }
-        }
-        return;
-    }
+
     bool ok = false; const qint64 number = id.toLongLong(&ok);
     if (ok && number > 0) request("/api/ignore", {{"track_id", number}, {"ignored", ignored}});
 }

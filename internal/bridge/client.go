@@ -74,23 +74,29 @@ func (c *Client) request(ctx context.Context, method, path, token string, body a
 	return nil
 }
 func rows[T any](ctx context.Context, c *Client, table, columns, order, token string) ([]T, error) {
+	return filteredRows[T](ctx, c, table, columns, order, token, "")
+}
+func filteredRows[T any](ctx context.Context, c *Client, table, columns, order, token, filter string) ([]T, error) {
 	all := []T{}
-	for offset := 0; ; offset += 1000 {
+	for offset := 0; ; {
 		var batch []T
-		path := "/rest/v1/" + table + "?select=" + url.QueryEscape(columns) + "&order=" + url.QueryEscape(order)
+		path := "/rest/v1/" + table + "?select=" + url.QueryEscape(columns) + "&order=" + url.QueryEscape(order) + filter
 		err := c.request(ctx, "GET", path, token, nil, map[string]string{"Range-Unit": "items", "Range": fmt.Sprintf("%d-%d", offset, offset+999)}, &batch)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, batch...)
-		if len(batch) < 1000 {
+		if len(batch) == 0 {
 			return all, nil
 		}
+		// PostgREST may cap pages below the requested range size.
+		offset += len(batch)
 		if offset >= 10000000 {
 			return nil, fmt.Errorf("pagination limit exceeded")
 		}
 	}
 }
+
 func (c *Client) permitted(ctx context.Context, token, uid string) (bool, bool, error) {
 	var bans, access []struct {
 		UserID string `json:"user_id"`

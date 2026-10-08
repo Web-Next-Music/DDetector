@@ -3,7 +3,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
-#include <QSettings>
+#include "config.h"
 #include <QTimer>
 
 class TrackModel final : public QAbstractListModel {
@@ -33,11 +33,11 @@ class Bridge final : public QObject {
     Q_PROPERTY(QString connectionError READ connectionError NOTIFY connectionErrorChanged)
         Q_PROPERTY(QString pendingProvider READ pendingProvider NOTIFY pendingProviderChanged)
 public:
-    Bridge(const QUrl &base, const QByteArray &key, bool demo, QObject *parent = nullptr);
+    Bridge(const QUrl &base, const QByteArray &key, QObject *parent = nullptr, Config *config = nullptr);
     QVariantMap state() const { return m_state.toVariantMap(); }
     TrackModel *tracks() { return &m_tracks; }
     TrackModel *cards() { return &m_cards; }
-    bool hideIgnored() const { return m_settings.value("hideIgnored", false).toBool(); }
+    bool hideIgnored() const { return m_config->hideIgnored(); }
 
     QString connectionError() const { return m_connectionError; }
         QString pendingProvider() const { return m_pendingProvider; }
@@ -64,16 +64,23 @@ private:
     void acceptState(QJsonObject state);
     void rebuild();
     void setConnectionError(const QString &error);
+        void syncYandexToken();
     QNetworkAccessManager m_network;
     QUrl m_base;
     QByteArray m_key; // Never registered with QML or written to QSettings/logs.
-    bool m_demo = false;
+
     bool m_polling = false;
-    QSettings m_settings;
+    bool m_forceRefresh = false;
+    bool m_cachedHideIgnored = false;
+    QByteArray m_stateETag;
+    Config *m_config;
     QTimer m_poll;
     QJsonObject m_state;
     QJsonArray m_source;
     TrackModel m_tracks, m_cards;
     QString m_search, m_connectionError, m_pendingProvider;
+        QString m_yandexAttemptedToken, m_yandexAccount;
+        bool m_yandexSyncing = false;
+            bool m_signingOut = false;
     int m_sort = 0;
 };

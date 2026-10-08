@@ -42,17 +42,17 @@ Rectangle {
             radius: 6
             color: root.ui.surface2
             clip: true
-            Text {
+            Image {
                 anchors.centerIn: parent
-                text: "♪"
-                color: root.ui.borderColor
-                font.pixelSize: 15
+                width: 15; height: 15
+                source: "qrc:/assets/track-placeholder.svg"
                 visible: cover.status !== Image.Ready
             }
             Image {
                 id: cover
                 anchors.fill: parent
-                source: root.row.cover || ""
+                source: root.row.cover ? "image://trackcovers/" + encodeURIComponent(root.row.cover) : ""
+                                sourceSize: Qt.size(76, 76)
                 asynchronous: true
                 fillMode: Image.PreserveAspectCrop
             }

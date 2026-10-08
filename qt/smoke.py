@@ -17,7 +17,7 @@ parser.add_argument("--executable", type=Path, default=Path(__file__).resolve().
 parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parent / "build/screenshots")
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
-fixture = json.loads((Path(__file__).resolve().parent / "assets/demo.json").read_text())
+fixture = json.loads((Path(__file__).resolve().parent / "test-fixtures/state.json").read_text())
 key = secrets.token_urlsafe(32)
 state = copy.deepcopy(fixture)
 request_count = 0
@@ -43,6 +43,15 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software", XDG_CONFIG_HOME=str(args.output / "settings"))
 try:
+    for options, message in [
+        (["--demo"], "Unknown option 'demo'"),
+        ([], "Launch via the Go backend"),
+    ]:
+        result = subprocess.run([str(args.executable.resolve()), *options],
+                                env=env, capture_output=True, text=True, timeout=12)
+        assert result.returncode != 0 and message in result.stderr, result.stderr
+        assert request_count == 0, "Rejected launch contacted the backend"
+    print("PASS launch validation: removed flag and missing backend credentials rejected")
     scenarios = [
         ("desktop", 1200, 800, {}),
         ("mobile", 390, 740, {}),

@@ -8,10 +8,16 @@ import (
 	"time"
 )
 
+type Identity struct {
+	Provider string         `json:"provider"`
+	Data     map[string]any `json:"identity_data,omitempty"`
+}
+
 type User struct {
-	ID       string         `json:"id"`
-	Email    string         `json:"email,omitempty"`
-	Metadata map[string]any `json:"user_metadata,omitempty"`
+	Identities []Identity     `json:"identities,omitempty"`
+	ID         string         `json:"id"`
+	Email      string         `json:"email,omitempty"`
+	Metadata   map[string]any `json:"user_metadata,omitempty"`
 }
 type Session struct {
 	Access    string `json:"access_token"`

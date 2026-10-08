@@ -2,7 +2,7 @@
 
 Native C++/QML application; **no WebView, WebEngine, HTML page, or JavaScript HTTP
 client**. All implementation and generated build/screenshot files are under `qt/`.
-The source website and Go code are not modified.
+The source website is not modified; the Go backend owns local library synchronization.
 
 ## Build and run
 
@@ -34,17 +34,18 @@ registered in QML, saved in QSettings, or included in application logging.
 Application-login OAuth access/refresh tokens stay in Go. Go normally opens the provider login in
 the system browser; C++ handles the `browser_opened:false` fallback without
 forwarding the authorization URL to QML. External site links and Yandex searches
-also use the system browser. Covers load from their backend-provided URLs via
-Qt's native image loader, not with the bridge bearer key.
+also use the system browser. Covers use an asynchronous native image provider and a
+128 MiB disk cache under Qt's CacheLocation/track-covers. OAuth and bridge credentials
+are never sent to the public Yandex artwork CDN.
 
 ## Standalone Yandex Music player
 
 The bottom DDetector panel is native QML, styled after Spotify (not embedded
 website components), and always uses `playerSurface: #0c0c0e`. In Settings, enter
-a Yandex Music OAuth token and select **Apply token**. Controls and the green
-**Play** context-menu action stay disabled until `/account/status` succeeds.
-The password field clears after applying; the token stays in C++ memory only
-and must be entered again after restart. **Disconnect** clears it and playback.
+a Yandex Music OAuth token; it applies automatically after an 800ms debounce or Enter.
+The panel is hidden until app login/access and token validation succeed. Signing out
+immediately stops playback and hides the panel; clearing the token does the same.
+The token persists in the private Config.json described below.
 
 Track metadata and download information are fetched with OAuth from
 `api.music.yandex.net`; audio is played locally using Qt Multimedia. The token
@@ -53,6 +54,26 @@ remote-player controls, or shared playback sessions. DDetector is a local player
 name, not a registered Ynison device. Previous/next traverse tracks played in
 this session. Playback availability depends on the account and track rights.
 Live authenticated streaming requires manual validation with a real token.
+
+## Local Yandex library and lyrics
+
+The Go backend retrieves the complete track ID list and added_at timestamps from
+Supabase's ddetector_tracks with pagination. Metadata comes directly from
+Yandex Music using the configured OAuth token, supplied through the authenticated
+loopback bridge. Lyrics use public LRCLIB (syncedLyrics preferred, plainLyrics fallback),
+then signed Yandex LRC/TEXT and supplement endpoints if needed. LRCLIB receives the
+track title and artist and sees the client IP, but receives no OAuth credentials. Supabase also handles application login/access and ignore preferences,
+but supplies no track titles, covers or lyrics. This is not an entirely offline application.
+
+Cache: `<session-path>.yandex-<verified-Yandex-UID>.tracks-cache.json`, private atomic
+0600 writes, scoped to app and Yandex accounts. Cached results appear before library
+refresh; only unseen tracks need metadata/lyrics and detection. Confirmed missing lyrics
+are cached too; transient errors are retried. Removed library IDs are pruned. Fetch refreshes
+metadata, but reuses successful cached lyrics. LRC lyrics preserve timestamps for
+click-to-play/seek; plain lyrics have no timestamps. First-run acquisition
+requires network and is checkpointed as tracks finish. Legacy lyrics are upgraded once
+through LRCLIB in the background, keeping old results visible and checkpointing per-track
+source versions. To force another full rebuild, remove that account's cache while stopped.
 
 ## UI and behavior
 
@@ -99,20 +120,26 @@ Live authenticated streaming requires manual validation with a real token.
   with the bearer key. Polls are serialized at 750ms; changed tracks are reconciled
   by ID using insert/move/remove/dataChanged, never whole-model resets. Unchanged
   state/model data does not emit change notifications.
-- hideIgnored uses QSettings. Demo uses a separate settings namespace.
+- Settings use `appConfig`, a shared QObject storing `musicToken`, `hideIgnored`, `hideWindowControls`, and
+  `volume` in `QStandardPaths::AppConfigLocation/Config.json` (normally
+  `~/.config/DDetector/DDetector/Config.json` on Linux). The Yandex token is
+  plaintext, not encrypted: the directory is owner-only (0700), and atomic
+  QSaveFile writes create an owner-readable/writable file (0600). Keep backups
+  private. Safe persistence errors are exposed as `appConfig.error`; malformed
+  configurations are preserved and block writes until repaired and the app restarted.
+  Legacy real-app QSettings hideIgnored is migrated only when no JSON file exists.
 
-## Explicit demo and smoke validation
+  After app login/access verification, the saved token is applied to the player and
+  local library backend automatically. Subsequent token changes update both.
 
-The demo is enabled **only** by `--demo`; it loads `assets/demo.json`, makes no
-backend requests, and cannot grant or bypass real backend privileges. Ignore
-changes are local in demo; login/load/fetch/logout are no-ops there.
+## Smoke validation
+
+The application always requires a loopback backend URL and private bearer key;
+launch it through the Go backend. There is no standalone fixture launch mode.
+UI tests and the smoke harness use `test-fixtures/state.json` with mock loopback
+backends. This fixture is bundled only into the test executable, not the application.
 
 ```sh
-./qt/build/ddetector-qt --demo
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ./qt/build/ddetector-qt \
-  --demo --smoke-test --screenshot qt/build/desktop.png
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ./qt/build/ddetector-qt \
-  --demo --width 390 --height 740 --smoke-test --screenshot qt/build/mobile.png
 python3 qt/smoke.py
 ```
 
@@ -128,7 +155,7 @@ banned, access-checking, error, loading, and empty views in
 
 Qt Test covers ID-preserving model reconciliation, unchanged polling, all bearer
 endpoints, token-field exclusion, privilege-state clearing, filter/sort semantics,
-QSettings, native QML loading, fixed dark palette/mobile/full-lyrics/selection/clipboard,
+JSON persistence/permissions/malformed-file protection, native QML loading, fixed dark palette/mobile/full-lyrics/selection/clipboard,
 direct login/auth modal, account menu, Settings/hide-ignored interactions,
 public metadata filtering (including rejection of local-file avatar URLs),
 and duplicate-provider-login prevention. To capture interaction

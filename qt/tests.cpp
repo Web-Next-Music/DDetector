@@ -1,12 +1,16 @@
 #include "bridge.h"
 #include "player.h"
+#include "avatarimage.h"
 #include <QAbstractItemModelTester>
 #include <QClipboard>
 #include <QFile>
+#include <QSettings>
+#include <sys/stat.h>
 #include <QDirIterator>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QJsonDocument>
+#include <QCryptographicHash>
 #include <QPersistentModelIndex>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -30,10 +34,12 @@ class MockBackend final : public QTcpServer {
 public:
     QJsonObject state;
     QList<QByteArray> requests;
+    int notModified = 0;
+    int getDelayMs = 0;
     MockBackend() {
-        QFile demo(":/assets/demo.json");
-                if (!demo.open(QIODevice::ReadOnly)) qFatal("Bundled fixture is missing");
-        state = QJsonDocument::fromJson(demo.readAll()).object();
+        QFile fixture(":/test-fixtures/state.json");
+        if (!fixture.open(QIODevice::ReadOnly)) qFatal("Test fixture is missing");
+        state = QJsonDocument::fromJson(fixture.readAll()).object();
         listen(QHostAddress::LocalHost, 0);
         connect(this, &QTcpServer::newConnection, this, [this] {
             while (hasPendingConnections()) {
@@ -49,9 +55,29 @@ public:
                     if (buffer->size() < headers + 4 + length) return;
                     requests.append(*buffer);
                     const bool get = buffer->startsWith("GET /api/state ");
+                    if (buffer->startsWith("POST /api/ignore ")) {
+                        const auto body = QJsonDocument::fromJson(buffer->mid(headers + 4, length)).object();
+                        auto tracks = state.value("tracks").toArray();
+                        for (int i = 0; i < tracks.size(); ++i) {
+                            auto row = tracks[i].toObject();
+                            if (row.value("id").toInteger() == body.value("track_id").toInteger()) {
+                                row.insert("ignored", body.value("ignored"));
+                                tracks[i] = row;
+                            }
+                        }
+                        state.insert("tracks", tracks);
+                    }
                     auto response = QJsonDocument(get ? state : QJsonObject{{"ok", true}, {"browser_opened", true}}).toJson(QJsonDocument::Compact);
-                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + QByteArray::number(response.size()) + "\r\n\r\n" + response);
-                    socket->disconnectFromHost();
+                    const QByteArray tag = "\"" + QCryptographicHash::hash(response, QCryptographicHash::Sha256).toHex() + "\"";
+                    const bool unchanged = get && buffer->contains("If-None-Match: " + tag + "\r\n");
+                    if (unchanged) { ++notModified; response.clear(); }
+                    const QByteArray wire = QByteArray(unchanged ? "HTTP/1.1 304 Not Modified\r\n" : "HTTP/1.1 200 OK\r\n")
+                        + (get ? "ETag: " + tag + "\r\n" : QByteArray())
+                        + "Content-Type: application/json\r\nConnection: close\r\nContent-Length: " + QByteArray::number(response.size()) + "\r\n\r\n" + response;
+                    QTimer::singleShot(get ? getDelayMs : 0, socket, [socket, wire] {
+                        socket->write(wire);
+                        socket->disconnectFromHost();
+                    });
                 });
                 connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
             }
@@ -69,10 +95,79 @@ private slots:
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
         QQuickStyle::setStyle("Basic");
+        qmlRegisterType<AvatarImage>("DDetector", 1, 0, "AvatarImage");
         QDirIterator fonts(":/assets", {"*.ttf", "*.otf"}, QDir::Files);
         while (fonts.hasNext()) QFontDatabase::addApplicationFont(fonts.next());
         QFont font("DDetector Nunito"); font.setWeight(QFont::Bold); font.setPixelSize(13);
         QGuiApplication::setFont(font);
+    }
+    void localYandexTokenLifecycle() {
+        MockBackend server;
+        server.state.insert("authenticated", false);
+        server.state.insert("hasAccess", false);
+        Config config{QString()};
+        config.setMusicToken("test-yandex-token");
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_VERIFY(!server.requests.isEmpty());
+        const auto countPath = [&server](const QByteArray &path) {
+            int count = 0;
+            for (const auto &request : server.requests) if (request.startsWith(path)) ++count;
+            return count;
+        };
+        QCOMPARE(countPath("POST /api/yandex/token "), 0);
+        server.state.insert("authenticated", true);
+        server.state.insert("hasAccess", true);
+        QTRY_COMPARE(countPath("POST /api/yandex/token "), 1);
+        QTRY_COMPARE(countPath("POST /api/load "), 1);
+        for (const auto &request : server.requests) {
+            if (request.startsWith("POST /api/yandex/token ")) {
+                QVERIFY(request.contains("\"access_token\":\"test-yandex-token\""));
+                QVERIFY(request.contains("Authorization: Bearer test-random-key"));
+            }
+        }
+        server.state.insert("authenticated", false);
+        server.state.insert("hasAccess", false);
+        bridge.logout();
+        QVERIFY(!bridge.state().value("authenticated").toBool());
+        QCOMPARE(bridge.tracks()->count(), 0);
+        QTRY_COMPARE(countPath("POST /api/yandex/token "), 2);
+        QVERIFY(config.musicToken() == "test-yandex-token");
+    }
+    void configPersistence() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.path() + "/private/Config.json";
+        Config config(path);
+        QSignalSpy changed(&config, &Config::settingsChanged);
+        config.setMusicToken("test-private-token");
+        config.setHideIgnored(true);
+        QVERIFY(!config.hideWindowControls());
+        config.setHideWindowControls(true);
+        config.setVolume(0.75);
+        QVERIFY(config.error().isEmpty());
+        QCOMPARE(changed.count(), 4);
+        Config restored(path);
+        QCOMPARE(restored.musicToken(), QString("test-private-token"));
+        QVERIFY(restored.hideIgnored());
+        QVERIFY(restored.hideWindowControls());
+        QCOMPARE(restored.volume(), 0.75);
+        struct stat info {};
+        QVERIFY(::stat(QFile::encodeName(path).constData(), &info) == 0);
+        QCOMPARE(info.st_mode & 0777, mode_t(0600));
+        QVERIFY(::stat(QFile::encodeName(directory.path() + "/private").constData(), &info) == 0);
+        QCOMPARE(info.st_mode & 0777, mode_t(0700));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        const QByteArray invalid = "{\"musicToken\":\"test-private-token\",\"volume\":\"bad\"}";
+        QCOMPARE(file.write(invalid), invalid.size()); file.close();
+        Config broken(path);
+        QVERIFY(!broken.error().isEmpty());
+        QVERIFY(!broken.error().contains("test-private-token"));
+        QVERIFY(broken.musicToken().isEmpty());
+        broken.setMusicToken("replacement");
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), invalid); file.close();
+        Config memory{QString()};
+        memory.setMusicToken("memory-only"); QVERIFY(memory.error().isEmpty());
     }
     void modelDiffPreservesIndexes() {
         TrackModel model;
@@ -91,7 +186,10 @@ private slots:
         QCOMPARE(persistent.row(), 0); QCOMPARE(model.count(), 1);
     }
     void filterSortAndSettings() {
-        Bridge bridge({}, {}, true);
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
         bridge.setHideIgnored(false);
         QCOMPARE(bridge.tracks()->count(), 6); QCOMPARE(bridge.cards()->count(), 3);
         bridge.setSearch("demo artist");
@@ -103,14 +201,30 @@ private slots:
         QCOMPARE(bridge.tracks()->count(), 1);
         bridge.setSearch(""); bridge.setHideIgnored(true);
         QCOMPARE(bridge.tracks()->count(), 5); QCOMPARE(bridge.cards()->count(), 2);
-        Bridge restored({}, {}, true);
+        Bridge restored(server.url(), "test-random-key", nullptr, &config);
         QVERIFY(restored.hideIgnored());
         QVERIFY(bridge.metaObject()->indexOfProperty("theme") < 0);
         bridge.setHideIgnored(false);
         bridge.setSort(1);
         QCOMPARE(bridge.tracks()->indexOf("101"), 0);
         QCOMPARE(bridge.tracks()->data(bridge.tracks()->index(0), Qt::UserRole).toMap().value("date").toString(), QString("10/08/2026"));
-        bridge.ignore("101", true); QCOMPARE(bridge.cards()->data(bridge.cards()->index(0), Qt::UserRole).toMap().value("ignored").toBool(), true);
+        bridge.ignore("101", true); QTRY_COMPARE(bridge.cards()->data(bridge.cards()->index(0), Qt::UserRole).toMap().value("ignored").toBool(), true);
+    }
+    void configOnlyRebuildsForHideIgnored() {
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
+        QCOMPARE(bridge.tracks()->count(), 6);
+        // Clear the public model as a probe: rebuilding would restore source rows.
+        bridge.tracks()->sync({});
+        config.setVolume(0.42);
+        config.setMusicToken("test-token");
+        QCOMPARE(bridge.tracks()->count(), 0);
+        config.setHideIgnored(true);
+        QCOMPARE(bridge.tracks()->count(), 5);
+        config.setHideIgnored(false);
+        QCOMPARE(bridge.tracks()->count(), 6);
     }
     void bearerPollingAndAccess() {
         MockBackend server;
@@ -118,8 +232,14 @@ private slots:
         auto user = server.state.value("user").toObject();
                 user.insert("refresh_token", "must-not-reach-qml");
                 user.insert("user_metadata", QJsonObject{{"full_name", "Test User"}, {"picture", "https://example.com/avatar.png"}, {"avatar_url", "file:///etc/passwd"}, {"secret", "must-not-reach-qml"}});
+                user.insert("identities", QJsonArray{
+                    QJsonObject{{"provider", "discord"}, {"access_token", "secret"}, {"identity_data", QJsonObject{
+                        {"avatar_url", "https://example.com/identity.png"}, {"picture", "https://user:password@example.com/avatar"}, {"email", "private"}}}},
+                    QJsonObject{{"provider", "github"}, {"identity_data", QJsonObject{{"picture", "file:///etc/passwd"}}}}
+                });
                 server.state.insert("user", user);
-        Bridge bridge(server.url(), "test-random-key", false);
+        Config config{QString()};
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
         bridge.setHideIgnored(false);
         QTRY_COMPARE(bridge.tracks()->count(), 6);
         QVERIFY(!bridge.state().contains("access_token"));
@@ -129,6 +249,15 @@ private slots:
                 QCOMPARE(metadata.value("picture").toString(), QString("https://example.com/avatar.png"));
                 QVERIFY(!metadata.contains("avatar_url"));
                 QVERIFY(!metadata.contains("secret"));
+                const auto identities = bridge.state().value("user").toMap().value("identities").toList();
+                QCOMPARE(identities.size(), 2);
+                const auto identity = identities.first().toMap();
+                QCOMPARE(identity.value("provider").toString(), QString("discord"));
+                QVERIFY(!identity.contains("access_token"));
+                const auto identityData = identity.value("identity_data").toMap();
+                QCOMPARE(identityData.size(), 1);
+                QCOMPARE(identityData.value("avatar_url").toString(), QString("https://example.com/identity.png"));
+                QVERIFY(identities.last().toMap().value("identity_data").toMap().isEmpty());
                 QVERIFY(bridge.metaObject()->indexOfProperty("key") < 0);
         QSignalSpy changed(bridge.tracks(), &QAbstractItemModel::dataChanged);
         QSignalSpy reset(bridge.tracks(), &QAbstractItemModel::modelReset);
@@ -137,6 +266,8 @@ private slots:
         QTRY_VERIFY(server.requests.size() > before);
         QTest::qWait(30);
         QCOMPARE(changed.count(), 0); QCOMPARE(reset.count(), 0); QCOMPARE(stateChanged.count(), 0);
+        QVERIFY(server.notModified > 0);
+        QVERIFY(server.requests.last().contains("If-None-Match: "));
         bridge.login("github"); bridge.load(); bridge.fetch(); bridge.ignore("101", true); bridge.logout();
         QTRY_VERIFY(server.requests.size() >= before + 6);
         QList<QByteArray> paths;
@@ -154,14 +285,37 @@ private slots:
         server.state.insert("isBanned", false); server.state.insert("hasAccess", false);
         QTRY_VERIFY(!bridge.state().value("hasAccess").toBool()); QCOMPARE(bridge.tracks()->count(), 0);
     }
+    void postRefreshDuringConditionalPoll() {
+        MockBackend server;
+        Config config{QString()};
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
+        server.getDelayMs = 250;
+        const int before = server.requests.size();
+        QTRY_VERIFY(server.requests.size() > before);
+        QVERIFY(server.requests.last().contains("If-None-Match: "));
+        server.state.insert("error", "changed during poll");
+        bridge.load();
+        QTRY_COMPARE(bridge.state().value("error").toString(), QString("changed during poll"));
+        bool postSeen = false, forcedSeen = false;
+        for (int i = before; i < server.requests.size(); ++i) {
+            const auto req = server.requests[i];
+            if (req.startsWith("POST /api/load ")) postSeen = true;
+            if (postSeen && req.startsWith("GET /api/state ") && !req.contains("If-None-Match:")) forcedSeen = true;
+        }
+        QVERIFY(forcedSeen);
+    }
     void nativeQmlInteractions() {
-        Bridge bridge({}, {}, true);
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
         bridge.setHideIgnored(false);
         MusicPlayer musicPlayer;
         QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
         engine.rootContext()->setContextProperty("backend", &bridge);
-        engine.rootContext()->setContextProperty("demoMode", true);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
@@ -184,8 +338,8 @@ private slots:
                 QCOMPARE(avatar->property("rightPadding").toInt(), 0);
                 auto avatarContent = avatar->property("contentItem").value<QObject *>();
                 QVERIFY(avatarContent);
-                QCOMPARE(avatarContent->property("width").toInt(), 34);
-                QCOMPARE(avatarContent->property("height").toInt(), 34);
+                QCOMPARE(avatarContent->property("width").toInt(), 32);
+                QCOMPARE(avatarContent->property("height").toInt(), 32);
                 QVERIFY(QMetaObject::invokeMethod(avatar, "clicked"));
                 auto account = window->findChild<QObject *>("accountMenu");
                 QVERIFY(account); QCOMPARE(account->property("visible").toBool(), true);
@@ -204,6 +358,17 @@ private slots:
                 QVERIFY(QMetaObject::invokeMethod(hide, "toggled"));
                 QVERIFY(bridge.hideIgnored());
                 bridge.setHideIgnored(false);
+                auto hideControls = window->findChild<QObject *>("hideWindowControlsSetting");
+                QVERIFY(hideControls);
+                hideControls->setProperty("checked", true);
+                QVERIFY(QMetaObject::invokeMethod(hideControls, "toggled"));
+                QVERIFY(config.hideWindowControls());
+                for (const auto name : {"windowMinimizeButton", "windowMaximizeButton", "windowCloseButton"}) {
+                    auto button = window->findChild<QObject *>(name);
+                    QVERIFY(button);
+                    QTRY_VERIFY(!button->property("visible").toBool());
+                }
+                config.setHideWindowControls(false);
                 QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
         auto track = bridge.tracks()->data(bridge.tracks()->index(1), Qt::UserRole);
         QVERIFY(QMetaObject::invokeMethod(window, "choose", Q_ARG(QVariant, track)));
@@ -223,6 +388,42 @@ private slots:
         QCOMPARE(window->property("mobile").toBool(), false);
         QCOMPARE(warnings.count(), 0);
     }
+    void preferredAvatarPriority() {
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
+        MusicPlayer musicPlayer;
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("appConfig", &config);
+        engine.rootContext()->setContextProperty("backend", &bridge);
+        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = engine.rootObjects().first();
+        const auto identity = [](const QString &provider, const QString &url) {
+            return QVariantMap{{"provider", provider}, {"identity_data", QVariantMap{{"avatar_url", url}}}};
+        };
+        const QVariantMap metadata{{"avatar_url", "https://example.com/metadata.png"}};
+        const QList<QPair<QVariantMap, QString>> cases{
+            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("spotify", "https://example.com/spotify.png"), identity("discord", "https://example.com/discord.png"), identity("github", "https://example.com/github.png")}}}, "https://example.com/github.png"},
+            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("spotify", "https://example.com/spotify.png"), identity("discord", "https://example.com/discord.png")}}}, "https://example.com/discord.png"},
+            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("github", "")}}}, ""},
+            {{{"user_metadata", metadata}}, "https://example.com/metadata.png"}
+        };
+        for (const auto &test : cases) {
+            QVariant result;
+            QVERIFY(QMetaObject::invokeMethod(window, "preferredAvatar", Q_RETURN_ARG(QVariant, result),
+                                             Q_ARG(QVariant, QVariant(test.first))));
+            QCOMPARE(result.toString(), test.second);
+        }
+        auto image = window->findChild<QQuickItem *>("accountAvatarImage");
+        QVERIFY(image);
+        QVERIFY(qobject_cast<AvatarImage *>(image));
+        QCOMPARE(image->width(), 32.0);
+        QCOMPARE(image->height(), 32.0);
+        QVERIFY(!image->property("ready").toBool());
+    }
     void musicPlayerUi_data() {
         QTest::addColumn<QString>("feature");
         QTest::newRow("inactive-panel") << QString("panel");
@@ -231,13 +432,16 @@ private slots:
     }
     void musicPlayerUi() {
         QFETCH(QString, feature);
-        Bridge bridge({}, {}, true);
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
         bridge.setHideIgnored(false);
         MusicPlayer musicPlayer;
         QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("backend", &bridge);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
-        engine.rootContext()->setContextProperty("demoMode", true);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
@@ -251,7 +455,8 @@ private slots:
         if (feature == "panel") {
             auto panel = window->findChild<QQuickItem *>("playerPanel");
             QVERIFY2(panel, "Main.qml must expose the player panel with objectName: playerPanel");
-            QVERIFY(panel->isVisible());
+            QVERIFY(!panel->isVisible());
+            QCOMPARE(panel->height(), 0.0);
             QVERIFY(!panel->isEnabled());
             auto timeline = window->findChild<QQuickItem *>("playerTimeline");
             QVERIFY(timeline);
@@ -283,6 +488,16 @@ private slots:
             QVERIFY(tokenField->property("text").toString().isEmpty());
             auto item = qobject_cast<QQuickItem *>(tokenField);
             QVERIFY(item); QVERIFY(item->isVisible());
+            for (auto object : content->findChildren<QObject *>()) {
+                QVERIFY(object->property("text").toString() != "Apply token");
+                QVERIFY(object->property("text").toString() != "Disconnect");
+            }
+            tokenField->setProperty("text", "test-token");
+            QVERIFY(QMetaObject::invokeMethod(tokenField, "textEdited"));
+            QTRY_COMPARE(config.musicToken(), QString("test-token"));
+            tokenField->setProperty("text", "");
+            QVERIFY(QMetaObject::invokeMethod(tokenField, "accepted"));
+            QCOMPARE(config.musicToken(), QString());
             QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
         } else {
             const auto track = bridge.tracks()->data(bridge.tracks()->index(0), Qt::UserRole);
@@ -302,17 +517,43 @@ private slots:
         QVERIFY(!musicPlayer.enabled());
         QVERIFY(!musicPlayer.playing());
     }
+    void cachedTracksRemainVisibleWhileLoading() {
+        MockBackend server;
+        server.state.insert("loading", true);
+        server.state.insert("processing", false);
+        Config config{QString()};
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
+        MusicPlayer musicPlayer;
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("appConfig", &config);
+        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+        engine.rootContext()->setContextProperty("backend", &bridge);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        auto overlay = window->findChild<QQuickItem *>("tracksLoadingOverlay");
+        QVERIFY(overlay);
+        QVERIFY(!overlay->isVisible());
+        server.state.insert("tracks", QJsonArray{});
+        QTRY_COMPARE(bridge.tracks()->count(), 0);
+        QTRY_VERIFY(overlay->isVisible());
+        server.state.insert("processing", true);
+        QTRY_VERIFY(!overlay->isVisible());
+    }
     void unavailableAndAuthModal() {
         MockBackend server;
         server.state.insert("authenticated", false); server.state.insert("hasAccess", false);
         server.state.insert("tracks", QJsonArray{});
-        Bridge bridge(server.url(), "test-random-key", false);
+        Config config{QString()};
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
         QTRY_VERIFY(bridge.state().contains("authenticated"));
         MusicPlayer musicPlayer;
         QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("appConfig", &config);
         engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
         engine.rootContext()->setContextProperty("backend", &bridge);
-        engine.rootContext()->setContextProperty("demoMode", false);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());

@@ -89,17 +89,17 @@ Rectangle {
                     visible: false
                     layer.enabled: true
                 }
-                Text {
+                Image {
                     anchors.centerIn: parent
-                    text: "♪"
-                    color: card.ui.borderColor
-                    font.pixelSize: 15
+                    width: 15; height: 15
+                    source: "qrc:/assets/track-placeholder.svg"
                     visible: cover.status !== Image.Ready
                 }
                 Image {
                     id: cover
                     anchors.fill: parent
-                    source: card.row.cover || ""
+                    source: card.row.cover ? "image://trackcovers/" + encodeURIComponent(card.row.cover) : ""
+                                        sourceSize: Qt.size(64, 64)
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                 }
@@ -181,8 +181,12 @@ Rectangle {
                 id: line
                 required property var modelData
                 required property int index
+                readonly property bool canPlay: !card.unsynced && musicPlayer.enabled
+                    && typeof modelData.ts === "string"
+                    && /^[0-9]+:[0-5][0-9](?::[0-5][0-9])?(?:\.[0-9]+)?$/.test(modelData.ts)
+                    && /^[0-9]{1,20}$/.test(String(card.row.id))
                 width: linesColumn.width
-                height: Math.max(19, words.contentHeight) + 11
+                height: Math.max(19, words.contentHeight) + 8
                 opacity: modelData.isDrug === false ? (lineHover.hovered ? 0.7 : 0.45) : 1
                 Rectangle {
                     anchors.fill: parent
@@ -191,15 +195,16 @@ Rectangle {
                 }
                 HoverHandler {
                     id: lineHover
+                    cursorShape: line.canPlay ? Qt.PointingHandCursor : Qt.ArrowCursor
                 }
                 Text {
                     id: timestamp
                     renderType: Text.NativeRendering
                     visible: !card.unsynced
                     x: 12
-                    y: 6
+                    anchors.verticalCenter: parent.verticalCenter
                     width: 46
-                    text: line.modelData.ts || "—:——"
+                    text: (line.modelData.ts || "—:——").replace(/\.[0-9]+$/, "")
                     color: card.ignored ? "#c86464" : card.ui.accent
                     opacity: 0.8
                     font.family: "monospace"
@@ -277,7 +282,7 @@ Rectangle {
                     onContentHeightChanged: Qt.callLater(updateMarks)
                     Component.onCompleted: Qt.callLater(updateMarks)
                     x: card.unsynced ? 12 : 68
-                    y: 5
+                    anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - x - 12
                     font.family: "DDetector Nunito"
                     font.pixelSize: 12
@@ -289,7 +294,14 @@ Rectangle {
                     function escapeText(s) {
                         return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
                     }
-                    text: "<p style='margin:0;line-height:155%'>" + (line.modelData.parts || []).map(p => p.marked ? "<span style='color:" + (card.ignored ? "#e65a5a" : card.ui.accent) + ";font-weight:600'>" + escapeText(p.text) + "</span>" : escapeText(p.text)).join("") + "</p>"
+                    text: "<p style='margin:0;line-height:130%'>" + (line.modelData.parts || []).map(p => p.marked ? "<span style='color:" + (card.ignored ? "#e65a5a" : card.ui.accent) + ";font-weight:600'>" + escapeText(p.text) + "</span>" : escapeText(p.text)).join("") + "</p>"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: line.canPlay
+                    acceptedButtons: Qt.LeftButton
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: musicPlayer.playAt(String(card.row.id), line.modelData.ts)
                 }
                 Rectangle {
                     visible: line.index < card.displayLines.length - 1
