@@ -51,6 +51,9 @@ ApplicationWindow {
     property color ignoredColor: "#dc5050"
     property var state: backend.state
     property bool privileged: !!state.authenticated && !!state.hasAccess && !state.isBanned
+        readonly property bool checkingAccess: (state.authenticated === undefined || (!!state.authenticated && !state.accessChecked && !state.isBanned)) && !state.error && backend.connectionError === ""
+        readonly property bool showShell: privileged || checkingAccess
+        readonly property bool tracksPending: checkingAccess || (!!state.loading && !state.processing && total === 0)
     property string selectedId: ""
     property bool sheetOpen: false
     property var expanded: ({})
@@ -332,7 +335,7 @@ ApplicationWindow {
         id: titleBar
         objectName: "titleBar"
         width: parent.width
-        height: appUi.state.authenticated ? 0 : 48
+        height: appUi.showShell || appUi.state.authenticated ? 0 : 48
         visible: height > 0
         color: appUi.bg
         z: 30
@@ -399,7 +402,7 @@ ApplicationWindow {
         }
     Rectangle {
         id: mainHeader
-        visible: !!appUi.state.authenticated
+        visible: appUi.showShell || !!appUi.state.authenticated
         z: 10
         width: parent.width
         y: titleBar.height
@@ -440,7 +443,7 @@ ApplicationWindow {
 
             }
             Text {
-                visible: !appUi.compactHeader && appUi.privileged
+                visible: !appUi.compactHeader && appUi.showShell
                 text: backend.tracks.count + " tracks"
                 color: appUi.muted
                 font.pixelSize: 12
@@ -450,7 +453,8 @@ ApplicationWindow {
         RowLayout {
             anchors.right: parent.right
             anchors.rightMargin: appConfig.hideWindowControls ? 8 : appUi.compactHeader ? 10 : windowControls.width + 8
-            visible: appUi.privileged
+            visible: appUi.showShell
+            enabled: appUi.privileged
             y: appUi.compactHeader ? 48 : 9
             width: appUi.compactHeader ? parent.width - (appConfig.hideWindowControls ? 10 : 20) : parent.width - (appConfig.hideWindowControls ? 0 : windowControls.width) - 238
             height: 30
@@ -922,7 +926,8 @@ ApplicationWindow {
     Item {
         id: panels
         readonly property real leftPanelWidth: width * 0.40
-        visible: appUi.privileged
+        visible: appUi.showShell
+        enabled: appUi.privileged
         anchors.top: mainHeader.bottom
         anchors.bottom: playerPanel.top
         width: parent.width
@@ -947,6 +952,13 @@ ApplicationWindow {
                 number: index + 1
             }
             ScrollBar.vertical: ScrollBar {}
+        }
+        SiteSpinner {
+            objectName: "tracksLoadingOverlay"
+            anchors.centerIn: trackList
+            visible: appUi.tracksPending
+            accentColor: appUi.accent
+            label: appUi.checkingAccess ? "Checking access" : "Loading tracks"
         }
         ScrollEdgeShadow {
             anchors.fill: trackList
@@ -1118,7 +1130,7 @@ ApplicationWindow {
                 }
                 ScrollBar.vertical: ScrollBar {}
                 Text {
-                    visible: backend.cards.count === 0 && !appUi.state.processing
+                    visible: backend.cards.count === 0 && !appUi.state.processing && !appUi.tracksPending
                     width: parent.width - 48
                     x: 24
                     y: 60
@@ -1134,16 +1146,12 @@ ApplicationWindow {
                 anchors.fill: results
             }
         }
-        Rectangle {
-            anchors.fill: parent
-            color: appUi.bg
-            objectName: "tracksLoadingOverlay"
-            visible: !!appUi.state.loading && !appUi.state.processing && appUi.total === 0
-            Text {
-                anchors.centerIn: parent
-                text: "Loading tracks..."
-                color: appUi.muted
-            }
+        SiteSpinner {
+            x: right.x + results.x + (results.width - width) / 2
+            y: right.y + results.y + (results.height - height) / 2
+            visible: appUi.tracksPending && appUi.rightPage === 0
+            accentColor: appUi.accent
+            label: "Loading results"
         }
     }
     component PlayerSlider: Slider {
@@ -1203,10 +1211,10 @@ ApplicationWindow {
         objectName: "playerPanel"
         anchors.bottom: parent.bottom
         width: parent.width
-        visible: appUi.privileged && musicPlayer.enabled
+        visible: appUi.showShell && (appUi.checkingAccess || musicPlayer.enabled)
         height: visible ? 88 : 0
         color: appUi.playerSurface
-        enabled: visible
+        enabled: visible && appUi.privileged
         Rectangle { width: parent.width; height: 1; color: "#29292d" }
         function timeLabel(ms) {
             const seconds = Math.floor(ms / 1000);
@@ -1310,7 +1318,7 @@ ApplicationWindow {
         anchors.top: mainHeader.bottom
         anchors.bottom: playerPanel.top
         width: parent.width
-        visible: !appUi.privileged
+        visible: !appUi.showShell
         ui: appUi
         onSignIn: auth.open()
     }
