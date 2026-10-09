@@ -15,6 +15,12 @@ pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.5)
 qt_standard_project_setup()
 qt_add_executable(ddetector-qt workspace.cpp workspace.h uploader.cpp uploader.h main.cpp config.cpp config.h bridge.cpp bridge.h player.cpp player.h coverimageprovider.cpp coverimageprovider.h avatarimage.cpp avatarimage.h)
 target_link_libraries(ddetector-qt PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Multimedia)
+if(WIN32)
+    enable_language(RC)
+    target_sources(ddetector-qt PRIVATE app-icon.rc)
+    target_include_directories(ddetector-qt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(SOURCE app-icon.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app-icon.ico")
+endif()
 file(GLOB APP_ASSETS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" assets/*)
 # Preserve qrc:/Main.qml and runtime native registrations until they can be
 # migrated together. A QML module must not silently change the engine entry URL.
@@ -33,6 +39,10 @@ add_custom_target(qml-lint
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Lint all QML (runtime context/native types may produce warnings)")
 install(TARGETS ddetector-qt RUNTIME DESTINATION bin)
+if(UNIX AND NOT APPLE)
+    install(FILES ddetector-qt.desktop DESTINATION share/applications)
+    install(FILES assets/app-icon.png DESTINATION share/pixmaps RENAME ddetector-qt.png)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

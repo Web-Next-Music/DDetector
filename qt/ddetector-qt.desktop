@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DDetector
+Comment=Music library and duplicate detector
+Exec=ddetector --qt ddetector-qt
+Icon=ddetector-qt
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+StartupWMClass=ddetector-qt

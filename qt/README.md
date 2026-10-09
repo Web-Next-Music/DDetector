@@ -26,6 +26,25 @@ ctest --test-dir qt/build --output-on-failure --timeout 120
 
 For an application-only build, add `-DBUILD_TESTING=OFF` to configuration.
 
+### Windows application icons
+
+Windows Qt builds embed `assets/app-icon.ico` through `app-icon.rc`, in addition
+to the runtime window icon. The ICO contains 16, 24, 32, 48, 64, 128 and 256 px
+sizes. The Go launcher embeds the same icon automatically through the checked-in
+`cmd/ddetector/app_icon_windows_{amd64,386,arm64}.syso` files; ordinary `go build`
+needs no extra flags or resource compiler.
+
+After changing the ICO, regenerate the launcher's resources with LLVM's `llvm-rc`
+and `llvm-cvtres` installed:
+
+```sh
+python3 qt/generate_windows_resources.py
+```
+
+Both `ddetector.exe` and `ddetector-qt.exe` then contain an executable icon for
+Explorer and shortcuts. Windows may cache old icons for existing pinned shortcuts.
+This does not remove the Windows platform limitations described below.
+
 ### Native libraries
 
 `KF6SyntaxHighlighting`, `Qt6Keychain`, and `libgit2 >= 1.5` (via pkg-config)

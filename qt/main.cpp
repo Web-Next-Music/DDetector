@@ -9,6 +9,7 @@
 #include <QCommandLineParser>
 #include <QDirIterator>
 #include <QFontDatabase>
+#include <QIcon>
 #include <QApplication>
 #include "terminal.h"
 #include "syntaxhighlighter.h"
@@ -33,6 +34,8 @@ int main(int argc, char **argv) {
     qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
     app.setApplicationName("DDetector");
     app.setOrganizationName("DDetector");
+    app.setDesktopFileName("ddetector-qt");
+    app.setWindowIcon(QIcon(":/assets/app-icon.png"));
     QQuickStyle::setStyle("Basic");
     QCommandLineParser parser;
     parser.setApplicationDescription("Native Qt Quick DDetector client; launch through the Go backend.");
