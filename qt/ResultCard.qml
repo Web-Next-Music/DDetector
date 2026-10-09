@@ -152,7 +152,7 @@ Rectangle {
         width: parent.width - 2
         height: 53
         radius: card.radius - 1
-        color: card.ignored ? "#388c1919" : card.ui.surface2
+        color: card.ignored ? Qt.tint(card.ui.surface, "#388c1919") : card.ui.surface2
         Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
@@ -261,7 +261,7 @@ Rectangle {
         y: linesColumn.y
         width: linesColumn.width
         height: linesColumn.height
-        color: card.ignored ? "#33640b0b" : "transparent"
+        color: card.ignored ? Qt.tint(card.ui.surface, "#33640b0b") : "transparent"
         radius: card.radius - 1
         Rectangle {
             width: parent.width

@@ -43,6 +43,55 @@ func install(s *Server) {
 	s.state.Authenticated = true
 	s.state.User = &s.session.User
 }
+func TestIgnoreUsesCompositeConflictKey(t *testing.T) {
+	writes := 0
+	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/v1/user":
+			fmt.Fprint(w, `{"id":"user-1"}`)
+		case "/rest/v1/bans":
+			fmt.Fprint(w, `[]`)
+		case "/rest/v1/ddetector_users":
+			fmt.Fprint(w, `[{"user_id":"user-1"}]`)
+		case "/rest/v1/ddetector_ignored_tracks":
+			writes++
+			if r.Method == http.MethodPost {
+				if r.URL.Query().Get("on_conflict") != "user_id,track_id" {
+					http.Error(w, "conflict target must match composite primary key", http.StatusBadRequest)
+					return
+				}
+				if r.Header.Get("Prefer") != "resolution=ignore-duplicates,return=minimal" {
+					t.Error("missing idempotent insert preference")
+				}
+				var body map[string]int64
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["track_id"] != 42 || len(body) != 1 {
+					t.Error("expected track_id only, with user_id supplied by auth.uid()")
+				}
+			} else if r.Method != http.MethodDelete || r.URL.Query().Get("track_id") != "eq.42" {
+				t.Error("unexpected ignore removal request")
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Error("unexpected request", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	install(s)
+	s.state.Tracks = []Result{{Track: Track{ID: 42}}}
+	for _, ignored := range []bool{true, true, false} {
+		w := api(s, "POST", "/api/ignore", fmt.Sprintf(`{"track_id":42,"ignored":%t}`, ignored), "bridge-key")
+		if w.Code != http.StatusOK {
+			t.Fatalf("ignore=%t: %d %s", ignored, w.Code, w.Body)
+		}
+		if s.state.Tracks[0].Ignored != ignored {
+			t.Fatal("ignore state not updated")
+		}
+	}
+	if writes != 3 {
+		t.Fatalf("expected three writes, got %d", writes)
+	}
+}
+
 func TestBridgeGuard(t *testing.T) {
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected upstream call") })
 	for _, tc := range []struct {

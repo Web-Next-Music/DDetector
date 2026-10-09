@@ -580,7 +580,7 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if *in.Ignored {
-		err = s.client.request(ctx, "POST", "/rest/v1/ddetector_ignored_tracks?on_conflict=track_id", token, map[string]int64{"track_id": in.ID}, map[string]string{"Prefer": "resolution=ignore-duplicates,return=minimal"}, nil)
+		err = s.client.request(ctx, "POST", "/rest/v1/ddetector_ignored_tracks?on_conflict=user_id,track_id", token, map[string]int64{"track_id": in.ID}, map[string]string{"Prefer": "resolution=ignore-duplicates,return=minimal"}, nil)
 	} else {
 		err = s.client.request(ctx, "DELETE", "/rest/v1/ddetector_ignored_tracks?track_id=eq."+strconv.FormatInt(in.ID, 10), token, nil, nil, nil)
 	}
