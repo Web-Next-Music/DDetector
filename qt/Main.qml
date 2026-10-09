@@ -156,6 +156,11 @@ ApplicationWindow {
         target: appConfig
         function onErrorChanged() { if (appConfig.error) appUi.notify(appConfig.error); }
     }
+    Binding {
+        target: musicPlayer
+        property: "visualizerEnabled"
+        value: appConfig.visualizerEnabled
+    }
     Connections {
         target: musicPlayer
         property string lastError: ""
@@ -733,6 +738,21 @@ ApplicationWindow {
                     onToggled: appConfig.hideWindowControls = checked
                 }
             }
+                        Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 56
+                radius: 14
+                color: appUi.surface2
+                border.color: appUi.borderColor
+                SiteToggleRow {
+                    objectName: "visualizerSetting"
+                    anchors.fill: parent
+                    text: "Spectral visualizer"
+                    glyph: "music-standard"
+                    checked: appConfig.visualizerEnabled
+                    onToggled: appConfig.visualizerEnabled = checked
+                }
+            }
         }
     }
     SiteDialog {
@@ -1073,6 +1093,14 @@ ApplicationWindow {
         height: 88
         color: appUi.playerSurface
         enabled: appUi.privileged && musicPlayer.enabled
+        SpectrumVisualizer {
+            objectName: "spectrumVisualizer"
+            anchors.fill: parent
+            visible: appConfig.visualizerEnabled
+            accent: appUi.accent
+            levels: musicPlayer.spectrumLevels
+            peaks: musicPlayer.spectrumPeaks
+        }
         Rectangle { width: parent.width; height: 1; color: "#29292d" }
         function timeLabel(ms) {
             const seconds = Math.floor(ms / 1000);

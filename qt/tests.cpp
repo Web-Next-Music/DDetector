@@ -262,6 +262,32 @@ private slots:
         QTRY_COMPARE(countPath("POST /api/yandex/token "), 2);
         QVERIFY(config.musicToken() == "test-yandex-token");
     }
+    void visualizerSettingsPersistence() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("Config.json");
+        Config config(path);
+        QVERIFY(!config.visualizerEnabled());
+        QSignalSpy changed(&config, &Config::settingsChanged);
+        config.setVisualizerEnabled(true);
+        QCOMPARE(changed.count(), 1);
+        config.setVisualizerEnabled(true);
+        QCOMPARE(changed.count(), 1);
+        QVERIFY(config.flush());
+        Config restored(path);
+        QVERIFY(restored.visualizerEnabled());
+        restored.setVisualizerEnabled(false);
+        QVERIFY(restored.flush());
+        Config disabled(path);
+        QVERIFY(!disabled.visualizerEnabled());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("{\"visualizerEnabled\":\"invalid\"}");
+        file.close();
+        Config invalid(path);
+        QVERIFY(!invalid.error().isEmpty());
+        QVERIFY(!invalid.visualizerEnabled());
+    }
     void configPersistence() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -849,6 +875,30 @@ private slots:
                 auto dialog = window->findChild<QObject *>("settingsDialog");
                 QVERIFY(dialog); QCOMPARE(dialog->property("visible").toBool(), true);
                 QVERIFY(!window->findChild<QObject *>("themeSetting"));
+                auto visualizerToggle = window->findChild<QObject *>("visualizerSetting");
+                auto visualizer = window->findChild<QQuickItem *>("spectrumVisualizer");
+                auto playerPanel = window->findChild<QQuickItem *>("playerPanel");
+                QVERIFY(visualizerToggle); QVERIFY(visualizer); QVERIFY(playerPanel);
+                QVERIFY(!config.visualizerEnabled());
+                QVERIFY(!musicPlayer.visualizerEnabled());
+                QVERIFY(!visualizer->isVisible());
+                const auto originalBackground = playerPanel->property("color").value<QColor>();
+                visualizerToggle->setProperty("checked", true);
+                QVERIFY(QMetaObject::invokeMethod(visualizerToggle, "toggled"));
+                QTRY_VERIFY(config.visualizerEnabled());
+                QTRY_VERIFY(musicPlayer.visualizerEnabled());
+                QTRY_VERIFY(visualizer->isVisible());
+                QCOMPARE(visualizer->property("accent").value<QColor>(), window->property("accent").value<QColor>());
+                QCOMPARE(playerPanel->property("color").value<QColor>(), originalBackground);
+                QVariantList testLevels, testPeaks;
+                for (int i = 0; i < 75; ++i) { testLevels.append(0.6); testPeaks.append(0.8); }
+                QVERIFY(visualizer->setProperty("levels", testLevels));
+                QVERIFY(visualizer->setProperty("peaks", testPeaks));
+                QTest::qWait(100);
+                QVERIFY(warnings.isEmpty());
+                config.setVisualizerEnabled(false);
+                QTRY_VERIFY(!musicPlayer.visualizerEnabled());
+                QTRY_VERIFY(!visualizer->isVisible());
                 auto hide = window->findChild<QObject *>("hideIgnoredSetting");
                 QVERIFY(hide); hide->setProperty("checked", true);
                 QVERIFY(QMetaObject::invokeMethod(hide, "toggled"));

@@ -78,10 +78,12 @@ void Config::load() {
     const auto hidden = object.value("hideIgnored");
         const auto windowControls = object.value("hideWindowControls");
     const auto volume = object.value("volume");
+    const auto visualizer = object.value("visualizerEnabled");
     if (file.error() != QFileDevice::NoError || parse.error != QJsonParseError::NoError || !document.isObject()
         || (!token.isUndefined() && !token.isString())
         || (!repository.isUndefined() && !repository.isString())
         || (!hidden.isUndefined() && !hidden.isBool())
+        || (!visualizer.isUndefined() && !visualizer.isBool())
                 || (!windowControls.isUndefined() && !windowControls.isBool())
         || (!volume.isUndefined() && (!volume.isDouble() || !std::isfinite(volume.toDouble())
                                      || volume.toDouble() < 0 || volume.toDouble() > 1))) {
@@ -96,6 +98,7 @@ void Config::load() {
     m_hideIgnored = hidden.toBool(false);
         m_hideWindowControls = windowControls.toBool(false);
     m_volume = volume.toDouble(0.5);
+    m_visualizerEnabled = visualizer.toBool(false);
 }
 void Config::save() {
     if (m_path.isEmpty() || m_blocked) return;
@@ -108,7 +111,7 @@ void Config::save() {
     if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(filePermissions)) {
         fail("Unable to open secure configuration file."); return;
     }
-    QJsonObject settings{{"repositoryPath", m_repositoryPath}, {"hideIgnored", m_hideIgnored}, {"hideWindowControls", m_hideWindowControls}, {"volume", m_volume}};
+    QJsonObject settings{{"repositoryPath", m_repositoryPath}, {"hideIgnored", m_hideIgnored}, {"hideWindowControls", m_hideWindowControls}, {"volume", m_volume}, {"visualizerEnabled", m_visualizerEnabled}};
     // Pending/failed writes remain recoverable across shutdown. Never remove the
     // plaintext copy until the OS backend confirms the exact current value.
     if ((m_credentialEdited || !m_token.isEmpty())
@@ -231,6 +234,10 @@ void Config::setHideIgnored(bool value) {
 void Config::setHideWindowControls(bool value) {
     if (m_hideWindowControls == value) { if (m_savePending) scheduleSave(); return; }
     m_hideWindowControls = value; scheduleSave(); emit settingsChanged();
+}
+void Config::setVisualizerEnabled(bool value) {
+    if (m_visualizerEnabled == value) { if (m_savePending) scheduleSave(); return; }
+    m_visualizerEnabled = value; scheduleSave(); emit settingsChanged();
 }
 void Config::setVolume(double value) {
     if (!std::isfinite(value)) return;

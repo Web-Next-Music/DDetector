@@ -8,6 +8,12 @@
 #include <QStringList>
 #include <QTimer>
 #include <functional>
+#include <QAudioBufferOutput>
+#include <QChronoTimer>
+#include <QElapsedTimer>
+#include <QVariantList>
+#include <memory>
+#include "spectrumanalyser.h"
 
 class QNetworkReply;
 
@@ -27,7 +33,14 @@ class MusicPlayer final : public QObject {
     Q_PROPERTY(qint64 duration READ duration NOTIFY durationChanged)
     Q_PROPERTY(qint64 position READ position NOTIFY positionChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY stateChanged)
+    Q_PROPERTY(bool visualizerEnabled READ visualizerEnabled WRITE setVisualizerEnabled NOTIFY visualizerEnabledChanged)
+    Q_PROPERTY(QVariantList spectrumLevels READ spectrumLevels NOTIFY spectrumLevelsChanged)
+    Q_PROPERTY(QVariantList spectrumPeaks READ spectrumPeaks NOTIFY spectrumPeaksChanged)
 public:
+    bool visualizerEnabled() const { return m_visualizerEnabled; }
+    void setVisualizerEnabled(bool enabled);
+    QVariantList spectrumLevels() const { return m_spectrumLevels; }
+    QVariantList spectrumPeaks() const { return m_spectrumPeaks; }
     explicit MusicPlayer(QObject *parent = nullptr);
     bool enabled() const { return m_enabled; }
     bool busy() const { return m_busy; }
@@ -49,6 +62,9 @@ public:
     Q_INVOKABLE void next();
     Q_INVOKABLE void previous();
 signals:
+    void visualizerEnabledChanged();
+    void spectrumLevelsChanged();
+    void spectrumPeaksChanged();
     void stateChanged();
     void positionChanged();
     void durationChanged();
@@ -57,6 +73,19 @@ private:
 #ifdef MUSIC_PLAYER_TEST
     std::function<void()> m_requestHook;
 #endif
+    void resetSpectrum();
+    void attachSpectrumOutput();
+    void receiveSpectrumBuffer(const QAudioBuffer &buffer);
+    void updateSpectrum();
+    bool m_visualizerEnabled = false;
+    quint64 m_spectrumEpoch = 0;
+    qint64 m_spectrumSeekFloor = -1;
+    std::unique_ptr<QAudioBufferOutput> m_bufferOutput;
+    QChronoTimer m_spectrumTimer;
+    QElapsedTimer m_spectrumClock;
+    Spectrum::AudioTap m_spectrumTap;
+    Spectrum::WideAnalyser m_spectrumAnalyser;
+    QVariantList m_spectrumLevels, m_spectrumPeaks;
     void applyPendingSeek();
     void cancelRequests();
     void fail(const QString &message);

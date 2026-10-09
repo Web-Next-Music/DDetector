@@ -28,7 +28,7 @@ set(SHARED_QML SiteFocusRing.qml SiteButton.qml SiteTextField.qml SiteToggleRow.
     SiteSpinner.qml FileIcon.qml SiteMenu.qml SiteMenuItem.qml SiteMenuSeparator.qml SiteEditMenu.qml
     SiteDialog.qml SiteToolTip.qml DialogHeader.qml WindowButton.qml SiteQuote.qml)
 set(APP_QML ${SHARED_QML} terminal.qml GitWorkspace.qml SendDialog.qml Main.qml
-    TrackRow.qml ResultCard.qml SiteView.qml NotificationStack.qml)
+    TrackRow.qml ResultCard.qml SiteView.qml NotificationStack.qml SpectrumVisualizer.qml)
 qt_add_resources(ddetector-qt ui PREFIX "/" FILES ${APP_QML} ${APP_ASSETS})
 get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
 get_filename_component(QT_TOOL_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)

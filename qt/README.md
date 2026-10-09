@@ -4,6 +4,16 @@ Native C++/QML application; **no WebView, WebEngine, HTML page, or JavaScript HT
 client**. All implementation and generated build/screenshot files are under `qt/`.
 The source website is not modified; the Go backend owns local library synchronization.
 
+## Spectral visualizer
+
+Enable **Settings → Spectral visualizer** to show the spectrum behind the player
+controls. It is off by default and the choice is saved as `visualizerEnabled`.
+The 75-band analyser, peak motion, glow, bass pulse and gradients are ported from
+`spotifast` (`src/vis.rs` and `src/ui/player_bar.rs`); colours derive from the app
+accent, while the existing player background is unchanged. Audio comes from Qt's
+pre-volume `QAudioBufferOutput`, so muting does not suppress the spectrum.
+The source MIT notice is bundled in `assets/SPOTIFAST-LICENSE.txt`.
+
 ## Build and run
 
 Requires CMake 3.21+, C++17, and **Qt6 6.9+** with Quick, Quick Controls 2, Network,

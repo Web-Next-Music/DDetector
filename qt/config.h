@@ -10,6 +10,7 @@ class Config final : public QObject {
     Q_PROPERTY(QString repositoryPath READ repositoryPath WRITE setRepositoryPath NOTIFY settingsChanged)
     Q_PROPERTY(bool hideIgnored READ hideIgnored WRITE setHideIgnored NOTIFY settingsChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY settingsChanged)
+    Q_PROPERTY(bool visualizerEnabled READ visualizerEnabled WRITE setVisualizerEnabled NOTIFY settingsChanged)
         Q_PROPERTY(bool hideWindowControls READ hideWindowControls WRITE setHideWindowControls NOTIFY settingsChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
 public:
@@ -29,6 +30,8 @@ public:
     bool hideIgnored() const { return m_hideIgnored; }
         bool hideWindowControls() const { return m_hideWindowControls; }
         void setHideWindowControls(bool value);
+    bool visualizerEnabled() const { return m_visualizerEnabled; }
+    void setVisualizerEnabled(bool value);
     double volume() const { return m_volume; }
     QString error() const { return m_error; }
     void setMusicToken(const QString &value);
@@ -55,6 +58,7 @@ private:
     QString m_storedToken;
     QString m_path, m_token, m_error, m_repositoryPath;
     bool m_hideIgnored = false, m_hideWindowControls = false, m_blocked = false;
+    bool m_visualizerEnabled = false;
     double m_volume = 0.5;
         QTimer m_saveDebounce;
         bool m_savePending = false;

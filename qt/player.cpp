@@ -1,5 +1,6 @@
 #include "player.h"
 
+#include <QAudioBuffer>
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -89,6 +90,14 @@ QUrl mediaUrl(const QByteArray &descriptor, QString *error = nullptr) {
 
 MusicPlayer::MusicPlayer(QObject *parent) : QObject(parent) {
     m_player.setAudioOutput(&m_audio);
+    m_spectrumClock.start();
+    m_spectrumTimer.setTimerType(Qt::PreciseTimer);
+    m_spectrumTimer.setInterval(std::chrono::microseconds(16667));
+    connect(&m_spectrumTimer, &QChronoTimer::timeout, this, &MusicPlayer::updateSpectrum);
+    resetSpectrum();
+    connect(&m_player, &QMediaPlayer::playbackStateChanged, this, [this] {
+        if (!playing()) m_spectrumTap.clear();
+    });
     m_audio.setVolume(0.5f);
     m_mediaTimeout.setSingleShot(true);
     m_mediaTimeout.setInterval(20000);
@@ -121,8 +130,85 @@ MusicPlayer::MusicPlayer(QObject *parent) : QObject(parent) {
     });
 }
 
+void MusicPlayer::setVisualizerEnabled(bool enabled) {
+    if (enabled == m_visualizerEnabled) return;
+    m_visualizerEnabled = enabled;
+    resetSpectrum();
+    if (enabled) m_spectrumTimer.start();
+    else m_spectrumTimer.stop();
+    emit visualizerEnabledChanged();
+}
+
+void MusicPlayer::attachSpectrumOutput() {
+    m_player.setAudioBufferOutput(nullptr);
+    m_bufferOutput.reset();
+    if (!m_visualizerEnabled) return;
+    m_bufferOutput = std::make_unique<QAudioBufferOutput>();
+    const auto epoch = m_spectrumEpoch;
+    connect(m_bufferOutput.get(), &QAudioBufferOutput::audioBufferReceived, this,
+            [this, epoch](const QAudioBuffer &buffer) {
+        if (epoch == m_spectrumEpoch) receiveSpectrumBuffer(buffer);
+    });
+    m_player.setAudioBufferOutput(m_bufferOutput.get());
+}
+
+void MusicPlayer::resetSpectrum() {
+    ++m_spectrumEpoch;
+    m_spectrumSeekFloor = -1;
+    m_spectrumTap.clear();
+    m_spectrumAnalyser.reset();
+    QVariantList zeros;
+    for (int i = 0; i < Spectrum::Bands; ++i) zeros.append(0.0f);
+    if (m_spectrumLevels != zeros) { m_spectrumLevels = zeros; emit spectrumLevelsChanged(); }
+    if (m_spectrumPeaks != zeros) { m_spectrumPeaks = zeros; emit spectrumPeaksChanged(); }
+    // A new tap identity also rejects queued delivery from the previous source/seek.
+    attachSpectrumOutput();
+}
+
+void MusicPlayer::receiveSpectrumBuffer(const QAudioBuffer &buffer) {
+    if (!m_visualizerEnabled || !playing() || m_source.isEmpty()
+        || m_sourceGeneration != m_generation || m_player.source() != m_source) return;
+    if (!buffer.isValid() || buffer.frameCount() == 0) { m_spectrumTap.clear(); return; }
+    if (m_spectrumSeekFloor >= 0) {
+        // Reject old decoder packets, including backward-seek packets from ahead
+        // of the new position. Buffers can straddle the requested seek point.
+        if (buffer.startTime() < 0 || buffer.startTime() + buffer.duration() <= m_spectrumSeekFloor
+            || buffer.startTime() > m_spectrumSeekFloor + 250000) return;
+        m_spectrumSeekFloor = -1;
+    }
+    const auto format = buffer.format();
+    const int channels = format.channelCount();
+    if (channels <= 0 || format.sampleRate() <= 0) return;
+    const char *data = buffer.constData<char>();
+    const int bytes = format.bytesPerSample();
+    if (bytes <= 0) return;
+    // Qt's normalizedSampleValue handles UInt8, Int16, Int32 and Float PCM.
+    // QAudioBufferOutput delivers decoded samples independently of output volume.
+    for (int frame = 0; frame < buffer.frameCount(); ++frame) {
+        double sum = 0.0;
+        for (int channel = 0; channel < channels; ++channel)
+            sum += format.normalizedSampleValue(data + (frame * channels + channel) * bytes);
+        const float mono = float(sum) / float(channels);
+        m_spectrumTap.push(std::isfinite(mono) ? mono : 0.0f, format.sampleRate());
+    }
+}
+
+void MusicPlayer::updateSpectrum() {
+    if (!m_visualizerEnabled) return;
+    m_spectrumAnalyser.step(playing() ? m_spectrumTap.window() : Spectrum::Wave{},
+                            double(m_spectrumClock.nsecsElapsed()) / 1e9);
+    QVariantList levels, peaks;
+    for (int i = 0; i < Spectrum::Bands; ++i) {
+        levels.append(m_spectrumAnalyser.levels[i]);
+        peaks.append(m_spectrumAnalyser.peaks[i]);
+    }
+    if (levels != m_spectrumLevels) { m_spectrumLevels = levels; emit spectrumLevelsChanged(); }
+    if (peaks != m_spectrumPeaks) { m_spectrumPeaks = peaks; emit spectrumPeaksChanged(); }
+}
+
 void MusicPlayer::cancelRequests() {
     ++m_generation;
+    resetSpectrum();
     m_pendingSeek = -1;
     m_source.clear();
     m_trackId.clear();
@@ -241,6 +327,8 @@ void MusicPlayer::applyPendingSeek() {
             && status != QMediaPlayer::EndOfMedia)) return;
     const auto target = m_pendingSeek;
     m_pendingSeek = -1;
+    resetSpectrum();
+    m_spectrumSeekFloor = (duration() > 0 ? qMin(target, duration()) : target) * 1000;
     m_player.setPosition(duration() > 0 ? qMin(target, duration()) : target);
     m_player.play();
 }
@@ -312,7 +400,12 @@ void MusicPlayer::toggle() {
     if (playing()) m_player.pause(); else m_player.play();
 }
 void MusicPlayer::seek(qint64 milliseconds) {
-    if (m_enabled && m_player.isSeekable()) m_player.setPosition(qBound(qint64(0), milliseconds, duration()));
+    if (m_enabled && m_player.isSeekable()) {
+        const auto target = qBound(qint64(0), milliseconds, duration());
+        resetSpectrum();
+        m_spectrumSeekFloor = target * 1000;
+        m_player.setPosition(target);
+    }
 }
 void MusicPlayer::setVolume(double volume) {
     if (std::isfinite(volume)) m_audio.setVolume(float(qBound(0.0, volume, 1.0)));
@@ -442,7 +535,31 @@ private slots:
         QTRY_VERIFY(player.m_player.isSeekable());
         QTRY_VERIFY(player.playing());
         QCOMPARE(player.m_pendingSeek, qint64(-1));
+        player.setVisualizerEnabled(true);
+        QAudioFormat format;
+        format.setSampleRate(1000);
+        format.setChannelCount(2);
+        format.setSampleFormat(QAudioFormat::Float);
+        QByteArray pcm(1000 * 2 * int(sizeof(float)), Qt::Uninitialized);
+        auto *stereo = reinterpret_cast<float *>(pcm.data());
+        for (int i = 0; i < 1000; ++i) { stereo[2 * i] = 0.5f; stereo[2 * i + 1] = 0.0f; }
+        player.setVolume(0.0);
+        player.receiveSpectrumBuffer(QAudioBuffer(pcm, format, 1000000));
+        QCOMPARE(player.m_spectrumTap.window().back(), 0.25f);
+        player.updateSpectrum();
+        QVERIFY(!player.m_spectrumAnalyser.settled());
+        const auto levelsBeforePause = player.spectrumLevels();
+        const auto peaksBeforePause = player.spectrumPeaks();
+        const auto epochBeforePause = player.m_spectrumEpoch;
         player.m_player.pause();
+        QVERIFY(!player.m_spectrumAnalyser.settled());
+        QCOMPARE(player.spectrumLevels(), levelsBeforePause);
+        QCOMPARE(player.spectrumPeaks(), peaksBeforePause);
+        QCOMPARE(player.m_spectrumEpoch, epochBeforePause);
+        QCOMPARE(player.m_spectrumTap.window(), Spectrum::Wave{});
+        QTRY_VERIFY_WITH_TIMEOUT(player.m_spectrumAnalyser.settled(), 3000);
+        for (const auto &level : player.spectrumLevels()) QCOMPARE(level.toFloat(), 0.0f);
+        for (const auto &peak : player.spectrumPeaks()) QCOMPARE(peak.toFloat(), 0.0f);
         const auto generation = player.m_generation;
         player.playAt("1", "00:02");
         QCOMPARE(requests, 1);
@@ -450,6 +567,21 @@ private slots:
         QTRY_VERIFY(player.playing());
         QVERIFY(player.position() >= 2000);
         QCOMPARE(player.m_pendingSeek, qint64(-1));
+        player.receiveSpectrumBuffer(QAudioBuffer(pcm, format, 2000000));
+        player.updateSpectrum();
+        QVERIFY(!player.m_spectrumAnalyser.settled());
+        const auto levelsBeforeStop = player.spectrumLevels();
+        const auto peaksBeforeStop = player.spectrumPeaks();
+        const auto epochBeforeStop = player.m_spectrumEpoch;
+        player.m_player.stop();
+        QCOMPARE(player.spectrumLevels(), levelsBeforeStop);
+        QCOMPARE(player.spectrumPeaks(), peaksBeforeStop);
+        QCOMPARE(player.m_spectrumEpoch, epochBeforeStop);
+        QCOMPARE(player.m_spectrumTap.window(), Spectrum::Wave{});
+        QVERIFY(!player.m_spectrumAnalyser.settled());
+        QTRY_VERIFY_WITH_TIMEOUT(player.m_spectrumAnalyser.settled(), 3000);
+        for (const auto &level : player.spectrumLevels()) QCOMPARE(level.toFloat(), 0.0f);
+        for (const auto &peak : player.spectrumPeaks()) QCOMPARE(peak.toFloat(), 0.0f);
     }
     void pendingLyricClicks() {
         MusicPlayer player;
@@ -487,6 +619,62 @@ private slots:
         player.fail("test failure");
         QVERIFY(player.trackId().isEmpty());
         QCOMPARE(player.m_pendingSeek, qint64(-1));
+    }
+    void spectrumReference() {
+        Spectrum::Wave tone{}, silence{};
+        for (int i = 0; i < Spectrum::Samples; ++i)
+            tone[i] = 0.8f * std::sin(float(i) / 44100.0f * 1000.0f * Spectrum::Tau);
+        Spectrum::Fft fft;
+        const auto bins = fft.spectrum(tone);
+        QCOMPARE(int(std::max_element(bins.begin(), bins.end()) - bins.begin()), 12);
+        Spectrum::WideAnalyser analyser;
+        analyser.step(tone, 0.0);
+        const int band = int(std::max_element(analyser.levels.begin(), analyser.levels.end()) - analyser.levels.begin());
+        QVERIFY(analyser.levels[band] > 0.99f);
+        QVERIFY(analyser.levels.front() < 0.3f);
+        QVERIFY(analyser.levels.back() < 0.3f);
+        const float top = analyser.peaks[band];
+        for (int i = 1; i <= 12; ++i) analyser.step(silence, i * double(Spectrum::Step));
+        QCOMPARE(analyser.peaks[band], top);
+        QVERIFY(analyser.levels[band] < top);
+        for (int i = 13; i < 120; ++i) {
+            analyser.step(silence, i * double(Spectrum::Step));
+            QVERIFY(analyser.peaks[band] >= analyser.levels[band]);
+        }
+        QVERIFY(analyser.settled());
+        Spectrum::WideAnalyser fast, slow;
+        fast.step(tone, 0.0); slow.step(tone, 0.0);
+        for (int i = 1; i <= 12; ++i) fast.step(silence, i * 0.01);
+        for (int i = 1; i <= 3; ++i) slow.step(silence, i * 0.04);
+        for (int i = 0; i < Spectrum::Bands; ++i)
+            QVERIFY(std::abs(fast.levels[i] - slow.levels[i]) < 0.00001f);
+        fast.reset(); fast.step(silence, 1.0); QVERIFY(fast.settled());
+    }
+    void spectrumTapAndLifecycle() {
+        Spectrum::AudioTap tap;
+        for (int i = 0; i < 1000; ++i) tap.push(float(i), 1000);
+        const auto wave = tap.window();
+        QCOMPARE(wave.back(), 849.0f);
+        QCOMPARE(wave[161], 0.0f);
+        QCOMPARE(wave[162], 500.0f);
+        tap.clear(); QCOMPARE(tap.window(), Spectrum::Wave{});
+        MusicPlayer player;
+        QVERIFY(!player.visualizerEnabled());
+        QVERIFY(!player.m_bufferOutput);
+        QCOMPARE(player.spectrumLevels().size(), Spectrum::Bands);
+        player.setVisualizerEnabled(true);
+        QVERIFY(player.m_bufferOutput);
+        QVERIFY(player.m_spectrumTimer.isActive());
+        const auto epoch = player.m_spectrumEpoch;
+        player.m_spectrumTap.push(1.0f, 1);
+        player.m_spectrumAnalyser.levels.fill(1.0f);
+        player.setToken({});
+        QVERIFY(player.m_spectrumEpoch > epoch);
+        QVERIFY(player.m_spectrumAnalyser.settled());
+        QCOMPARE(player.m_spectrumTap.window(), Spectrum::Wave{});
+        player.setVisualizerEnabled(false);
+        QVERIFY(!player.m_bufferOutput);
+        QVERIFY(!player.m_spectrumTimer.isActive());
     }
     void publicState() {
         MusicPlayer player;
