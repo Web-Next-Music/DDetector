@@ -330,6 +330,61 @@ private slots:
         model.sync({updated});
         QCOMPARE(persistent.row(), 0); QCOMPARE(model.count(), 1);
     }
+    void modelDataCacheIsLazyBoundedAndCoherent() {
+        TrackModel model;
+        QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+        QList<QJsonObject> rows;
+        for (int i = 1; i <= 1000; ++i)
+            rows.append({{"id", i}, {"title", QString::number(i)},
+                         {"lyrics", QJsonArray{QJsonObject{{"text", QString(4096, 'x')}}}}});
+        model.sync(rows);
+        // The model tester may request data itself; start with an empty cache.
+        model.m_dataCache.clear();
+        QCOMPARE(model.count(), 1000);
+        QCOMPARE(model.rowCount(), 1000);
+        QCOMPARE(model.indexOf("1000"), 999);
+        QVERIFY(!model.data(QModelIndex(), Qt::UserRole).isValid());
+        QVERIFY(!model.data(model.index(0), Qt::DisplayRole).isValid());
+        QCOMPARE(model.m_dataCache.size(), 0);
+        const auto first = model.data(model.index(0), Qt::UserRole);
+        QCOMPARE(first.toMap().value("id").toString(), QString("1"));
+        const auto cached = model.m_dataCache.object(0);
+        QCOMPARE(model.data(model.index(0), Qt::UserRole), first);
+        QCOMPARE(model.m_dataCache.object(0), cached);
+        model.sync(rows);
+        QCOMPARE(model.m_dataCache.object(0), cached);
+        for (int i = 1; i <= TrackModel::DataCacheCapacity; ++i)
+            model.data(model.index(i), Qt::UserRole);
+        QCOMPARE(model.m_dataCache.size(), TrackModel::DataCacheCapacity);
+        QVERIFY(!model.m_dataCache.contains(0));
+        model.data(model.index(999), Qt::UserRole);
+        rows[999].insert("title", "updated");
+        bool notifiedWithFreshData = false;
+        connect(&model, &QAbstractItemModel::dataChanged, &model,
+                [&](const QModelIndex &start, const QModelIndex &, const QList<int> &) {
+            if (start.row() == 999)
+                notifiedWithFreshData = model.data(start, Qt::UserRole).toMap().value("title") == "updated";
+        });
+        model.sync(rows);
+        QVERIFY(notifiedWithFreshData);
+        QPersistentModelIndex held(model.index(999));
+        std::reverse(rows.begin(), rows.end());
+        model.sync(rows);
+        QCOMPARE(held.row(), 0);
+        QCOMPARE(held.data(Qt::UserRole).toMap().value("title").toString(), QString("updated"));
+        QCOMPARE(model.indexOf("1000"), 0);
+        rows.removeFirst();
+        model.sync(rows);
+        QVERIFY(!held.isValid());
+        QCOMPARE(model.data(model.index(0), Qt::UserRole).toMap().value("id").toString(), QString("999"));
+        rows.append({{"id", 1001}, {"title", "new"}});
+        model.sync(rows);
+        QCOMPARE(model.data(model.index(999), Qt::UserRole).toMap().value("id").toString(), QString("1001"));
+        model.sync({});
+        QCOMPARE(model.count(), 0);
+        QCOMPARE(model.indexOf("1001"), -1);
+        QCOMPARE(model.m_dataCache.size(), 0);
+    }
     void modelRejectsDuplicateIdsAndBulkReorders() {
         TrackModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
@@ -834,7 +889,7 @@ private slots:
         QQuickItem *gitButton = nullptr;
         QObject *sendDialog = nullptr;
         for (auto object : window->findChildren<QObject *>()) {
-            if (object->objectName() == "gitWorkspaceView")
+            if (object->objectName() == "gitWorkspaceLoader")
                 workspaceView = qobject_cast<QQuickItem *>(object);
             if (object->metaObject()->indexOfProperty("uploadBackend") >= 0)
                 sendDialog = object;
@@ -873,16 +928,20 @@ private slots:
         }
         window->setWidth(1200);
         QCoreApplication::processEvents();
-        QCOMPARE(workspaceView->property("workspaceBackend").value<QObject *>(),
-                 static_cast<QObject *>(&local.workspace));
+        QVERIFY(!workspaceView->property("item").value<QObject *>());
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QVERIFY(!workspaceView->isVisible());
         QVERIFY(QMetaObject::invokeMethod(gitButton, "clicked"));
         QCOMPARE(window->property("rightPage").toInt(), 1);
         QTRY_VERIFY(workspaceView->isVisible());
+        QTRY_VERIFY(workspaceView->property("item").value<QObject *>());
+        auto loadedWorkspace = workspaceView->property("item").value<QObject *>();
+        QCOMPARE(loadedWorkspace->property("workspaceBackend").value<QObject *>(),
+                 static_cast<QObject *>(&local.workspace));
         QVERIFY(QMetaObject::invokeMethod(lyricsButton, "clicked"));
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QTRY_VERIFY(!workspaceView->isVisible());
+        QCOMPARE(workspaceView->property("item").value<QObject *>(), loadedWorkspace);
 
         QVERIFY(sendDialog);
         QCOMPARE(sendDialog->property("uploadBackend").value<QObject *>(),

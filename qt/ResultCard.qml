@@ -17,6 +17,9 @@ Rectangle {
     property bool expanded: !!ui.expanded[row.id]
     property var displayLines: expanded && unsynced ? row.allLines : (row.lines || [])
     property var lyricsViewport: ListView.view
+        readonly property bool inViewport: visible && (!lyricsViewport ||
+            (lyricsViewport.visible && y + height > lyricsViewport.contentY
+                && y < lyricsViewport.contentY + lyricsViewport.height))
     property var lineOffsets: [0]
     readonly property int instantiatedEditors: lyricRows.count
     property int measurementPasses: 0
@@ -189,7 +192,7 @@ Rectangle {
                 Image {
                     id: cover
                     anchors.fill: parent
-                    source: card.row.cover ? "image://trackcovers/" + encodeURIComponent(card.row.cover) : ""
+                    source: card.inViewport && card.row.cover ? "image://trackcovers/" + encodeURIComponent(card.row.cover) : ""
                                         sourceSize: Qt.size(64, 64)
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
@@ -310,6 +313,7 @@ Rectangle {
         // Publish both bounds atomically. Separate first/end bindings can briefly
         // expose a 0..N range when jumping back from the bottom of a long card.
         readonly property var visibleRange: {
+            if (!card.inViewport) return {first: 0, count: 0};
             const first = card.lineAtOffset(Math.max(0, viewportTop - 64));
             const end = Math.min(card.displayLines.length,
                 card.lineAtOffset(viewportTop + viewportHeight + 64) + 1);

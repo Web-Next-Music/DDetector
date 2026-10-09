@@ -1,5 +1,6 @@
 #pragma once
 #include <QAbstractListModel>
+#include <QCache>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -20,7 +21,11 @@ public:
 signals:
     void countChanged();
 private:
+    friend class NativeTests;
+    static constexpr int DataCacheCapacity = 128;
     void rebuildIndexes();
+    // Cache only requested rows; QCache evicts least recently used conversions.
+    mutable QCache<int, QVariantMap> m_dataCache{DataCacheCapacity};
     QList<QJsonObject> m_rows;
     QHash<QString, int> m_indexes;
 };

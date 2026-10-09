@@ -30,12 +30,16 @@ static QString trackId(const QJsonObject &row) {
 QVariant TrackModel::data(const QModelIndex &index, int role) const {
     if (!index.isValid() || index.model() != this || index.column() != 0 || index.row() < 0
         || index.row() >= m_rows.size() || role != Qt::UserRole) return {};
+    if (const auto cached = m_dataCache.object(index.row())) return *cached;
     auto value = m_rows[index.row()].toVariantMap();
     value["id"] = trackId(m_rows[index.row()]);
+    m_dataCache.insert(index.row(), new QVariantMap(value));
     return value;
 }
 int TrackModel::indexOf(const QString &id) const { return m_indexes.value(id, -1); }
 void TrackModel::rebuildIndexes() {
+    // Row-keyed conversions cannot survive structural changes or sorting.
+    m_dataCache.clear();
     m_indexes.clear();
     for (int i = 0; i < m_rows.size(); ++i) m_indexes.insert(trackId(m_rows[i]), i);
 }
@@ -86,6 +90,7 @@ void TrackModel::sync(const QList<QJsonObject> &input) {
         }
         for (int i = 0; i < rows.size(); ++i) {
             if (m_rows[i] != rows[i]) {
+                m_dataCache.remove(i);
                 m_rows[i] = rows[i]; emit dataChanged(index(i), index(i), {Qt::UserRole});
             }
         }

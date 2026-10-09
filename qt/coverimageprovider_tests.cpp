@@ -13,6 +13,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QPointer>
+#include <QTemporaryDir>
 
 class CoverImageProviderTests : public QObject {
     Q_OBJECT
@@ -37,6 +38,31 @@ private slots:
         delete texture;
         delete response;
         QVERIFY(QFile::remove(path));
+    }
+    void diskCacheBoundsEntryCount() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        for (int i = 0; i < 1025; ++i) {
+            QFile file(directory.filePath(QString::number(i) + ".cover"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write("x"), qint64(1));
+        }
+        const QString path = directory.filePath("new.cover");
+        CoverImageProvider::store(directory.path(), path, "new");
+        QCOMPARE(QDir(directory.path()).entryList({"*.cover"}, QDir::Files).size(), 1024);
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("new"));
+    }
+    void emptyRequestedSizeUsesDefault() {
+        QImage image(1024, 1024, QImage::Format_ARGB32);
+        image.fill(Qt::cyan);
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "PNG"));
+        for (const QSize requested : {QSize(), QSize(0, 0), QSize(0, 64), QSize(64, 0)})
+            QCOMPARE(CoverImageProvider::decode(bytes, requested).size(), QSize(512, 512));
     }
     void extremeAspectRatioBudgets() {
         for (const QSize source : {QSize(4096, 1), QSize(1, 4096), QSize(2048, 2048), QSize(40, 40)}) {

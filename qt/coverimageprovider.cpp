@@ -20,6 +20,7 @@
 namespace {
 constexpr qint64 maxBytes = 4 * 1024 * 1024;
 constexpr qint64 maxDiskBytes = 128 * 1024 * 1024;
+constexpr qsizetype maxDiskEntries = 1024;
 QMutex cacheMutex;
 struct Result {
     QImage image;
@@ -46,7 +47,9 @@ QByteArray cached(const QString &path) {
     if (!file.open(QIODevice::ReadOnly) || file.size() > maxBytes) return {};
     return file.read(maxBytes + 1);
 }
-void store(const QString &directory, const QString &path, const QByteArray &bytes) {
+}
+
+void CoverImageProvider::store(const QString &directory, const QString &path, const QByteArray &bytes) {
     if (directory.isEmpty()) return;
     QMutexLocker lock(&cacheMutex);
     if (!QDir().mkpath(directory)) return;
@@ -56,11 +59,14 @@ void store(const QString &directory, const QString &path, const QByteArray &byte
     const auto entries = dir.entryInfoList({"*.cover"}, QDir::Files, QDir::Time | QDir::Reversed);
     qint64 total = 0;
     for (const auto &entry : entries) total += entry.size();
+    qsizetype count = entries.size();
     for (const auto &entry : entries) {
-        if (total <= maxDiskBytes) break;
-        if (QFile::remove(entry.absoluteFilePath())) total -= entry.size();
+        if (total <= maxDiskBytes && count <= maxDiskEntries) break;
+        if (QFile::remove(entry.absoluteFilePath())) {
+            total -= entry.size();
+            --count;
+        }
     }
-}
 }
 
 bool CoverImageProvider::isSafeUrl(const QUrl &url) {
@@ -90,7 +96,7 @@ QImage CoverImageProvider::decode(const QByteArray &bytes, const QSize &requeste
     constexpr qint64 maximumSourcePixels = 4 * 1024 * 1024;
     if (!size.isValid() || size.width() > 4096 || size.height() > 4096
         || qint64(size.width()) * size.height() > maximumSourcePixels) return {};
-    const QSize target = requested.isValid() ? requested.boundedTo(QSize(1024, 1024)) : QSize(512, 512);
+    const QSize target = !requested.isEmpty() ? requested.boundedTo(QSize(1024, 1024)) : QSize(512, 512);
     QSize scaled = size.scaled(target, Qt::KeepAspectRatioByExpanding);
     if (scaled.width() > 1024 || scaled.height() > 1024)
         scaled = size.scaled(QSize(1024, 1024), Qt::KeepAspectRatio);

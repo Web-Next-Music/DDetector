@@ -30,9 +30,9 @@ ApplicationWindow {
             notify("Wait for Send to finish before closing.");
             return;
         }
-        if (workspaceCloseApproved) return;
+        if (workspaceCloseApproved || !workspaceLoader.item) return;
         event.accepted = false;
-        workspaceView.requestClose(function() {
+        workspaceLoader.item.requestClose(function() {
             workspaceCloseApproved = true;
             Qt.callLater(function() { appUi.close(); });
         });
@@ -808,7 +808,8 @@ ApplicationWindow {
             y: 10
             width: panels.leftPanelWidth - 20
             height: panels.height - 20
-            model: backend.tracks
+            model: appUi.showShell ? backend.tracks : null
+            cacheBuffer: 0
             topMargin: 6
             bottomMargin: 6
             clip: true
@@ -898,15 +899,23 @@ ApplicationWindow {
                     }
                 }
             }
-            GitWorkspace {
-                id: workspaceView
-                objectName: "gitWorkspaceView"
+            Loader {
+                id: workspaceLoader
+                objectName: "gitWorkspaceLoader"
+                property bool visited: false
+                onVisibleChanged: if (visible) visited = true
+                active: visited || visible
                 x: 0; y: 0
                 width: parent.width - activityBar.width
                 height: parent.height - y
-                visible: appUi.rightPage === 1
-                workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
-                onNotify: function(message) { appUi.notify(message); }
+                visible: appUi.showShell && appUi.rightPage === 1
+                sourceComponent: Component {
+                    GitWorkspace {
+                        objectName: "gitWorkspaceView"
+                        workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
+                        onNotify: function(message) { appUi.notify(message); }
+                    }
+                }
             }
             RowLayout {
                 id: progress
@@ -962,7 +971,8 @@ ApplicationWindow {
                 y: progress.y + progress.height + 10
                 width: parent.width - 20 - activityBar.width
                 height: Math.max(0, parent.height - y - 10)
-                model: backend.cards
+                model: appUi.showShell ? backend.cards : null
+                cacheBuffer: 0
                 topMargin: 6
                 bottomMargin: 6
                 spacing: 10

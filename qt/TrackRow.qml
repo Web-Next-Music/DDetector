@@ -9,6 +9,12 @@ Rectangle {
     required property var row
     required property int number
     property url placeholderSource: "qrc:/assets/track-placeholder.svg"
+        property bool pooled: false
+        readonly property var viewport: ListView.view
+        readonly property bool inViewport: visible && !pooled && (!viewport ||
+            (viewport.visible && y + height > viewport.contentY && y < viewport.contentY + viewport.height))
+        ListView.onPooled: pooled = true
+        ListView.onReused: pooled = false
     height: 58
     radius: 8
     activeFocusOnTab: true
@@ -92,7 +98,7 @@ Rectangle {
             Image {
                 id: cover
                 anchors.fill: parent
-                source: root.row.cover ? "image://trackcovers/" + encodeURIComponent(root.row.cover) : ""
+                source: root.inViewport && root.row.cover ? "image://trackcovers/" + encodeURIComponent(root.row.cover) : ""
                                 sourceSize: Qt.size(76, 76)
                 asynchronous: true
                 fillMode: Image.PreserveAspectCrop
