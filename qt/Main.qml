@@ -668,7 +668,18 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 12
-                    Label { text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
+                    RowLayout {
+                        spacing: 8
+                        Image {
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            source: "qrc:/assets/lucide-git-branch.svg"
+                            sourceSize: Qt.size(16, 16)
+                            layer.enabled: true
+                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
+                        }
+                        Label { text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
+                    }
                     TextField {
                         id: repositoryPathInput
                         Layout.fillWidth: true
@@ -717,10 +728,21 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 12
-                    Label {
-                        text: "Yandex Music"
-                        color: appUi.ink
-                        font.pixelSize: 13
+                    RowLayout {
+                        spacing: 8
+                        Image {
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            source: "qrc:/assets/lucide-music-standard.svg"
+                            sourceSize: Qt.size(16, 16)
+                            layer.enabled: true
+                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
+                        }
+                        Label {
+                            text: "Yandex Music"
+                            color: appUi.ink
+                            font.pixelSize: 13
+                        }
                     }
                     TextField {
                         id: musicToken
