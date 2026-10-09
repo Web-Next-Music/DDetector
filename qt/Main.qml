@@ -496,8 +496,9 @@ ApplicationWindow {
             SmallButton {
                 Layout.preferredWidth: 100
                 Layout.preferredHeight: 30
-                text: appUi.state.fetching ? "Fetching" : "Fetch"
-                enabled: !appUi.state.fetching && !appUi.state.loading
+                text: "Fetch"
+                loading: !!appUi.state.fetching
+                enabled: !loading && !appUi.state.loading
                 onClicked: backend.fetch()
                 SiteToolTip { text: "Rebuild track list from external source" }
             }

@@ -300,7 +300,9 @@ void Bridge::acceptState(QJsonObject state) {
         source = publicTracks;
         safe.insert("trackCount", source.size());
         const auto last = safe.value("lastFetch").toObject();
-    if (!last.isEmpty() && last != m_state.value("lastFetch").toObject())
+    if (!safe.value("fetching").toBool() && !last.isEmpty()
+                && (last != m_state.value("lastFetch").toObject()
+                    || (m_state.value("fetching").toBool() && safe.value("error").toString().isEmpty())))
         emit toast(QString("Done: %1 tracks, +%2 added, −%3 removed, %4 lyrics fetched")
                    .arg(last.value("total").toInt()).arg(last.value("added").toInt())
                    .arg(last.value("removed").toInt()).arg(last.value("lyrics_fetched").toInt()));
