@@ -942,11 +942,7 @@ ApplicationWindow {
                         width: parent.width * (appUi.state.processing ? Math.min(1, (appUi.state.processed || 0) / Math.max(1, appUi.total)) : 1)
                         color: appUi.accent
                         radius: 2
-                        Behavior on width {
-                            NumberAnimation {
-                                duration: 350
-                            }
-                        }
+
                     }
                 }
                 Text {
