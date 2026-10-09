@@ -119,6 +119,8 @@ Item {
                             Layout.fillHeight: true
                             clip: true
                             model: root.available ? root.workspaceBackend.tree : []
+                            cacheBuffer: 0
+                            reuseItems: true
                             ScrollBar.vertical: ScrollBar {}
                             delegate: ItemDelegate {
                                 id: treeRow

@@ -59,6 +59,8 @@ Item {
             height: 160
             property int rowCount: 500
             model: 1
+            cacheBuffer: 0
+            reuseItems: true
             delegate: UI.ResultCard {
                 width: 600
                 ui: fakeUi
@@ -239,6 +241,27 @@ Item {
             card.forceActiveFocus(Qt.TabFocusReason);
             keyClick(Qt.Key_Return);
             compare(fakePlayer.plays, 0);
+        }
+        function test_pooledLyricsReleaseEditors() {
+            const view = createTemporaryObject(lyricsListFactory, scene, {rowCount: 500});
+            tryVerify(function() { return view.itemAtIndex(0) !== null; });
+            const card = view.itemAtIndex(0);
+            tryVerify(function() { return card.instantiatedEditors > 0; });
+            const originalHeight = card.height;
+            card.pooled = true;
+            tryCompare(card, "instantiatedEditors", 0);
+            compare(card.inViewport, false);
+            compare(card.height, originalHeight);
+            card.pooled = false;
+            tryVerify(function() { return card.instantiatedEditors > 0; });
+            verify(card.instantiatedEditors <= 12);
+            card.keyboardLine = 10;
+            card.row = {id: "102", title: "Replacement", lines: [
+                {ts: "01:00", parts: [{text: "New lyrics", marked: false}]}
+            ]};
+            compare(card.keyboardLine, 0);
+            tryVerify(function() { return findChild(card, "lyricWords0") !== null; });
+            compare(findChild(card, "lyricWords0").text.indexOf("New lyrics") >= 0, true);
         }
         function test_longLyricsOffscreenMarksAndKeyboardScroll_data() {
             return [{tag: "500 rows", rows: 500}, {tag: "5000 rows", rows: 5000}];

@@ -17,9 +17,16 @@ Rectangle {
     property bool expanded: !!ui.expanded[row.id]
     property var displayLines: expanded && unsynced ? row.allLines : (row.lines || [])
     property var lyricsViewport: ListView.view
-        readonly property bool inViewport: visible && (!lyricsViewport ||
-            (lyricsViewport.visible && y + height > lyricsViewport.contentY
-                && y < lyricsViewport.contentY + lyricsViewport.height))
+    property bool pooled: false
+    ListView.onPooled: {
+        pooled = true;
+        keyboardLine = 0;
+    }
+    ListView.onReused: pooled = false
+    onRowChanged: keyboardLine = 0
+    readonly property bool inViewport: visible && !pooled && (!lyricsViewport ||
+        (lyricsViewport.visible && y + height > lyricsViewport.contentY
+            && y < lyricsViewport.contentY + lyricsViewport.height))
     property var lineOffsets: [0]
     readonly property int instantiatedEditors: lyricRows.count
     property int measurementPasses: 0

@@ -974,6 +974,7 @@ ApplicationWindow {
                 bottomMargin: 6
                 spacing: 10
                 clip: true
+                reuseItems: true
                 delegate: ResultCard {
                     required property var track
                     width: results.width
