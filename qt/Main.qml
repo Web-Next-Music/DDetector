@@ -460,6 +460,7 @@ ApplicationWindow {
                 }
                 popup: Popup {
                     objectName: "sortPopup"
+                    x: (sorting.width - width) / 2
                     y: sorting.height + 6
                     width: Math.max(sorting.width, 140)
                     padding: 8
