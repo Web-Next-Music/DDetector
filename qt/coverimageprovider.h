@@ -2,7 +2,6 @@
 #include <QQuickAsyncImageProvider>
 #include <QThreadPool>
 #include <QUrl>
-#include <atomic>
 #include <memory>
 #include <QImage>
 #include <functional>

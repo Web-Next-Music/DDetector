@@ -4,21 +4,29 @@
 All inputs are hashed, generated outputs are validated in memory before any write,
 and individual files are atomically replaced. Publication is not a filesystem-wide
 transaction. Protected activity icons and Bearded artwork are never output targets.
-Reproducible tool versions: fonttools 4.66.1, brotli 1.2.0; see README.
+Reproducible tool versions: fonttools 4.66.1, brotli 1.2.0; see requirements-dev.txt
+and README.
 """
+
 import argparse
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Protocol, cast
 
 PROTECTED = {"lucide-music.svg", "lucide-git-branch.svg"}
 WINDOW_ICONS = {"minus": "lucide-window-minus.svg", "square": "lucide-window-maximize.svg", "x": "lucide-window-x.svg"}
 CONTROL_ICONS = {"panel-top": "lucide-panel-top.svg"}
+
+
+class FontTimestamps(Protocol):
+    created: int
+    modified: int
 
 
 def digest(data):
@@ -50,11 +58,12 @@ def generate(source, icons_only=False):
         outputs[target] = (f"<!-- lucide-react {version}; ISC; see LUCIDE-LICENSE.txt -->\n" + ET.tostring(svg, encoding="unicode") + "\n").encode()
     tools = {"lucide-react": version}
     if not icons_only:
-        import fontTools
         import brotli
+        import fontTools
         from fontTools.merge import Merger
         from fontTools.ttLib import TTFont
         from fontTools.varLib.instancer import instantiateVariableFont
+
         tools.update(fonttools=fontTools.__version__, brotli=brotli.__version__)
         if (fontTools.__version__, brotli.__version__) != ("4.66.1", "1.2.0"):
             raise RuntimeError("Use fonttools==4.66.1 and brotli==1.2.0 for reproducible output")
@@ -85,8 +94,9 @@ def generate(source, icons_only=False):
                     raise RuntimeError(f"No cached {family} fonts; build the website first")
                 font = Merger().merge(streams)
                 font.recalcTimestamp = False
-                font["head"].created = 2082844800
-                font["head"].modified = 2082844800  # Fixed OpenType timestamp: 1970-01-01.
+                head = cast(FontTimestamps, font["head"])
+                head.created = 2082844800
+                head.modified = 2082844800  # Fixed OpenType timestamp: 1970-01-01.
                 style = {600: "SemiBold", 700: "Bold", 800: "ExtraBold"}[weight]
                 for record in font["name"].names:
                     if record.nameID in (1, 16):
@@ -97,7 +107,10 @@ def generate(source, icons_only=False):
                         text = "DDetector" + family + "-" + style
                     else:
                         continue
-                    record.string = text.encode(record.getEncoding())
+                    encoding = record.getEncoding()
+                    if encoding is None:
+                        raise RuntimeError(f"Unsupported font name encoding: {family} nameID={record.nameID}")
+                    record.string = text.encode(encoding)
                 stream = io.BytesIO()
                 font.save(stream)
                 outputs[f"{family}-{style}.ttf"] = stream.getvalue()

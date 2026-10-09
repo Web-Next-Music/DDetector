@@ -4,13 +4,13 @@
 No production backend or OAuth is used. Unknown stderr, including QML warnings,
 is fatal; narrowly identified multimedia/driver diagnostics are retained in logs.
 """
+
 import argparse
 import copy
 import hashlib
 import http.server
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import struct
@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import zlib
+from pathlib import Path
 
 BENIGN_STDERR = (
     re.compile(r"qt\.multimedia\.ffmpeg: Using Qt multimedia with FFmpeg version .+"),
@@ -90,7 +91,7 @@ def main():
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *args):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -104,7 +105,7 @@ def main():
             def run(name, options):
                 try:
                     result = subprocess.run([str(args.executable.resolve()), *options], env=env,
-                                            capture_output=True, text=True, timeout=12)
+                                            capture_output=True, text=True, timeout=12, check=False)
                 except subprocess.TimeoutExpired as error:
                     stderr = error.stderr or ""
                     if isinstance(stderr, bytes):

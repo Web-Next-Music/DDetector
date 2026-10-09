@@ -1,16 +1,19 @@
 """UI harness regressions; no native source dependencies or external traffic."""
+
 import importlib.util
-from pathlib import Path
 import struct
 import tempfile
 import unittest
 import zlib
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / (name + ".py"))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load {name} from {ROOT / (name + '.py')}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -57,8 +60,8 @@ class SmokeTests(unittest.TestCase):
                 smoke.validate_png(path, 16, 1)
 
     def test_timeout_does_not_expose_command_arguments(self):
-        from unittest import mock
         import subprocess
+        from unittest import mock
         with tempfile.TemporaryDirectory() as directory:
             error = subprocess.TimeoutExpired(["application", "--bridge-key", "secret-test-key"], 12)
             with mock.patch.object(smoke.subprocess, "run", side_effect=error), mock.patch("sys.argv", ["smoke.py", "--output", directory]):

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 project(DDetectorQt VERSION 1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ContextMenu.menu requires 6.9; MultiEffect requires 6.5.
 find_package(Qt6 6.9 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia Widgets Concurrent)
 if(UNIX)
