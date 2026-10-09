@@ -1080,6 +1080,19 @@ ApplicationWindow {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 52; height: 52
                 radius: 8; color: "#171719"
+                layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
+                layer.effect: MultiEffect {
+                    maskEnabled: true
+                    maskSource: playerCoverMask
+                }
+                Rectangle {
+                    id: playerCoverMask
+                    anchors.fill: parent
+                    radius: playerCover.radius
+                    color: "white"
+                    visible: false
+                    layer.enabled: true
+                }
                 Image { id: playerCoverImage; anchors.fill: parent; source: musicPlayer.cover ? "image://trackcovers/" + encodeURIComponent(musicPlayer.cover) : ""; sourceSize: Qt.size(104, 104); asynchronous: true; fillMode: Image.PreserveAspectCrop }
                 Image { anchors.centerIn: parent; width: 20; height: 20; visible: playerCoverImage.status !== Image.Ready; source: "qrc:/assets/track-placeholder.svg" }
             }

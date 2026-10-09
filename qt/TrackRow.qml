@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Effects
 
 Rectangle {
     id: root
@@ -69,6 +70,19 @@ Rectangle {
             radius: 6
             color: root.ui.surface2
             clip: true
+            layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
+            layer.effect: MultiEffect {
+                maskEnabled: true
+                maskSource: coverMask
+            }
+            Rectangle {
+                id: coverMask
+                anchors.fill: parent
+                radius: parent.radius
+                color: "white"
+                visible: false
+                layer.enabled: true
+            }
             Image {
                 anchors.centerIn: parent
                 width: 15; height: 15
