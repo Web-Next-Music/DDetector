@@ -99,6 +99,10 @@ ApplicationWindow {
             results.positionViewAtIndex(index, ListView.Contain);
         }
     }
+    function playTrack(track) {
+        if (musicPlayer.enabled && !musicPlayer.busy)
+            musicPlayer.playTrack(track.id);
+    }
     function context(track, source, x, y, fullLyrics) {
         menuTrack = track;
         menuFullLyrics = fullLyrics;

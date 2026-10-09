@@ -42,9 +42,9 @@ Rectangle {
     }
     TapHandler {
         acceptedButtons: Qt.LeftButton
-        onTapped: {
-            root.ui.choose(root.row);
-        }
+        exclusiveSignals: TapHandler.SingleTap | TapHandler.DoubleTap
+        onSingleTapped: root.ui.choose(root.row)
+        onDoubleTapped: root.ui.playTrack(root.row)
     }
     TapHandler {
         acceptedButtons: Qt.RightButton

@@ -25,6 +25,8 @@ Item {
         property color ignoredColor: "#dc5050"
         property int choices: 0
         property int menus: 0
+        property int plays: 0
+        function playTrack(row) { plays++; }
         function toggleExpanded(id) { const next = Object.assign({}, expanded); next[id] = !next[id]; expanded = next; }
         function choose(row) { selectedId = row.id; choices++; }
         function context(row, item, x, y, full) { menus++; }
@@ -105,7 +107,22 @@ Item {
             tryCompare(nunitoBold, "status", FontLoader.Ready);
             tryCompare(nunitoSemiBold, "status", FontLoader.Ready);
         }
-        function init() { fakeUi.choices = 0; fakeUi.menus = 0; fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0; }
+        function init() { fakeUi.plays = 0; fakeUi.choices = 0; fakeUi.menus = 0; fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0; }
+        function test_trackDoubleClickPlays() {
+            const row = createTemporaryObject(rowFactory, scene);
+            verify(row !== null);
+            mouseClick(row, 200, 29);
+            tryCompare(fakeUi, "choices", 1);
+            compare(fakeUi.plays, 0);
+            compare(fakeUi.selectedId, "101");
+            fakeUi.choices = 0;
+            fakeUi.selectedId = "";
+            mouseDoubleClickSequence(row, 200, 29);
+            tryCompare(fakeUi, "plays", 1);
+            wait(500);
+            compare(fakeUi.choices, 0);
+            compare(fakeUi.selectedId, "");
+        }
         function test_buttonKeyboardAndPlainText() {
             const button = createTemporaryObject(buttonFactory, scene);
             verify(button !== null);
