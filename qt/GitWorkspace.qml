@@ -315,46 +315,9 @@ Item {
                                 readonly property real lineHeight: Math.max(1, positionToRectangle(0).height)
                                 wrapMode: TextEdit.NoWrap
                                 selectByMouse: true
-                                ContextMenu.menu: SiteMenu {
+                                ContextMenu.menu: SiteEditMenu {
                                     objectName: "editorContextMenu"
-                                    width: 200
-                                    SiteMenuItem {
-                                        text: "Undo"; glyph: "undo-2"
-                                        enabled: editor.canUndo
-                                        onTriggered: editor.undo()
-                                    }
-                                    SiteMenuItem {
-                                        text: "Redo"; glyph: "redo-2"
-                                        enabled: editor.canRedo
-                                        onTriggered: editor.redo()
-                                    }
-                                    SiteMenuSeparator {}
-                                    SiteMenuItem {
-                                        text: "Cut"; glyph: "scissors"
-                                        enabled: editor.selectedText.length > 0
-                                        onTriggered: editor.cut()
-                                    }
-                                    SiteMenuItem {
-                                        text: "Copy"; glyph: "copy"
-                                        enabled: editor.selectedText.length > 0
-                                        onTriggered: editor.copy()
-                                    }
-                                    SiteMenuItem {
-                                        text: "Paste"; glyph: "clipboard"
-                                        enabled: editor.canPaste
-                                        onTriggered: editor.paste()
-                                    }
-                                    SiteMenuItem {
-                                        text: "Delete"; glyph: "trash-2"
-                                        enabled: editor.selectedText.length > 0
-                                        onTriggered: editor.remove(editor.selectionStart, editor.selectionEnd)
-                                    }
-                                    SiteMenuSeparator {}
-                                    SiteMenuItem {
-                                        text: "Select All"; glyph: "text-select"
-                                        enabled: editor.length > 0
-                                        onTriggered: editor.selectAll()
-                                    }
+                                    textControl: editor
                                 }
                                 background: null
                             }

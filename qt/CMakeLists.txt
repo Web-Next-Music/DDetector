@@ -19,7 +19,7 @@ file(GLOB APP_ASSETS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" as
 # Preserve qrc:/Main.qml and runtime native registrations until they can be
 # migrated together. A QML module must not silently change the engine entry URL.
 set(SHARED_QML SiteFocusRing.qml SiteButton.qml SiteTextField.qml SiteToggleRow.qml
-    SiteSpinner.qml FileIcon.qml SiteMenu.qml SiteMenuItem.qml SiteMenuSeparator.qml
+    SiteSpinner.qml FileIcon.qml SiteMenu.qml SiteMenuItem.qml SiteMenuSeparator.qml SiteEditMenu.qml
     SiteDialog.qml SiteToolTip.qml DialogHeader.qml WindowButton.qml SiteQuote.qml)
 set(APP_QML ${SHARED_QML} terminal.qml GitWorkspace.qml SendDialog.qml Main.qml
     TrackRow.qml ResultCard.qml SiteView.qml NotificationStack.qml)

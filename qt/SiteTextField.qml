@@ -9,6 +9,7 @@ TextField {
     leftPadding: 12
     rightPadding: 12
     selectByMouse: true
+    ContextMenu.menu: SiteEditMenu { textControl: control }
     color: "#f0f0f4"
     placeholderTextColor: "#999999"
     selectionColor: "#142bfef5"

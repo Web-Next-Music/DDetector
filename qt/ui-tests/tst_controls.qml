@@ -108,6 +108,23 @@ Item {
             tryCompare(nunitoSemiBold, "status", FontLoader.Ready);
         }
         function init() { fakeUi.plays = 0; fakeUi.choices = 0; fakeUi.menus = 0; fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0; }
+        function test_sharedTextContextMenu() {
+            const field = createTemporaryObject(fieldFactory, scene, {text: "Artist"});
+            const menu = field.ContextMenu.menu;
+            verify(menu !== null);
+            compare(menu.popupType, Popup.Item);
+            compare(menu.count, 9);
+            compare(menu.itemAt(3).glyph, "scissors");
+            compare(menu.itemAt(4).enabled, false);
+            field.selectAll();
+            compare(menu.itemAt(4).enabled, true);
+            field.readOnly = true;
+            field.selectAll();
+            compare(menu.itemAt(3).enabled, false);
+            compare(menu.itemAt(4).enabled, true);
+            field.echoMode = TextInput.Password;
+            compare(menu.itemAt(4).enabled, false);
+        }
         function test_trackDoubleClickPlays() {
             const row = createTemporaryObject(rowFactory, scene);
             verify(row !== null);

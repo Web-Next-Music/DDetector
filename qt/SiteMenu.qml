@@ -8,6 +8,8 @@ Menu {
     property color borderColor: "#3397979f"
     property real cornerRadius: 10
 
+    // Native platform menus bypass our shared delegates and rounded surface.
+    popupType: Popup.Item
     width: 190
     padding: 8
     spacing: 2
