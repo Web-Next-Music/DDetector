@@ -116,6 +116,9 @@ func TestYandexIncrementalCache(t *testing.T) {
 	if lyricsCalls != 1 {
 		t.Fatal("restart refetched lyrics")
 	}
+	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"tracks":{}}`), nil
+	})
 	load(true)
 	if metadataCalls != 2 || lyricsCalls != 1 || lrclibCalls != 1 {
 		t.Fatal("refresh not incremental")

@@ -54,31 +54,32 @@ type pendingLogin struct {
 	Expires        time.Time
 }
 type Server struct {
-	mu              sync.Mutex
-	op              sync.Mutex
-	client          *Client
-	yandex          *yandexClient
-	jobCancel       context.CancelFunc
-	operationCancel context.CancelFunc
-	jobDone         chan struct{}
-	lifecycle       context.Context
-	lifecycleCancel context.CancelFunc
-	maintenanceDone chan struct{}
-	closing         bool
-	logoutPending   int
-	yandexFactory   func(string) *yandexClient
-	key, base, path string
-	session         *Session
-	state           State
-	login           *pendingLogin
-	detector        *Detector
-	OpenBrowser     func(string) error
-	tracksRevision  uint64
-	cachedRevision  uint64
-	cachedState     State
-	cachedTracks    []Result
-	stateJSON       []byte
-	stateETag       string
+	mu                 sync.Mutex
+	op                 sync.Mutex
+	client             *Client
+	yandex             *yandexClient
+	jobCancel          context.CancelFunc
+	operationCancel    context.CancelFunc
+	jobDone            chan struct{}
+	lifecycle          context.Context
+	lifecycleCancel    context.CancelFunc
+	maintenanceDone    chan struct{}
+	closing            bool
+	logoutPending      int
+	yandexFactory      func(string) *yandexClient
+	exclusionTransport http.RoundTripper
+	key, base, path    string
+	session            *Session
+	state              State
+	login              *pendingLogin
+	detector           *Detector
+	OpenBrowser        func(string) error
+	tracksRevision     uint64
+	cachedRevision     uint64
+	cachedState        State
+	cachedTracks       []Result
+	stateJSON          []byte
+	stateETag          string
 }
 
 func RandomKey() string {
@@ -454,6 +455,13 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	if c == nil {
 		return errors.New("Yandex Music token required")
 	}
+	var excluded map[int64]bool
+	if fetch {
+		excluded, err = downloadExclusions(ctx, s.exclusionTransport)
+		if err != nil {
+			return err
+		}
+	}
 	cachePath := s.path + ".yandex-" + c.uid + ".tracks-cache.sqlite"
 	cache, cacheErr := readTracksCacheContext(ctx, cachePath, uid, c.base+"/users/"+c.uid)
 	if cacheErr != nil {
@@ -461,6 +469,18 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 			return ctx.Err()
 		}
 		log.Print("Yandex cache unavailable; rebuilding")
+	}
+	purged := 0
+	if fetch {
+		cache.Excluded = excluded
+		beforePurge := len(cache.Tracks)
+		filterExcluded(&cache)
+		purged = beforePurge - len(cache.Tracks)
+		// Commit the new policy and purge before any subsequent fetch can fail.
+		if err := saveTracksCache(cachePath, cache); err != nil {
+			return fmt.Errorf("unable to persist exclusion list and purge cached tracks: %w", err)
+		}
+		cache.Dirty, cache.Rebuild = false, false
 	}
 	s.publishResults(cache.Tracks)
 	cached := map[int64]Result{}
@@ -471,6 +491,13 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	if err != nil {
 		return err
 	}
+	eligible := make([]Track, 0, len(tracks))
+	for _, t := range tracks {
+		if !cache.Excluded[t.ID] {
+			eligible = append(eligible, t)
+		}
+	}
+	tracks = eligible
 	missing := []string{}
 	for _, t := range tracks {
 		if t.ID <= 0 {
@@ -496,7 +523,8 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	}
 	results := []Result{}
 	pending := []int{}
-	stats := FetchResult{Total: len(tracks)}
+	// The later membership-removal loop only sees tracks that survived the purge.
+	stats := FetchResult{Total: len(tracks), Removed: purged}
 	defer func() {
 		if loadErr != nil {
 			stats.Partial = true

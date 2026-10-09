@@ -28,6 +28,7 @@ func detectorFingerprint() string {
 }
 
 type tracksCache struct {
+	Excluded            map[int64]bool   `json:"excludedTrackIDs,omitempty"`
 	Dirty               bool             `json:"-"`
 	Rebuild             bool             `json:"-"`
 	LyricsSourceVersion string           `json:"lyricsSourceVersion,omitempty"`
@@ -76,6 +77,7 @@ func validateTracksCache(ctx context.Context, cache tracksCache, uid, base strin
 		return empty, nil
 	}
 	cache.Dirty = cache.LyricsSourceVersion != lyricsSourceVersion
+	filterExcluded(&cache)
 	seen := map[int64]bool{}
 	for i, r := range cache.Tracks {
 		if err := ctx.Err(); err != nil {
@@ -122,7 +124,8 @@ func saveTracksCacheLimit(path string, cache tracksCache, limit int64) error {
 		// Encode one track at a time: the full cache need not fit in an encoder buffer.
 		header, err := json.Marshal(map[string]any{
 			"lyricsSourceVersion": lyricsSourceVersion, "lyricsSources": cache.LyricsSources,
-			"user_id": cache.UserID, "source_url": cache.URL, "fingerprint": cache.Fingerprint,
+			"excludedTrackIDs": cache.Excluded,
+			"user_id":          cache.UserID, "source_url": cache.URL, "fingerprint": cache.Fingerprint,
 		})
 		if err != nil {
 			return err
