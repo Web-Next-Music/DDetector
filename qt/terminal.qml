@@ -14,7 +14,6 @@ Rectangle {
     readonly property string repositoryRoot: workspaceBackend ? workspaceBackend.rootPath : ""
     readonly property bool sessionVisible: visible && width > 0 && height > 0
                                           && Window.window !== null && Window.window.visible
-    readonly property bool compact: width < 480
     readonly property real minimumPanelHeight: 120
     readonly property color accent: "#2bfef5"
     implicitWidth: 320
@@ -45,10 +44,10 @@ Rectangle {
         Accessible.name: text
         property string tooltipText: text
         SiteToolTip { text: control.tooltipText }
-        leftPadding: root.compact ? 6 : 10
+        leftPadding: 10
         rightPadding: leftPadding
         font.family: "DDetector Quicksand"
-        font.pixelSize: root.compact ? 11 : 12
+        font.pixelSize: 12
         font.weight: Font.DemiBold
         opacity: enabled ? 1 : 0.5
         contentItem: Item {
@@ -79,7 +78,7 @@ Rectangle {
             Label {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
-                text: root.compact ? "TTY" : root.terminalSession && root.terminalSession.shell
+                text: root.terminalSession && root.terminalSession.shell
                       ? "TERMINAL · " + root.terminalSession.shell : "TERMINAL"
                 elide: Text.ElideMiddle
                 color: root.accent

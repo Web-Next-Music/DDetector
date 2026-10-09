@@ -36,8 +36,6 @@ ApplicationWindow {
             Qt.callLater(function() { appUi.close(); });
         });
     }
-    property bool mobile: width <= 600
-    property bool compactHeader: width < 950
     property color bg: "#000000"
     property color playerSurface: "#0c0c0e"
     property color surface: playerSurface
@@ -55,7 +53,6 @@ ApplicationWindow {
         readonly property bool showShell: true
         readonly property bool tracksPending: checkingAccess || (!!state.loading && !state.processing && total === 0)
     property string selectedId: ""
-    property bool sheetOpen: false
     property var expanded: ({})
     property var menuTrack: ({})
     property bool menuFullLyrics: false
@@ -98,7 +95,6 @@ ApplicationWindow {
         selectedId = track.id;
         const index = backend.cards.indexOf(track.id);
         if (index >= 0) {
-            sheetOpen = true;
             results.positionViewAtIndex(index, ListView.Contain);
         }
     }
@@ -143,7 +139,6 @@ ApplicationWindow {
             if (!appUi.privileged) {
                 appUi.selectedId = "";
                 appUi.expanded = ({});
-                appUi.sheetOpen = false;
                 trackMenu.close();
             }
             if (appUi.state.authenticated === false)
@@ -408,7 +403,7 @@ ApplicationWindow {
         z: 10
         width: parent.width
         y: titleBar.height
-        height: !visible ? 0 : appUi.compactHeader && appUi.privileged ? 86 : 48
+        height: !visible ? 0 : 48
         color: appUi.bg
         MouseArea {
             anchors.fill: parent
@@ -445,7 +440,7 @@ ApplicationWindow {
 
             }
             Text {
-                visible: !appUi.compactHeader && appUi.showShell
+                visible: appUi.showShell
                 text: backend.tracks.count + " tracks"
                 color: appUi.muted
                 font.pixelSize: 12
@@ -454,16 +449,15 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.right: parent.right
-            anchors.rightMargin: appConfig.hideWindowControls ? 8 : appUi.compactHeader ? 10 : windowControls.width + 8
+            anchors.rightMargin: appConfig.hideWindowControls ? 8 : windowControls.width + 8
             visible: appUi.showShell
             enabled: appUi.privileged
-            y: appUi.compactHeader ? 48 : 9
-            width: appUi.compactHeader ? parent.width - (appConfig.hideWindowControls ? 10 : 20) : parent.width - (appConfig.hideWindowControls ? 0 : windowControls.width) - 238
+            y: 9
+            width: parent.width - (appConfig.hideWindowControls ? 0 : windowControls.width) - 238
             height: 30
             spacing: 8
             Item {
                 Layout.fillWidth: true
-                visible: !appUi.compactHeader
             }
             ComboBox {
                 id: sorting
@@ -560,7 +554,7 @@ ApplicationWindow {
             TextField {
                 id: search
                 Layout.fillWidth: true
-                Layout.maximumWidth: appUi.mobile ? 10000 : 300
+                Layout.maximumWidth: 300
                 Layout.preferredHeight: 30
                 placeholderText: "Search (Enter)"
                 color: appUi.ink
@@ -577,7 +571,7 @@ ApplicationWindow {
                 }
             }
             SmallButton {
-                Layout.preferredWidth: appUi.mobile ? 64 : 100
+                Layout.preferredWidth: 100
                 Layout.preferredHeight: 30
                 text: appUi.state.fetching ? "Fetching" : "Fetch"
                 enabled: !appUi.state.fetching && !appUi.state.loading
@@ -940,8 +934,8 @@ ApplicationWindow {
             id: trackList
             x: 10
             y: 10
-            width: appUi.mobile ? panels.width - 20 : panels.leftPanelWidth - 20
-            height: panels.height - (appUi.mobile ? 82 : 20)
+            width: panels.leftPanelWidth - 20
+            height: panels.height - 20
             model: backend.tracks
             topMargin: 6
             bottomMargin: 6
@@ -968,7 +962,6 @@ ApplicationWindow {
             anchors.fill: trackList
         }
         Rectangle {
-            visible: !appUi.mobile
             x: panels.leftPanelWidth
             height: panels.height
             width: 1
@@ -976,41 +969,11 @@ ApplicationWindow {
         }
         Rectangle {
             id: right
-            x: appUi.mobile ? 0 : panels.leftPanelWidth + 1
-            y: appUi.mobile && !appUi.sheetOpen ? panels.height - 60 : 0
-            width: appUi.mobile ? panels.width : panels.width - panels.leftPanelWidth - 1
+            x: panels.leftPanelWidth + 1
+            y: 0
+            width: panels.width - panels.leftPanelWidth - 1
             height: panels.height
             color: appUi.bg
-            Behavior on y {
-                NumberAnimation {
-                    duration: 320
-                    easing.type: Easing.InOutCubic
-                }
-            }
-            Rectangle {
-                visible: appUi.mobile
-                width: parent.width
-                height: 1
-                color: appUi.borderColor
-            }
-            Button {
-                id: sheetToggle
-                visible: appUi.mobile
-                width: parent.width
-                height: appUi.mobile ? 36 : 0
-                contentItem: Item {
-                    Image {
-                        anchors.centerIn: parent
-                        width: 20; height: 20
-                        source: "qrc:/assets/lucide-" + (appUi.sheetOpen ? "chevron-down" : "chevron-up") + ".svg"
-                        layer.enabled: true
-                        layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-                    }
-                }
-                background: Item {}
-                onClicked: appUi.sheetOpen = !appUi.sheetOpen
-                Accessible.name: appUi.sheetOpen ? "Collapse results" : "Expand results"
-            }
             Rectangle {
                 anchors.fill: activityBar
                 color: appUi.surface
@@ -1062,7 +1025,7 @@ ApplicationWindow {
             GitWorkspace {
                 id: workspaceView
                 objectName: "gitWorkspaceView"
-                x: 0; y: appUi.mobile ? 36 : 0
+                x: 0; y: 0
                 width: parent.width - activityBar.width
                 height: parent.height - y
                 visible: appUi.rightPage === 1
@@ -1073,9 +1036,9 @@ ApplicationWindow {
                 id: progress
                 visible: appUi.rightPage === 0
                 x: 20
-                y: appUi.mobile ? 36 : 10
+                y: 10
                 width: parent.width - 40 - activityBar.width
-                height: appUi.mobile ? 24 : 26
+                height: 26
                 spacing: 10
                 Text {
                     text: appUi.state.processing ? "Scanning " + (appUi.state.processed || 0) + " / " + appUi.total : appUi.total ? "Done · " + appUi.total + " tracks" : "No tracks"
@@ -1330,7 +1293,7 @@ ApplicationWindow {
         header: Item { implicitHeight: 0 }
         footer: Item { implicitHeight: 0 }
         width: Math.min(appUi.width - 32, 704)
-        height: Math.max(appUi.width <= 480 ? 304 : 368, authPanel.height + (appUi.width <= 480 ? 88 : 100) + 2)
+        height: Math.max(368, authPanel.height + 100 + 2)
         modal: true
         focus: true
         padding: 0
@@ -1361,7 +1324,6 @@ ApplicationWindow {
             Item {
                 id: authArtwork
                 objectName: "authArtwork"
-                visible: appUi.width > 480
                 x: 1
                 y: 1
                 width: (parent.width - 2) * 0.9 / 1.9
@@ -1377,7 +1339,7 @@ ApplicationWindow {
             }
             Column {
                 id: authPanel
-                readonly property real horizontalPadding: appUi.width <= 480 ? 24 : 32
+                readonly property real horizontalPadding: 32
                 x: (authArtwork.visible ? authArtwork.x + authArtwork.width : 1) + horizontalPadding
                 width: parent.width - x - horizontalPadding - 1
                 anchors.verticalCenter: parent.verticalCenter
@@ -1388,7 +1350,7 @@ ApplicationWindow {
                     color: appUi.ink
                     font.family: "Luckystar"
                     font.weight: Font.Normal
-                    font.pixelSize: appUi.width <= 480 ? 34 : 40
+                    font.pixelSize: 40
                     bottomPadding: 18
                 }
                 Repeater {
@@ -1415,7 +1377,7 @@ ApplicationWindow {
                         text: backend.pendingProvider === modelData.provider ? "Redirecting…" : "Continue with " + modelData.name
                         enabled: !appUi.state.loginPending && backend.pendingProvider === ""
                         font.family: "DDetector Quicksand"
-                        font.pixelSize: appUi.width <= 480 ? 12 : 14
+                        font.pixelSize: 14
                         font.weight: Font.DemiBold
                         onClicked: backend.login(modelData.provider)
                         contentItem: Row {

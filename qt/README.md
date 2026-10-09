@@ -100,17 +100,17 @@ source versions. To force another full rebuild, remove that account's cache whil
 - Bundled source-derived Nunito (600/700/800), Quicksand (600/700), Syne (700),
   plus the source Lucky Star font and login artwork. Latin/Cyrillic Nunito
   subsets are merged for native use. See `assets/NOTICE.md` for licensing.
-- 60px desktop header and equal-width track/results panels; 96px two-row header
-  below 950px (utilities/avatar first, search/sort/fetch second),
-  full-width track list, and animated 60px-peek results sheet at **<=600px**.
+- Desktop-only layout with a 48px single-row header and side-by-side track/results
+  panels (40% / 60%). The minimum window size remains 1200×750; there are no
+  mobile/tablet layouts, compact headers, or results sheets.
 - Numbered 58px track rows, covers/fallbacks, `MM/dd/yyyy` dates, original badges
   (`…`, `found`, `clean`, `no lyrics`), ignored red states, and active selection.
 - Default order is backend order. Date is newest first; A–Z uses a locale
   collator; artist sorting counts artists **after filtering**, as in the source.
   Search commits **only on Enter** and matches title, artist, or ID.
   Search/sort apply only to the track list, not result cards.
-- Row click copies its ID and scrolls the matching result card into view; on
-  narrow screens it opens the results sheet. Cards support highlights,
+- Row click copies its ID and scrolls the matching result card into view.
+  Cards support highlights,
   timestamps, timestamp suppression on unsynced tracks, expandable full lyrics,
   context-line dimming, Copy ID, and Yandex's `title artist download mp3` query.
 - Track/card context menus: Yandex, copy, ignore/unignore; full lyrics appears
@@ -165,14 +165,15 @@ before that exit; it does not itself auto-exit without `--smoke-test`.
 `--width` and `--height` set initial window dimensions.
 
 `smoke.py` explicitly starts a temporary test-only loopback backend with a
-random key. It verifies the bearer on polls and captures dark-only desktop, mobile,
-login (desktop and 320px mobile), compact header, access denied,
-banned, access-checking, error, loading, and empty views in
+random key. It verifies the bearer on polls and captures desktop-sized, dark-only
+library, login, access-denied, banned, access-checking, error, loading, and empty views in
 `qt/build/screenshots/`. It never connects to production or starts OAuth.
 
 Qt Test covers ID-preserving model reconciliation, unchanged polling, all bearer
 endpoints, token-field exclusion, privilege-state clearing, filter/sort semantics,
-JSON persistence/permissions/malformed-file protection, native QML loading, fixed dark palette/mobile/full-lyrics/selection/clipboard,
+JSON persistence/permissions/malformed-file protection, native QML loading, fixed dark
+palette, full lyrics, selection/clipboard, desktop header/panel geometry and auth
+styling retained at programmatically narrowed widths (without changing the window minimum),
 direct login/auth modal, account menu, Settings/hide-ignored interactions,
 public metadata filtering (including rejection of local-file avatar URLs),
 and duplicate-provider-login prevention. To capture interaction

@@ -7,13 +7,12 @@ SiteDialog {
     objectName: "accessPopup"
     required property var ui
     property url artworkSource: "qrc:/assets/Kagami-access-denied.jpg"
-    readonly property bool mobile: ui.width <= 480
     readonly property string error: backend.connectionError || ui.state.error || ""
     readonly property bool denied: !!ui.state.isBanned || (!!ui.state.authenticated && !ui.state.hasAccess && (!!ui.state.accessChecked || error === "DDetector access denied"))
 
     visible: ui.state.authenticated !== false && !ui.privileged && !ui.checkingAccess
     width: Math.min(ui.width - 32, 704)
-    height: Math.max(mobile ? 304 : 368, panel.height + (mobile ? 88 : 100) + 2)
+    height: Math.max(368, panel.height + 100 + 2)
     closePolicy: Popup.NoAutoClose
     header: Item { implicitHeight: 0 }
     padding: 0
@@ -39,7 +38,6 @@ SiteDialog {
         }
         Item {
             id: artwork
-            visible: !site.mobile
             x: 1
             y: 1
             width: (parent.width - 2) * 0.9 / 1.9
@@ -58,11 +56,11 @@ SiteDialog {
         }
         Column {
             id: panel
-            readonly property real horizontalPadding: site.mobile ? 24 : 32
-            x: (artwork.visible ? artwork.x + artwork.width : 1) + horizontalPadding
+            readonly property real horizontalPadding: 32
+            x: artwork.x + artwork.width + horizontalPadding
             width: parent.width - x - horizontalPadding - 1
             anchors.verticalCenter: parent.verticalCenter
-            spacing: site.mobile ? 24 : 28
+            spacing: 28
             Text {
                 objectName: "accessMessage"
                 width: parent.width
@@ -72,7 +70,7 @@ SiteDialog {
                 color: site.ui.ink
                 font.family: "Luckystar"
                 font.weight: Font.Normal
-                font.pixelSize: site.mobile ? 34 : 40
+                font.pixelSize: 40
                 wrapMode: Text.Wrap
                 Accessible.role: Accessible.AlertMessage
                 Accessible.name: text
@@ -94,7 +92,7 @@ SiteDialog {
                 visible: !!site.ui.state.authenticated
                 text: "Sign in with another account"
                 font.family: "DDetector Quicksand"
-                font.pixelSize: site.mobile ? 12 : 14
+                font.pixelSize: 14
                 font.weight: Font.DemiBold
                 onClicked: backend.logout()
                 contentItem: Text {

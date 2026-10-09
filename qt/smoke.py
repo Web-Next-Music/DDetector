@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dark-only offscreen native screenshots against a local mock backend, not production.
+"""Desktop-only, dark-only offscreen native screenshots against a local mock backend, not production.
 No OAuth, external traffic, secrets, or privilege bypasses are used by the application.
 """
 import argparse
@@ -54,12 +54,10 @@ try:
     print("PASS launch validation: removed flag and missing backend credentials rejected")
     scenarios = [
         ("desktop", 1200, 800, {}),
-        ("mobile", 390, 740, {}),
+
         ("login", 1200, 900, {"authenticated": False, "user": None, "hasAccess": False, "accessChecked": False, "tracks": []}),
-        ("login-mobile", 320, 480, {"authenticated": False, "user": None, "hasAccess": False, "accessChecked": False, "tracks": []}),
-                ("denied", 1200, 800, {"hasAccess": False, "accessChecked": True}),
-                ("compact", 700, 600, {}),
-                ("banned", 390, 740, {"isBanned": True, "hasAccess": False}),
+        ("denied", 1200, 800, {"hasAccess": False, "accessChecked": True}),
+        ("banned", 1200, 800, {"isBanned": True, "hasAccess": False}),
         ("checking-access", 1200, 800, {"hasAccess": False, "accessChecked": False}),
         ("error", 1200, 800, {"hasAccess": False, "accessChecked": False, "error": "Unable to check DDetector access"}),
         ("loading", 1200, 800, {"loading": True, "tracks": [], "processed": 0, "foundCount": 0}),

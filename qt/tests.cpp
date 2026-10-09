@@ -367,11 +367,8 @@ private slots:
         QVERIFY(window);
         QCOMPARE(window->minimumWidth(), 1200);
         QCOMPARE(window->minimumHeight(), 750);
-        // Exercise responsive layouts independently of the production window limit.
-        window->setMinimumSize(QSize(320, 320));
-        window->resize(390, 740);
+        window->resize(1200, 800);
         QTest::qWait(100);
-        QCOMPARE(window->property("mobile").toBool(), true);
                 for (const auto &name : {"windowMinimizeButton", "windowMaximizeButton", "windowCloseButton", "avatarButton"}) {
                     auto button = window->findChild<QObject *>(name);
                     QVERIFY(button);
@@ -417,7 +414,7 @@ private slots:
         auto track = bridge.tracks()->data(bridge.tracks()->index(1), Qt::UserRole);
         QVERIFY(QMetaObject::invokeMethod(window, "choose", Q_ARG(QVariant, track)));
         QCOMPARE(window->property("selectedId").toString(), QString("102"));
-        QCOMPARE(window->property("sheetOpen").toBool(), true);
+
         QCOMPARE(QGuiApplication::clipboard()->text(), QString("102"));
         QVERIFY(QMetaObject::invokeMethod(window, "toggleExpanded", Q_ARG(QVariant, QVariant("102"))));
         QTest::qWait(400);
@@ -427,9 +424,7 @@ private slots:
         QCOMPARE(window->property("accent").value<QColor>(), QColor("#2bfef5"));
         QVERIFY(!window->grabWindow().isNull());
                 const auto screenshots = qEnvironmentVariable("DDETECTOR_TEST_SCREENSHOT_DIR");
-                if (!screenshots.isEmpty()) QVERIFY(window->grabWindow().save(screenshots + "/mobile-expanded-dark.png"));
-        window->resize(1200, 800); QTest::qWait(50);
-        QCOMPARE(window->property("mobile").toBool(), false);
+                if (!screenshots.isEmpty()) QVERIFY(window->grabWindow().save(screenshots + "/desktop-expanded-dark.png"));
         QCOMPARE(engine.rootContext()->contextProperty("gitWorkspace").value<QObject *>(),
                  static_cast<QObject *>(&local.workspace));
         QCOMPARE(engine.rootContext()->contextProperty("localUploader").value<QObject *>(),
@@ -453,6 +448,31 @@ private slots:
         };
         findPageButtons(findPageButtons, window->contentItem());
         QVERIFY(workspaceView); QVERIFY(lyricsButton); QVERIFY(gitButton);
+        auto sorting = window->findChild<QQuickItem *>("sortSelect");
+        QVERIFY(sorting);
+        auto header = sorting->parentItem()->parentItem();
+        auto rightPanel = workspaceView->parentItem();
+        auto panels = rightPanel->parentItem();
+        const auto headerHeight = header->height();
+        const auto sortingY = sorting->mapToItem(header, QPointF()).y();
+        QCOMPARE(headerHeight, 48.0);
+        // Programmatic widths must not restore tablet/mobile layouts, even when
+        // bypassing the production minimum size on the offscreen platform.
+        for (const int width : {1440, 950, 700, 600, 480, 390, 320}) {
+            window->setWidth(width);
+            QCoreApplication::processEvents();
+            QCOMPARE(window->minimumWidth(), 1200);
+            QCOMPARE(window->minimumHeight(), 750);
+            QCOMPARE(header->height(), headerHeight);
+            QCOMPARE(sorting->mapToItem(header, QPointF()).y(), sortingY);
+            QCOMPARE(rightPanel->y(), 0.0);
+            QVERIFY(rightPanel->x() > 0);
+            QVERIFY(qAbs(rightPanel->x() + rightPanel->width() - panels->width()) < 1);
+            QVERIFY(qAbs(rightPanel->x() - (panels->width() * 0.40 + 1)) < 1);
+            QCOMPARE(workspaceView->y(), 0.0);
+        }
+        window->setWidth(1200);
+        QCoreApplication::processEvents();
         QCOMPARE(workspaceView->property("workspaceBackend").value<QObject *>(),
                  static_cast<QObject *>(&local.workspace));
         QCOMPARE(window->property("rightPage").toInt(), 0);
@@ -729,9 +749,21 @@ private slots:
         QVERIFY(popup->property("visible").toBool());
         const auto screenshots = qEnvironmentVariable("DDETECTOR_TEST_SCREENSHOT_DIR");
         if (!screenshots.isEmpty()) QVERIFY(window->grabWindow().save(screenshots + "/auth-desktop.png"));
-        window->resize(390, 740); QTest::qWait(100);
-        QVERIFY(!artwork->isVisible());
-        if (!screenshots.isEmpty()) QVERIFY(window->grabWindow().save(screenshots + "/auth-mobile.png"));
+        auto authPanel = title->parentItem();
+        const auto horizontalPadding = authPanel->property("horizontalPadding").toReal();
+        QCOMPARE(horizontalPadding, 32.0);
+        const auto titleFontSize = title->property("font").value<QFont>().pixelSize();
+        for (const int width : {700, 480, 390, 320}) {
+            window->setWidth(width);
+            QCoreApplication::processEvents();
+            QVERIFY(artwork->isVisible());
+            QCOMPARE(authPanel->property("horizontalPadding").toReal(), horizontalPadding);
+            QVERIFY(qAbs(authPanel->x() - (artwork->x() + artwork->width() + horizontalPadding)) < 1);
+            QVERIFY(qAbs(artwork->width() - (artwork->parentItem()->width() - 2) * 0.9 / 1.9) < 1);
+            QCOMPARE(title->property("font").value<QFont>().pixelSize(), titleFontSize);
+        }
+        window->setWidth(1200);
+        QCoreApplication::processEvents();
         auto discord = visualChild(window->contentItem(), "login-discord");
         QVERIFY(discord); QVERIFY(QMetaObject::invokeMethod(discord, "clicked"));
         bridge.login("spotify");

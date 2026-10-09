@@ -91,7 +91,8 @@ int main(int argc, char **argv) {
     if (engine.rootObjects().isEmpty()) return 1;
     auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     if (!window) return 1;
-    window->resize(qMax(320, parser.value("width").toInt()), qMax(320, parser.value("height").toInt()));
+    window->resize(qMax(window->minimumWidth(), parser.value("width").toInt()),
+                       qMax(window->minimumHeight(), parser.value("height").toInt()));
     if (parser.isSet("smoke-test")) {
         const QString screenshot = parser.value("screenshot");
         QTimer::singleShot(2100, &app, [window, screenshot, &app] {
