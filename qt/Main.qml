@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -42,7 +43,7 @@ ApplicationWindow {
     property color surface2: "#171719"
     property color borderColor: "#3397979f"
     property color ink: "#f0f0f4"
-    property color muted: "#666666"
+    property color muted: "#999999"
     property color accent: "#2bfef5"
     property color accentBg: "#142bfef5"
     property color accentBorder: "#332bfef5"
@@ -162,30 +163,14 @@ ApplicationWindow {
     }
     ListModel { id: toastModel }
 
-    component SmallButton: Button {
-        HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
-        property bool accented: false
+    component SmallButton: SiteButton {
         implicitHeight: 28
-        Accessible.name: text
-        font.family: "DDetector Nunito"
-        font.pixelSize: 12
-        font.weight: Font.Bold
         padding: 6
         leftPadding: 12
         rightPadding: 12
-        opacity: enabled ? 1 : 0.5
-        contentItem: Text {
-            text: parent.text
-            font: parent.font
-            color: parent.accented || parent.hovered ? appUi.accent : appUi.muted
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle {
-            radius: 8
-            color: parent.accented || parent.hovered ? appUi.accentBg : appUi.surface
-            border.color: parent.accented || parent.hovered || parent.activeFocus ? appUi.accentBorder : appUi.borderColor
-        }
+        textColor: appUi.muted
+        hoverTextColor: appUi.accent
+        surfaceColor: appUi.surface
     }
     SiteMenu {
         id: trackMenu
@@ -199,6 +184,7 @@ ApplicationWindow {
             contentItem: Column {
                 spacing: 2
                 Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: appUi.menuTrack.title || ""
                     color: appUi.ink
@@ -206,6 +192,7 @@ ApplicationWindow {
                     elide: Text.ElideRight
                 }
                 Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: appUi.menuTrack.artist || ""
                     color: appUi.muted
@@ -329,80 +316,11 @@ ApplicationWindow {
         }
     }
     Rectangle {
-        id: titleBar
-        objectName: "titleBar"
-        width: parent.width
-        height: appUi.showShell || appUi.state.authenticated ? 0 : 48
-        visible: height > 0
-        color: appUi.bg
-        z: 30
-        MouseArea {
-            anchors.fill: parent
-            anchors.rightMargin: windowControls.width
-            onPressed: appUi.startSystemMove()
-            onDoubleClicked: appUi.toggleMaximized()
-        }
-        Text {
-            x: 8
-            anchors.verticalCenter: parent.verticalCenter
-            text: "D<span style='color:" + appUi.accent + "'>Detector</span>"
-            textFormat: Text.RichText
-            font.family: "DDetector Quicksand"
-            font.pixelSize: 18
-            font.weight: Font.Bold
-            color: appUi.ink
-        }
-    }
-    component WindowButton: Button {
-                    HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
-                    id: windowButton
-                    required property int index
-                    property string modelData: ["Minimize", "Maximize", "Close"][index]
-                    objectName: "window" + modelData + "Button"
-                    width: activityBar.width
-                    height: 48
-                    padding: 0
-                    Accessible.name: index === 1 && appUi.visibility === Window.Maximized ? "Restore" : modelData
-                    onClicked: {
-                        if (index === 0) appUi.showMinimized();
-                        else if (index === 1) appUi.toggleMaximized();
-                        else appUi.close();
-                    }
-                    background: Rectangle {
-                        color: windowButton.hovered ? (windowButton.index === 2 ? "#f23f42" : appUi.surface2) : "transparent"
-                    }
-                    contentItem: Item {
-                        Canvas {
-                            anchors.centerIn: parent
-                            width: 10
-                            height: 10
-                            property color strokeColor: windowButton.hovered && windowButton.index === 2 ? "white" : appUi.ink
-                            onStrokeColorChanged: requestPaint()
-                            onPaint: {
-                                const ctx = getContext("2d");
-                                ctx.clearRect(0, 0, width, height);
-                                ctx.strokeStyle = strokeColor;
-                                ctx.lineWidth = 1;
-                                ctx.beginPath();
-                                if (windowButton.index === 0) {
-                                    ctx.moveTo(0, 5.5); ctx.lineTo(10, 5.5);
-                                } else if (windowButton.index === 1) {
-                                    ctx.rect(0.5, 0.5, 9, 9);
-                                } else {
-                                    ctx.moveTo(0.5, 0.5); ctx.lineTo(9.5, 9.5);
-                                    ctx.moveTo(9.5, 0.5); ctx.lineTo(0.5, 9.5);
-                                }
-                                ctx.stroke();
-                            }
-                        }
-                    }
-        }
-    Rectangle {
         id: mainHeader
         visible: appUi.showShell || !!appUi.state.authenticated
         z: 10
         width: parent.width
-        y: titleBar.height
+        y: 0
         height: !visible ? 0 : 48
         color: appUi.bg
         MouseArea {
@@ -440,6 +358,7 @@ ApplicationWindow {
 
             }
             Text {
+                textFormat: Text.PlainText
                 visible: appUi.showShell
                 text: backend.tracks.count + " tracks"
                 color: appUi.muted
@@ -461,6 +380,8 @@ ApplicationWindow {
             }
             ComboBox {
                 id: sorting
+                Accessible.name: "Sort tracks"
+                SiteFocusRing { active: sorting.visualFocus }
                 objectName: "sortSelect"
                 HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
                 Layout.preferredWidth: 100
@@ -468,7 +389,7 @@ ApplicationWindow {
                 model: ["Default", "By date", "A - Z", "By artist"]
                 onActivated: backend.setSort(currentIndex)
                 font.pixelSize: 12
-                contentItem: Text {
+                contentItem: Text { textFormat: Text.PlainText;
                     text: sorting.displayText
                     font: sorting.font
                     color: appUi.ink
@@ -510,6 +431,7 @@ ApplicationWindow {
                     contentItem: RowLayout {
                         spacing: 8
                         Text {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: sortOption.modelData
                             font.family: "DDetector Nunito"
@@ -551,14 +473,15 @@ ApplicationWindow {
                     }
                 }
             }
-            TextField {
+            SiteTextField {
                 id: search
+                Accessible.name: "Search tracks; press Enter to apply"
                 Layout.fillWidth: true
                 Layout.maximumWidth: 300
                 Layout.preferredHeight: 30
                 placeholderText: "Search (Enter)"
                 color: appUi.ink
-                placeholderTextColor: "#666666"
+                placeholderTextColor: "#999999"
                 font.pixelSize: 13
                 leftPadding: 12
                 rightPadding: 12
@@ -618,6 +541,7 @@ ApplicationWindow {
             contentItem: Item {
                 clip: true
                 Text {
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: appUi.userName.charAt(0).toUpperCase()
                     color: appUi.ink
@@ -633,15 +557,13 @@ ApplicationWindow {
             }
         }
         Item { width: 0; height: 48 }
-        WindowButton { index: 0; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
-        WindowButton { index: 1; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
-        WindowButton { index: 2; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 0; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 1; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 2; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
     }
     SiteDialog {
         id: settingsDialog
         objectName: "settingsDialog"
-        padding: 8
-        topPadding: 0
         anchors.centerIn: Overlay.overlay
         width: Math.min(appUi.width - 32, 560)
         icon: "qrc:/assets/lucide-settings.svg"
@@ -678,10 +600,12 @@ ApplicationWindow {
                             layer.enabled: true
                             layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
                         }
-                        Label { text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
+                        Label { textFormat: Text.PlainText; text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
                     }
-                    TextField {
+                    SiteTextField {
                         id: repositoryPathInput
+                        font.pixelSize: appUi.font.pixelSize
+                        Accessible.name: "Git repository path"
                         Layout.fillWidth: true
                         implicitHeight: 36
                         leftPadding: 12
@@ -708,11 +632,7 @@ ApplicationWindow {
                         }
                         onEditingFinished: applyPath()
                         onAccepted: applyPath()
-                        background: Rectangle {
-                            color: appUi.surface
-                            radius: 8
-                            border.color: repositoryPathInput.activeFocus ? appUi.accentBorder : appUi.borderColor
-                        }
+
                     }
                 }
             }
@@ -739,13 +659,16 @@ ApplicationWindow {
                             layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: "Yandex Music"
                             color: appUi.ink
                             font.pixelSize: 13
                         }
                     }
-                    TextField {
+                    SiteTextField {
                         id: musicToken
+                        font.pixelSize: appUi.font.pixelSize
+                        Accessible.name: "Yandex Music OAuth token"
                         objectName: "musicTokenSetting"
                         Layout.fillWidth: true
                         implicitHeight: 36
@@ -758,11 +681,7 @@ ApplicationWindow {
                         color: appUi.ink
                         selectionColor: appUi.accentBg
                         selectedTextColor: appUi.ink
-                        background: Rectangle {
-                            color: appUi.surface
-                            radius: 8
-                            border.color: musicToken.activeFocus ? appUi.accentBorder : appUi.borderColor
-                        }
+
                         text: appConfig.musicToken
                         onTextEdited: tokenApplyTimer.restart()
                         onAccepted: { tokenApplyTimer.stop(); appConfig.musicToken = text.trim(); }
@@ -782,51 +701,14 @@ ApplicationWindow {
                 radius: 14
                 color: appUi.surface2
                 border.color: appUi.borderColor
-                CheckBox {
+                SiteToggleRow {
                     id: hideIgnoredToggle
                     objectName: "hideIgnoredSetting"
                     anchors.fill: parent
-                    padding: 16
                     text: "Hide ignored tracks"
+                    glyph: "shield"
                     checked: backend.hideIgnored
                     onToggled: backend.hideIgnored = checked
-                    HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
-                    indicator: Rectangle {
-                        implicitWidth: 40
-                        implicitHeight: 22
-                        x: hideIgnoredToggle.width - width - hideIgnoredToggle.rightPadding
-                        y: (hideIgnoredToggle.height - height) / 2
-                        radius: 11
-                        color: hideIgnoredToggle.checked ? appUi.accentBg : appUi.surface
-                        border.color: hideIgnoredToggle.checked ? appUi.accentBorder : appUi.borderColor
-                        Rectangle {
-                            width: 16; height: 16; radius: 8
-                            x: hideIgnoredToggle.checked ? 21 : 3
-                            y: 3
-                            color: hideIgnoredToggle.checked ? appUi.accent : appUi.muted
-                            Behavior on x { NumberAnimation { duration: 160 } }
-                        }
-                    }
-                    contentItem: RowLayout {
-                        spacing: 12
-                        Image {
-                            Layout.preferredWidth: 18
-                            Layout.preferredHeight: 18
-                            source: "qrc:/assets/lucide-shield.svg"
-                            layer.enabled: true
-                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.rightMargin: 52
-                            text: hideIgnoredToggle.text
-                            font: hideIgnoredToggle.font
-                            color: appUi.ink
-                            elide: Text.ElideRight
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                    }
-                    background: Item {}
                 }
             }
             Rectangle {
@@ -835,49 +717,14 @@ ApplicationWindow {
                 radius: 14
                 color: appUi.surface2
                 border.color: appUi.borderColor
-                CheckBox {
+                SiteToggleRow {
                     id: hideWindowControlsToggle
                     objectName: "hideWindowControlsSetting"
                     anchors.fill: parent
-                    padding: 16
                     text: "Hide window controls"
+                    glyph: "panel-top"
                     checked: appConfig.hideWindowControls
                     onToggled: appConfig.hideWindowControls = checked
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    indicator: Rectangle {
-                        implicitWidth: 40; implicitHeight: 22
-                        x: hideWindowControlsToggle.width - width - hideWindowControlsToggle.rightPadding
-                        y: (hideWindowControlsToggle.height - height) / 2
-                        radius: 11
-                        color: hideWindowControlsToggle.checked ? appUi.accentBg : appUi.surface
-                        border.color: hideWindowControlsToggle.checked ? appUi.accentBorder : appUi.borderColor
-                        Rectangle {
-                            width: 16; height: 16; radius: 8
-                            x: hideWindowControlsToggle.checked ? 21 : 3
-                            y: 3
-                            color: hideWindowControlsToggle.checked ? appUi.accent : appUi.muted
-                            Behavior on x { NumberAnimation { duration: 160 } }
-                        }
-                    }
-                    contentItem: RowLayout {
-                        spacing: 12
-                        Image {
-                            Layout.preferredWidth: 18; Layout.preferredHeight: 18
-                            source: "qrc:/assets/lucide-maximize.svg"
-                            layer.enabled: true
-                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.rightMargin: 52
-                            text: hideWindowControlsToggle.text
-                            font: hideWindowControlsToggle.font
-                            color: appUi.ink
-                            elide: Text.ElideRight
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                    }
-                    background: Item {}
                 }
             }
         }
@@ -899,11 +746,9 @@ ApplicationWindow {
         onCloseRequested: reject()
         contentItem: ColumnLayout {
             spacing: 16
-            Label {
+            SiteQuote {
                 Layout.fillWidth: true
                 text: "The current terminal will be stopped, including any running commands. Continue?"
-                color: appUi.ink
-                wrapMode: Text.Wrap
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -1019,10 +864,14 @@ ApplicationWindow {
                     model: ["music", "git-branch"]
                     Button {
                         id: activityButton
+                        SiteFocusRing { active: activityButton.visualFocus }
                         objectName: index === 0 ? "lyricsPageButton" : "gitPageButton"
                         required property string modelData
                         required property int index
                         width: 48; height: 48
+                        HoverHandler {
+                            cursorShape: appUi.rightPage === activityButton.index ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        }
                         padding: 0
                         contentItem: Item {
                             Image {
@@ -1063,6 +912,7 @@ ApplicationWindow {
                 height: 26
                 spacing: 10
                 Text {
+                    textFormat: Text.PlainText
                     text: appUi.state.processing ? "Scanning " + (appUi.state.processed || 0) + " / " + appUi.total : appUi.total ? "Done · " + appUi.total + " tracks" : "No tracks"
                     color: appUi.muted
                     font.pixelSize: 11
@@ -1085,6 +935,7 @@ ApplicationWindow {
                     }
                 }
                 Text {
+                    textFormat: Text.PlainText
                     visible: (appUi.state.foundCount || 0) > 0
                     text: (appUi.state.foundCount || 0) + " with hits"
                     color: appUi.accent
@@ -1119,13 +970,13 @@ ApplicationWindow {
                 }
                 ScrollBar.vertical: ScrollBar {}
                 Text {
+                    textFormat: Text.PlainText
                     visible: backend.cards.count === 0 && !appUi.state.processing && !appUi.tracksPending
                     width: parent.width - 48
                     x: 24
                     y: 60
                     horizontalAlignment: Text.AlignHCenter
                     color: appUi.muted
-                    opacity: 0.6
                     font.pixelSize: 13
                     text: appUi.total ? "No drug references found" : "No tracks. Press Fetch to load."
                 }
@@ -1146,6 +997,7 @@ ApplicationWindow {
     component PlayerSlider: Slider {
         id: playerSlider
         implicitHeight: 20
+        SiteFocusRing { active: playerSlider.visualFocus }
         background: Rectangle {
             x: playerSlider.leftPadding
             y: playerSlider.height / 2 - 2
@@ -1165,18 +1017,22 @@ ApplicationWindow {
             y: playerSlider.height / 2 - height / 2
             width: 12; height: 12; radius: 6
             color: "#ffffff"
-            visible: playerSlider.hovered || playerSlider.pressed
+            visible: playerSlider.hovered || playerSlider.pressed || playerSlider.visualFocus
         }
     }
-    component PlayerButton: Button {
+    component PlayerButton: SiteButton {
         id: playerButton
         property bool primary: false
-        property string glyph: "play"
+        glyph: "play"
         implicitWidth: 36
         implicitHeight: 36
         HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
         opacity: enabled ? 1 : 0.35
         padding: primary ? 6 : 7
+        leftPadding: padding
+        rightPadding: padding
+        topPadding: padding
+        bottomPadding: padding
         contentItem: Image {
             source: "qrc:/assets/lucide-" + playerButton.glyph + ".svg"
             sourceSize.width: playerButton.primary ? 24 : 20
@@ -1200,10 +1056,10 @@ ApplicationWindow {
         objectName: "playerPanel"
         anchors.bottom: parent.bottom
         width: parent.width
-        visible: !appUi.privileged || musicPlayer.enabled
-        height: visible ? 88 : 0
+        visible: true
+        height: 88
         color: appUi.playerSurface
-        enabled: visible && appUi.privileged
+        enabled: appUi.privileged && musicPlayer.enabled
         Rectangle { width: parent.width; height: 1; color: "#29292d" }
         function timeLabel(ms) {
             const seconds = Math.floor(ms / 1000);
@@ -1227,8 +1083,9 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.max(0, parent.width * 0.25 - 68)
-                Text { Layout.fillWidth: true; text: musicPlayer.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: musicPlayer.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: musicPlayer.artist || (musicPlayer.enabled ? "Select a track" : "Add a token in Settings")
                     color: "#888888"; font.pixelSize: 11; elide: Text.ElideRight
@@ -1242,9 +1099,10 @@ ApplicationWindow {
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
                     spacing: 12
-                    PlayerButton { glyph: "skip-back"; Accessible.name: "Previous track"; onClicked: musicPlayer.previous() }
+                    PlayerButton { glyph: "skip-back"; padding: 8; Accessible.name: "Previous track"; onClicked: musicPlayer.previous() }
                     PlayerButton {
                         primary: true
+                        padding: 7
                         implicitWidth: 32
                         implicitHeight: 32
                         glyph: musicPlayer.playing ? "pause" : "play"
@@ -1252,10 +1110,10 @@ ApplicationWindow {
                         enabled: musicPlayer.enabled && !musicPlayer.busy && musicPlayer.title !== ""
                         onClicked: musicPlayer.toggle()
                     }
-                    PlayerButton { glyph: "skip-forward"; Accessible.name: "Next track"; onClicked: musicPlayer.next() }
+                    PlayerButton { glyph: "skip-forward"; padding: 8; Accessible.name: "Next track"; onClicked: musicPlayer.next() }
                 }
                 RowLayout {
-                    Text { text: playerPanel.timeLabel(musicPlayer.position); color: "#888888"; font.pixelSize: 11 }
+                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(musicPlayer.position); color: "#888888"; font.pixelSize: 11 }
                     PlayerSlider {
                         Layout.fillWidth: true
                         from: 0; to: Math.max(1, musicPlayer.duration)
@@ -1265,7 +1123,7 @@ ApplicationWindow {
                         onMoved: musicPlayer.seek(value)
 
                     }
-                    Text { text: playerPanel.timeLabel(musicPlayer.duration); color: "#888888"; font.pixelSize: 11 }
+                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(musicPlayer.duration); color: "#888888"; font.pixelSize: 11 }
                 }
             }
             PlayerButton {
@@ -1331,7 +1189,7 @@ ApplicationWindow {
         }
         contentItem: Item {
             id: authContent
-            layer.enabled: true
+            layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
             layer.effect: MultiEffect {
                 maskEnabled: true
                 maskSource: authMask
@@ -1367,6 +1225,7 @@ ApplicationWindow {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 10
                 Text {
+                    textFormat: Text.PlainText
                     objectName: "authTitle"
                     text: "Sign in"
                     color: appUi.ink
@@ -1392,6 +1251,7 @@ ApplicationWindow {
                     ]
                     SmallButton {
                         id: providerButton
+                        SiteFocusRing { active: providerButton.visualFocus }
                         required property var modelData
                         objectName: "login-" + modelData.provider
                         width: parent.width
@@ -1412,6 +1272,7 @@ ApplicationWindow {
                                 source: "qrc:/assets/" + providerButton.modelData.provider + "-dark" + ".svg"
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 id: providerText
                                 text: providerButton.text
                                 font: providerButton.font
@@ -1427,6 +1288,7 @@ ApplicationWindow {
                     }
                 }
                 Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     wrapMode: Text.Wrap
                     text: appUi.state.error || ""
@@ -1438,65 +1300,13 @@ ApplicationWindow {
 
         }
     }
-    Column {
-        id: toastStack
-        objectName: "notificationStack"
+    NotificationStack {
+        ui: appUi
+        notificationModel: toastModel
         z: 500
         x: 16
         anchors.bottom: playerPanel.top
         anchors.bottomMargin: 16
-        spacing: 8
-        width: Math.min(appUi.width - 32, 380)
-        // Update height and row positions together so inserting at the top
-        // keeps existing cards stationary relative to the player.
-        Repeater {
-            model: toastModel
-            delegate: Rectangle {
-                id: toastCard
-                required property int toastId
-                required property string message
-                property bool open: false
-                objectName: "notificationToast"
-                // Column owns item positions; animate only the visual offset.
-                transform: Translate {
-                    x: toastCard.open ? 0 : -toastCard.width - 16
-                    Behavior on x {
-                        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
-                    }
-                }
-                width: Math.min(toastStack.width, toastLabel.implicitWidth + 32)
-                height: toastLabel.implicitHeight + 24
-                radius: 8
-                opacity: open ? 1 : 0
-                color: appUi.surface2
-                border.color: appUi.borderColor
-                Accessible.role: Accessible.AlertMessage
-                Accessible.name: message
-                Behavior on opacity { NumberAnimation { duration: 180 } }
-                Component.onCompleted: open = true
-                Timer {
-                    interval: 3500
-                    running: true
-                    onTriggered: {
-                        toastCard.open = false;
-                        exitTimer.start();
-                    }
-                }
-                Timer {
-                    id: exitTimer
-                    interval: 220
-                    onTriggered: appUi.removeToast(toastCard.toastId)
-                }
-                Text {
-                    id: toastLabel
-                    anchors.centerIn: parent
-                    width: Math.min(toastStack.width - 32, implicitWidth)
-                    wrapMode: Text.Wrap
-                    text: toastCard.message
-                    color: appUi.ink
-                    font.pixelSize: 12
-                }
-            }
-        }
+        onExpired: function(toastId) { appUi.removeToast(toastId); }
     }
 }

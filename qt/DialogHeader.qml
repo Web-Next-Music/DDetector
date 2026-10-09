@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
@@ -6,12 +7,13 @@ Rectangle {
     id: header
 
     property url icon: ""
+    property url assetRoot: "qrc:/assets/"
     property string title: ""
     property color surface: "#0c0c0e"
     property color surface2: "#171719"
     property color borderColor: "#3397979f"
     property color ink: "#f0f0f4"
-    property color muted: "#666666"
+    property color muted: "#999999"
     property color accentBg: "#142bfef5"
     property color accentBorder: "#332bfef5"
     property alias closeButtonObjectName: closeButton.objectName
@@ -42,6 +44,7 @@ Rectangle {
         layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: header.muted }
     }
     Text {
+        textFormat: Text.PlainText
         anchors.left: headerIcon.visible ? headerIcon.right : parent.left
         anchors.leftMargin: headerIcon.visible ? 12 : 24
         anchors.right: closeButton.left
@@ -54,7 +57,7 @@ Rectangle {
         font.weight: Font.Bold
         elide: Text.ElideRight
     }
-    Button {
+    SiteButton {
         id: closeButton
         anchors.right: parent.right
         anchors.rightMargin: 24
@@ -62,34 +65,17 @@ Rectangle {
         width: 30
         height: 30
         padding: 0
-        opacity: enabled ? 1 : 0.5
-        Accessible.name: header.closeButtonAccessibleName
-        HoverHandler { cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
-        contentItem: Item {
-            Image {
-                anchors.centerIn: parent
-                width: 16
-                height: 16
-                source: "qrc:/assets/lucide-x.svg"
-                layer.enabled: true
-                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: closeButton.hovered ? header.ink : header.muted }
-            }
-        }
-        background: Rectangle {
-            radius: 8
-            color: closeButton.hovered ? header.surface : "transparent"
-            border.color: closeButton.visualFocus ? header.accentBorder : "transparent"
-            Behavior on color { ColorAnimation { duration: 150 } }
-            Rectangle {
-                anchors.fill: parent
-                anchors.margins: -3
-                radius: 11
-                color: "transparent"
-                border.width: 2
-                border.color: "#2bfef5"
-                visible: closeButton.visualFocus
-            }
-        }
+        text: header.closeButtonAccessibleName
+        assetRoot: header.assetRoot
+        iconOnly: true
+        glyph: "x"
+        glyphSize: 16
+        textColor: header.muted
+        hoverTextColor: header.ink
+        surfaceColor: "transparent"
+        hoverColor: header.surface
+        borderColor: "transparent"
+        accentBorder: "transparent"
         onClicked: header.closeRequested()
     }
 }

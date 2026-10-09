@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
@@ -24,7 +25,7 @@ SiteDialog {
     }
 
     contentItem: Item {
-        layer.enabled: true
+        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
         layer.effect: MultiEffect {
             maskEnabled: true
             maskSource: cardMask
@@ -62,6 +63,7 @@ SiteDialog {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 28
             Text {
+                textFormat: Text.PlainText
                 objectName: "accessMessage"
                 width: parent.width
                 text: site.ui.state.isBanned ? "Account banned"
@@ -76,6 +78,7 @@ SiteDialog {
                 Accessible.name: text
             }
             Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: site.ui.state.isBanned ? "This account is not allowed to use DDetector."
                       : site.denied ? "You do not have permission to use DDetector. Please sign in with an account that has access."
@@ -95,7 +98,7 @@ SiteDialog {
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
                 onClicked: backend.logout()
-                contentItem: Text {
+                contentItem: Text { textFormat: Text.PlainText;
                     text: logoutButton.text
                     font: logoutButton.font
                     color: site.ui.ink

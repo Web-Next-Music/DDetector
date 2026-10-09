@@ -1,7 +1,7 @@
 #include "terminalsession.h"
 
 #include <QApplication>
-#include <QDir>
+
 #include <QFileInfo>
 
 #include <QFontDatabase>

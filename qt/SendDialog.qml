@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -37,55 +38,31 @@ SiteDialog {
 
 
 
-    component Field: TextField {
+    component Field: SiteTextField {
         Layout.fillWidth: true
         enabled: !dialog.busy
-        implicitHeight: 36
-        padding: 10
-        leftPadding: 12
-        rightPadding: 12
-        selectByMouse: true
-        color: "#f0f0f4"
-        placeholderTextColor: "#97979f"
-        selectionColor: "#142bfef5"
-        selectedTextColor: "#f0f0f4"
         font.family: dialog.font.family
-        font.pixelSize: 14
-        background: Rectangle {
-            radius: 8
-            color: "#0c0c0e"
-            border.color: parent.activeFocus ? "#332bfef5" : "#3397979f"
-            opacity: parent.enabled ? 1 : 0.55
-        }
     }
 
-    component Caption: Label {
+    component Caption: Label { textFormat: Text.PlainText;
         color: "#f0f0f4"
         font.family: dialog.font.family
         font.pixelSize: 13
     }
 
-    component ActionButton: Button {
-        property bool accented: false
+    component ActionButton: SiteButton {
         enabled: !dialog.busy
         padding: 8
         leftPadding: 16
         rightPadding: 16
         font.family: dialog.font.family
         font.pixelSize: 14
-        contentItem: Text {
-            text: parent.text
-            font: parent.font
-            color: parent.accented ? "#2bfef5" : "#f0f0f4"
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            opacity: parent.enabled ? 1 : 0.45
-        }
-        background: Rectangle {
-            radius: 8
-            color: parent.accented ? (parent.hovered ? "#292bfef5" : "#142bfef5") : "#171719"
-            border.color: parent.accented ? "#332bfef5" : "#3397979f"
-        }
+        textColor: "#f0f0f4"
+        hoverTextColor: textColor
+        surfaceColor: "#171719"
+        hoverColor: surfaceColor
+        hoverBorderColor: borderColor
+        accentedColor: hovered ? "#292bfef5" : "#142bfef5"
     }
 
     contentItem: ColumnLayout {
@@ -178,22 +155,20 @@ SiteDialog {
             Layout.fillWidth: true
             visible: text.length > 0
             text: !dialog.uploadBackend ? "Upload backend is not configured." : dialog.uploadBackend.error
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
             color: "#ff9292"
             wrapMode: Text.Wrap
         }
-        Caption {
-            Layout.fillWidth: true
-            visible: text.length > 0
-            text: dialog.uploadBackend ? dialog.uploadBackend.status : ""
-            color: dialog.busy ? "#2bfef5" : "#97979f"
-            wrapMode: Text.Wrap
-        }
+
         RowLayout {
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
             ActionButton { text: "Cancel"; onClicked: dialog.close() }
             ActionButton {
-                text: dialog.busy ? "Sending…" : "Send"
+                objectName: "sendTrackButton"
+                text: "Send"
+                loading: dialog.busy
                 accented: true
                 enabled: !!dialog.uploadBackend && !dialog.busy && dialog.trackId.length > 0
                 onClicked: {

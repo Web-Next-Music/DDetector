@@ -1,0 +1,21 @@
+{
+  "inputs": {
+    "node_modules/lucide-react/LICENSE": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+    "node_modules/lucide-react/dist/esm/icons/minus.mjs": "84b39378fd79f305fbdce7ef32a22124f322df74137669e8dbbd195f9287d18d",
+    "node_modules/lucide-react/dist/esm/icons/panel-top.mjs": "1bf01c907446e5f46f02736e1eac61ecebc05038daa61e67779f08288c4bf995",
+    "node_modules/lucide-react/dist/esm/icons/square.mjs": "1e769e4607972fc1856017e4ce0b7e5d6a75c10d222744779ad7e12eab22872c",
+    "node_modules/lucide-react/dist/esm/icons/x.mjs": "542fe26c50ed93aafb72cf7b9c13ce5185489e5808ccdea5450271eca42bbcc2",
+    "node_modules/lucide-react/package.json": "3a8e3206b904805cd7856e9b59fba3590e6702dfe019a2c843a683f3fc25fc26"
+  },
+  "mode": "window-icons",
+  "outputs": {
+    "lucide-panel-top.svg": "ea903ac4cbacbea6c0e9b2dfce981cacc2e14bf1c18fb8fa36b1b77b766827db",
+    "lucide-window-maximize.svg": "20f435be439a37347232987777b7e628aace43e9d39fdc39bbce71db19bd2be9",
+    "lucide-window-minus.svg": "42d2ac289f9f188b21302d21e212c4e9dca71cd766a915a36922930368f98326",
+    "lucide-window-x.svg": "bf192dab7bfb2e9465a126d970c49a38f2970e3f23bc1222d61eed04679a2945"
+  },
+  "schema": 1,
+  "tools": {
+    "lucide-react": "1.52.0"
+  }
+}

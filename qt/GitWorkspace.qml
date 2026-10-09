@@ -54,6 +54,7 @@ Item {
     }
     // The host provides the workspace background; each surface is drawn only once.
     Label {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         width: Math.max(0, parent.width - 48)
         visible: !root.available || !root.workspaceBackend.rootPath
@@ -121,9 +122,11 @@ Item {
                             ScrollBar.vertical: ScrollBar {}
                             delegate: ItemDelegate {
                                 id: treeRow
+                                SiteFocusRing { active: treeRow.visualFocus }
                                 required property var modelData
                                 width: fileTree.width
-                                height: 32
+                                height: 28
+                                HoverHandler { cursorShape: treeRow.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
                                 text: modelData.name
                                 readonly property color fileColor: modelData.statusColor || (modelData.path === (root.available ? root.workspaceBackend.filePath : "") ? root.accent : "#d0d0d5")
                                 leftPadding: 8 + modelData.depth * 16
@@ -145,6 +148,7 @@ Item {
                                         expanded: treeRow.modelData.expanded
                                     }
                                     Text {
+                                        textFormat: Text.PlainText
                                         x: 36
                                         width: Math.max(0, parent.width - x)
                                         height: parent.height
@@ -183,6 +187,7 @@ Item {
                             spacing: 8
                             // Path is a breadcrumb, not a destructive navigation operation.
                             Label {
+                                textFormat: Text.PlainText
                                 Layout.minimumWidth: 0
                                 Layout.maximumWidth: Math.max(0, breadcrumbRow.width - saveButton.implicitWidth - (dirtyIndicator.visible ? 6 : 0) - 24)
                                 text: root.available ? root.workspaceBackend.rootPath.split("/").filter(function(part) { return !!part }).pop() +
@@ -231,36 +236,23 @@ Item {
                                 height: editorScroll.availableHeight
                                 clip: true
                                 readonly property real scrollY: editorScroll.contentItem ? editorScroll.contentItem.contentY : 0
-                                readonly property var lineStarts: {
-                                                                    const starts = [0]
-                                                                    const value = editor.text
-                                                                    for (let i = 0; i < value.length; ++i)
-                                                                        if (value[i] === "\n") starts.push(i + 1)
-                                                                    return starts
-                                                                }
-                                                                readonly property int firstLine: {
-                                                                    let low = 0
-                                                                    let high = lineStarts.length - 1
-                                                                    while (low < high) {
-                                                                        const mid = Math.ceil((low + high) / 2)
-                                                                        if (editor.positionToRectangle(lineStarts[mid]).y <= scrollY) low = mid
-                                                                        else high = mid - 1
-                                                                    }
-                                                                    return low
-                                                                }
+                                // PlainText + NoWrap has uniform line boxes. Use Qt's maintained
+                                // lineCount, not a JS copy/index of the entire document on every edit.
+                                readonly property int firstLine: Math.max(0, Math.min(editor.lineCount - 1,
+                                    Math.floor((scrollY - editor.topPadding) / editor.lineHeight)))
                                 Repeater {
-                                    model: Math.max(0, Math.min(lineNumbers.lineStarts.length - lineNumbers.firstLine, Math.ceil(lineNumbers.height / editor.lineHeight) + 2))
+                                    model: Math.max(0, Math.min(editor.lineCount - lineNumbers.firstLine, Math.ceil(lineNumbers.height / editor.lineHeight) + 2))
                                     Text {
+                                        textFormat: Text.PlainText
                                         required property int index
                                         readonly property int lineIndex: lineNumbers.firstLine + index
-                                        readonly property rect lineRect: editor.positionToRectangle(lineNumbers.lineStarts[lineIndex])
                                         x: 0
-                                        y: lineRect.y - lineNumbers.scrollY
+                                        y: editor.topPadding + lineIndex * editor.lineHeight - lineNumbers.scrollY
                                         width: lineNumbers.width - 8
-                                        height: lineRect.height
+                                        height: editor.lineHeight
                                         text: lineIndex + 1
                                         font: editor.font
-                                        color: "#666666"
+                                        color: "#999999"
                                         horizontalAlignment: Text.AlignRight
                                         verticalAlignment: Text.AlignVCenter
                                         Accessible.ignored: true
@@ -275,6 +267,7 @@ Item {
                             TextArea {
                                 id: editor
                                 objectName: "workspaceEditor"
+                                Accessible.name: "File editor: " + (root.available ? root.workspaceBackend.filePath : "")
                                 enabled: root.available && !!root.workspaceBackend.filePath
                                 textFormat: TextEdit.PlainText
                                 SyntaxHighlighter {
@@ -389,8 +382,9 @@ Item {
         onCloseRequested: root.resolve("cancel")
         contentItem: ColumnLayout {
             spacing: 16
-            Label { text: "Save changes before continuing?"; color: "#eeeeee"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { textFormat: Text.PlainText; text: "Save changes before continuing?"; color: "#eeeeee"; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Label {
+                textFormat: Text.PlainText
                 text: root.available ? root.workspaceBackend.error : ""
                 visible: !!text
                 color: "#ff8585"

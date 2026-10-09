@@ -85,20 +85,30 @@ func (c *yandexClient) lyricsFormat(ctx context.Context, id int64, format string
 		return nil, err
 	}
 	if format == "TEXT" {
-		return parseLyricsText(text), nil
+		return parseLyricsTextChecked(text)
 	}
-	return parseLRC(text), nil
+	return parseLRCChecked(text)
 }
 
 func parseLyricsText(text string) []Lyric {
+	lines, _ := parseLyricsTextChecked(text)
+	return lines
+}
+func parseLyricsTextChecked(text string) ([]Lyric, error) {
+	if len(text) > maxLyricsBytes || strings.Count(text, "\n") >= maxLyricsLines {
+		return nil, fmt.Errorf("lyrics input too large")
+	}
 	lines := []Lyric{}
 	text = strings.TrimPrefix(strings.ReplaceAll(text, "\r\n", "\n"), "\ufeff")
 	for _, raw := range strings.Split(text, "\n") {
 		if line := strings.TrimSpace(raw); line != "" {
+			if len(line) > maxLyricLineBytes || len(lines) >= maxLyricsLines {
+				return nil, fmt.Errorf("lyrics line budget exceeded")
+			}
 			lines = append(lines, Lyric{Text: line})
 		}
 	}
-	return lines
+	return lines, validateLyrics(lines)
 }
 
 func (c *yandexClient) lyrics(ctx context.Context, id int64) ([]Lyric, error) {
@@ -153,6 +163,13 @@ var lrcOffset = regexp.MustCompile(`(?m)^\[offset:([+-]?\d+)\]\s*$`)
 // Expand repeated timestamps, apply LRC's millisecond offset, and normalize to
 // mm:ss.mmm (the bridge/Qt seek contract). Metadata is not lyric content.
 func parseLRC(text string) []Lyric {
+	lines, _ := parseLRCChecked(text)
+	return lines
+}
+func parseLRCChecked(text string) ([]Lyric, error) {
+	if len(text) > maxLyricsBytes || strings.Count(text, "\n") >= maxLyricsLines {
+		return nil, fmt.Errorf("LRC input too large")
+	}
 	text = strings.TrimPrefix(strings.ReplaceAll(text, "\r\n", "\n"), "\ufeff")
 	offset := int64(0)
 	if m := lrcOffset.FindStringSubmatch(text); m != nil {
@@ -166,6 +183,7 @@ func parseLRC(text string) []Lyric {
 		ms   int64
 	}
 	entries := []entry{}
+	expandedBytes := 0
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		times := []int64{}
@@ -188,8 +206,26 @@ func parseLRC(text string) []Lyric {
 			if ms < 0 {
 				ms = 0
 			}
+			if len(times) >= maxLRCStampsPerLine {
+				return nil, fmt.Errorf("LRC timestamp budget exceeded")
+			}
 			times = append(times, ms)
 			line = line[len(m[0]):]
+		}
+		line = strings.TrimSpace(line)
+		count := len(times)
+		if count == 0 && line != "" && !lrcMetadata.MatchString(line) {
+			count = 1
+		}
+		if count > 0 {
+			if len(line) > maxLyricLineBytes || len(entries)+count > maxLyricsLines {
+				return nil, fmt.Errorf("LRC line budget exceeded")
+			}
+			// Include normalized timestamp bytes in the expanded budget.
+			expandedBytes += count * (len(line) + 16)
+			if expandedBytes > maxLyricsBytes {
+				return nil, fmt.Errorf("expanded LRC budget exceeded")
+			}
 		}
 		if len(times) == 0 {
 			if line != "" && !lrcMetadata.MatchString(line) {
@@ -207,5 +243,5 @@ func parseLRC(text string) []Lyric {
 	for _, e := range entries {
 		out = append(out, e.line)
 	}
-	return out
+	return out, nil
 }

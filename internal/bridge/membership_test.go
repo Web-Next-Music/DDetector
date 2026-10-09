@@ -58,7 +58,7 @@ func TestMissingMembershipMetadata(t *testing.T) {
 		return response(200, `{"result":[]}`), nil
 	})
 	s.yandex = c
-	path := s.path + ".yandex-123.tracks-cache.json"
+	path := s.path + ".yandex-123.tracks-cache.sqlite"
 	cache := tracksCache{UserID: "user-1", URL: c.base + "/users/123", Fingerprint: detectorFingerprint(), Tracks: []Result{NewDetector().Process(Track{ID: 2, Title: "Removed later"}, []Lyric{}, false)}}
 	if err := saveTracksCache(path, cache); err != nil {
 		t.Fatal(err)

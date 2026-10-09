@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -9,7 +10,7 @@ MenuItem {
     property bool danger: false
     property bool green: false
     property color textColor: "#f0f0f4"
-    property color mutedColor: "#666666"
+    property color mutedColor: "#999999"
     property color accentColor: "#2bfef5"
     property color accentBackground: "#142bfef5"
     property color dangerColor: "#dc5050"
@@ -40,6 +41,7 @@ MenuItem {
             }
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: control.text
             font: control.font

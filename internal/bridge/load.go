@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -27,14 +28,18 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		sources[id] = version
 	}
 	provenanceChanged := false
+	var checkpointErr error
 	checkpoint := func() error {
+		if checkpointErr != nil {
+			return checkpointErr
+		}
 		complete := make([]Result, 0, len(results))
 		for _, r := range results {
 			if r.Status != "pending" && r.Status != "error" {
 				complete = append(complete, r)
 			}
 		}
-		if !provenanceChanged && reflect.DeepEqual(persisted, complete) {
+		if !cache.Dirty && !provenanceChanged && reflect.DeepEqual(persisted, complete) {
 			return nil
 		}
 		cache.Tracks = complete
@@ -45,9 +50,12 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 			}
 		}
 		if saveTracksCache(path, cache) != nil {
-			return errors.New("unable to persist Yandex cache")
+			checkpointErr = errors.New("unable to persist Yandex cache")
+			return checkpointErr
 		}
 		persisted = complete
+		cache.Dirty = false
+		cache.Rebuild = false
 		provenanceChanged = false
 		return nil
 	}
@@ -55,31 +63,40 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 	var workers sync.WaitGroup
 	type completion struct {
 		index  int
-		lyrics []Lyric
+		result Result
 		err    error
 	}
 	done := make(chan completion, 4)
 	defer func() {
 		cancel()
-		workers.Wait()
-		// Retain successful requests completed just before cancellation.
-		for len(done) > 0 {
-			v := <-done
+		// Drain while workers finish, including completions beyond the buffer.
+		// Waiting first would either deadlock or discard successful requests.
+		go func() { workers.Wait(); close(done) }()
+		for v := range done {
 			if v.err == nil {
-				old := results[v.index]
-				lyrics := v.lyrics
-				if lyrics == nil {
-					lyrics = []Lyric{}
-				}
-				results[v.index] = s.detector.Process(old.Track, lyrics, old.Ignored)
-				sources[old.ID] = lyricsSourceVersion
+				results[v.index] = v.result
+				sources[v.result.ID] = lyricsSourceVersion
 				provenanceChanged = true
 				stats.LyricsFetched++
+			} else {
+				stats.LyricsFailed++
+				if results[v.index].Status == "pending" {
+					results[v.index].Status = "error"
+				}
 			}
+
+		}
+		if stats.LyricsFailed > 0 {
+			stats.Partial = true
+			stats.Error = fmt.Sprintf("Lyrics acquisition failed for %d tracks", stats.LyricsFailed)
 		}
 		s.publishResults(results)
 		if e := checkpoint(); e != nil {
 			err = e
+		}
+		if err != nil {
+			stats.Partial = true
+			stats.Error = err.Error()
 		}
 	}()
 	jobs := make(chan int)
@@ -98,18 +115,24 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 					if workCtx.Err() != nil {
 						return
 					}
-					lyrics, e := c.lyricsForTrack(workCtx, results[i].Track)
-					select {
-					case done <- completion{i, lyrics, e}:
-					case <-workCtx.Done():
-						return
+					old := results[i]
+					lyrics, e := c.lyricsForTrack(workCtx, old.Track)
+					var processed Result
+					if e == nil {
+						if lyrics == nil {
+							lyrics = []Lyric{}
+						}
+						processed, e = s.detector.ProcessContext(workCtx, old.Track, lyrics, old.Ignored)
 					}
+					// The coordinator drains this channel on every exit path.
+					done <- completion{i, processed, e}
 				}
 			}
 		}()
 	}
 	// Dispatch from the coordinator to avoid an extra goroutine on cancellation.
 	next, completed, unpublished, unsaved := 0, 0, 0, 0
+	saveBatch := checkpointBatchSize(len(results))
 	publishTick := time.NewTicker(100 * time.Millisecond)
 	saveTick := time.NewTicker(2 * time.Second)
 	defer publishTick.Stop()
@@ -128,18 +151,14 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		case v := <-done:
 			completed++
 			if v.err != nil {
+				stats.LyricsFailed++
 				// A failed upgrade must not discard usable legacy display results.
 				if results[v.index].Status == "pending" {
 					results[v.index].Status = "error"
 				}
 			} else {
-				lyrics := v.lyrics
-				if lyrics == nil {
-					lyrics = []Lyric{}
-				}
-				old := results[v.index]
-				results[v.index] = s.detector.Process(old.Track, lyrics, old.Ignored)
-				sources[old.ID] = lyricsSourceVersion
+				results[v.index] = v.result
+				sources[v.result.ID] = lyricsSourceVersion
 				provenanceChanged = true
 				stats.LyricsFetched++
 				unsaved++
@@ -149,7 +168,7 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 				s.publishResults(results)
 				unpublished = 0
 			}
-			if unsaved >= 32 {
+			if unsaved >= saveBatch {
 				if e := checkpoint(); e != nil {
 					return e
 				}
@@ -170,4 +189,17 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		}
 	}
 	return ctx.Err()
+}
+
+// Large fast scans should not rewrite their entire growing cache every 32 tracks.
+// Time-based and final checkpoints still bound the durability delay.
+func checkpointBatchSize(total int) int {
+	batch := total / 20
+	if batch < 32 {
+		return 32
+	}
+	if batch > 1024 {
+		return 1024
+	}
+	return batch
 }

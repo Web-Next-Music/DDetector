@@ -1,5 +1,7 @@
 #include "uploader.h"
 #include <QDir>
+#include <QCryptographicHash>
+#include <QHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -28,7 +30,9 @@ QByteArray read(const QString &path) {
     if (!QFileInfo::exists(path)) return {};
     QFile file(path);
     require(file.open(QIODevice::ReadOnly), "Cannot read " + path);
-    auto bytes = file.readAll();
+    constexpr qint64 maximumMetadata = 8 * 1024 * 1024;
+    auto bytes = file.read(maximumMetadata + 1);
+    require(bytes.size() <= maximumMetadata, "Metadata exceeds 8 MiB: " + path);
     require(file.error() == QFileDevice::NoError, "Cannot read " + path);
     return bytes;
 }
@@ -37,6 +41,29 @@ void write(const QString &path, const QByteArray &bytes) {
     file.setDirectWriteFallback(false);
     require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit(),
             "Cannot save " + path);
+}
+struct Snapshot {
+    bool exists = false;
+    QByteArray digest;
+    bool operator==(const Snapshot &other) const { return exists == other.exists && digest == other.digest; }
+};
+Snapshot snapshot(const QString &path) {
+    QFileInfo info(path);
+    require(!info.isSymLink(), "Upload target became a symlink");
+    if (!info.exists()) return {};
+    require(info.isFile() && info.size() <= maxAudio, "Upload target is not a bounded regular file");
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), "Cannot inspect upload target");
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    qint64 total = 0;
+    while (!file.atEnd()) {
+        const auto bytes = file.read(64 * 1024);
+        require(file.error() == QFileDevice::NoError, "Cannot inspect upload target");
+        total += bytes.size();
+        require(total <= maxAudio, "Upload target exceeds 128 MiB");
+        hash.addData(bytes);
+    }
+    return {true, hash.result()};
 }
 QString decode(const QByteArray &bytes, const QString &name) {
     QStringDecoder decoder(QStringDecoder::Utf8, QStringConverter::Flag::ConvertInitialBom |
@@ -65,10 +92,11 @@ QByteArray git(const QString &root, const QStringList &args) {
     env.insert("GIT_TERMINAL_PROMPT", "0");
     env.insert("GIT_EDITOR", "true");
     env.insert("GIT_PAGER", "cat");
+    env.insert("GIT_OPTIONAL_LOCKS", "0");
     process.setProcessEnvironment(env);
     process.setWorkingDirectory(root);
     process.start("git", QStringList{"--no-pager", "-c", "core.hooksPath=/dev/null",
-                                         "-c", "commit.gpgSign=false"} + args);
+                                         "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false"} + args);
     require(process.waitForStarted(3000), "Cannot start Git");
     if (!process.waitForFinished(15000)) {
         process.kill(); process.waitForFinished(3000);
@@ -84,20 +112,21 @@ QByteArray download(const QUrl &url) {
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(30000);
     auto reply = network.get(request);
+    reply->setReadBufferSize(maxAudio + 1);
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
     QByteArray bytes;
     bool tooLarge = false, timedOut = false;
     QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&] {
-        bytes += reply->readAll();
+        bytes += reply->read(maxAudio + 1 - bytes.size());
         if (bytes.size() > maxAudio) { tooLarge = true; reply->abort(); }
     });
     QObject::connect(&timer, &QTimer::timeout, &loop, [&] { timedOut = true; reply->abort(); });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     timer.start(30000);
-    loop.exec();
-    bytes += reply->readAll();
+    if (!reply->isFinished()) loop.exec();
+    bytes += reply->read(maxAudio + 1 - bytes.size());
     require(!timedOut, "Download timed out");
     require(!tooLarge && bytes.size() <= maxAudio, "Download exceeds 128 MiB");
     const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -118,11 +147,13 @@ Result perform(const QString &root, const QString &id, const QString &title,
         require(lock.tryLock(0), "Another uploader is using this repository");
         require(QString::fromUtf8(git(root, {"rev-parse", "--show-toplevel"})).trimmed() == root,
                 "Data directory must be the Git repository root");
-        git(root, {"rev-parse", "--verify", "HEAD"});
+        const auto originalHead = git(root, {"rev-parse", "--verify", "HEAD"});
+        QStringList operationPaths;
         for (const auto &name : {QString("MERGE_HEAD"), QString("CHERRY_PICK_HEAD"), QString("REVERT_HEAD"),
                                  QString("rebase-merge"), QString("rebase-apply")}) {
             auto path = QString::fromUtf8(git(root, {"rev-parse", "--git-path", name})).trimmed();
             if (QDir::isRelativePath(path)) path = root + "/" + path;
+            operationPaths.append(path);
             require(!QFileInfo::exists(path), "Finish the current Git operation first");
         }
         const QStringList paths{"list.json", "README.md", "tracks/" + id};
@@ -130,6 +161,32 @@ Result perform(const QString &root, const QString &id, const QString &title,
         require(!QFileInfo(root + "/tracks").isSymLink(), "Tracks directory is a symlink");
         require(git(root, QStringList{"status", "--porcelain", "--untracked-files=all", "--"} + paths).isEmpty(),
                 "Upload targets have existing changes; commit or move them first");
+        const auto originalIndex = git(root, QStringList{"ls-files", "--stage", "-z", "--"} + paths);
+        QHash<QString, Snapshot> expected;
+        for (const auto &path : paths) expected.insert(path, snapshot(root + "/" + path));
+        const auto verifyFiles = [&] {
+            require(QFileInfo(root).canonicalFilePath() == root && !QFileInfo(root + "/tracks").isSymLink(),
+                    "Upload directory changed during send");
+            for (const auto &path : paths)
+                require(snapshot(root + "/" + path) == expected.value(path),
+                        "Upload target changed during send; external edits preserved: " + path);
+        };
+        const auto verifyRepository = [&] {
+            for (const auto &path : operationPaths)
+                require(!QFileInfo::exists(path), "A Git operation started during send; send refused");
+            require(git(root, {"rev-parse", "--verify", "HEAD"}) == originalHead,
+                    "Git HEAD changed during send; send refused");
+        };
+        const auto verifyGit = [&] {
+            verifyRepository();
+            require(git(root, QStringList{"ls-files", "--stage", "-z", "--"} + paths) == originalIndex,
+                    "Upload index changed during send; send refused");
+        };
+        const auto saveTarget = [&](const QString &path, const QByteArray &bytes) {
+            verifyFiles();
+            write(root + "/" + path, bytes);
+            expected[path] = {true, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256)};
+        };
         const QString github = "https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/" + id;
         QByteArray list = read(root + "/list.json");
         QString text = decode(list, "list.json");
@@ -180,22 +237,35 @@ Result perform(const QString &root, const QString &id, const QString &title,
                 readme != QString(QChar(0xfeff))) readme += eol;
             readme += "- [" + title + " - " + artist + "](https://music.yandex.ru/track/" + id + ")" + eol;
         }
+        QByteArray audio;
         if (!url.isEmpty()) {
             QUrl source(url, QUrl::StrictMode);
             require(source.isValid() && (source.scheme() == "http" || source.scheme() == "https") &&
                     !source.host().isEmpty() && source.userInfo().isEmpty(), "MP3 URL must be HTTP(S), without credentials");
-            auto bytes = download(source);
+            audio = download(source);
+        }
+        // Downloading is outside the write phase; revalidate every target and Git
+        // snapshot before any mutation. The lock is also respected by workspace saves.
+        verifyFiles();
+        verifyGit();
+        require(git(root, QStringList{"status", "--porcelain", "--untracked-files=all", "--"} + paths).isEmpty(),
+                "Upload targets changed during send; external edits preserved");
+        if (!audio.isEmpty()) {
             require(QDir().mkpath(root + "/tracks"), "Cannot create tracks directory");
-            overwritten = QFileInfo::exists(root + "/tracks/" + id);
-            write(root + "/tracks/" + id, bytes);
+            overwritten = expected.value("tracks/" + id).exists;
+            saveTarget("tracks/" + id, audio);
             saved = true;
         }
         if (result.action != "skipped") {
-            write(root + "/list.json", (listBom ? QByteArray::fromHex("efbbbf") : QByteArray()) + text.toUtf8());
-            write(root + "/README.md", readme.toUtf8());
+            saveTarget("list.json", (listBom ? QByteArray::fromHex("efbbbf") : QByteArray()) + text.toUtf8());
+            saveTarget("README.md", readme.toUtf8());
             QStringList changed{"list.json", "README.md"};
             if (saved) changed << "tracks/" + id;
+            verifyFiles();
+            verifyGit();
             git(root, QStringList{"add", "--sparse", "--"} + changed);
+            verifyFiles();
+            verifyRepository();
             git(root, QStringList{"commit", "--only", "-m", "add track «" + title + " - " + artist + "»", "--"} + changed);
         }
         result.status = (saved ? (overwritten ? "File overwritten · " : "File saved · ") : "") + QString("List: ") + result.action +
@@ -215,11 +285,22 @@ Uploader::Uploader(const QString &directory, QObject *parent) : Uploader(parent)
 Uploader::~Uploader() { if (m_worker) { m_worker->wait(); delete m_worker; } }
 bool Uploader::setDirectory(QString directory) {
     if (m_busy) return false;
-    m_directory = directory.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(directory).absoluteFilePath());
+    directory = directory.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(directory).absoluteFilePath());
+    if (m_directoryValidator) {
+        const auto rejection = m_directoryValidator(directory);
+        if (!rejection.isEmpty()) { m_error = rejection; emit stateChanged(); return false; }
+    }
+    m_directory = directory;
     return true;
 }
 void Uploader::send(QString id, QString title, QString artist, QString url) {
     if (m_busy) return;
+    if (m_sendValidator) {
+        const auto rejection = m_sendValidator(id);
+        if (!rejection.isEmpty()) {
+            m_error = rejection; m_action.clear(); m_status = "Send refused"; emit stateChanged(); return;
+        }
+    }
     if (m_directory.isEmpty()) {
         m_error = "Configure a data directory before sending";
         m_action.clear(); m_status = "Data directory is not configured";

@@ -109,7 +109,7 @@ func TestInterruptedLyricsSourceMigration(t *testing.T) {
 	s := testServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected request") })
 	c := newYandexClient("secret")
 	c.lrclib.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(200, `{"id":1,"syncedLyrics":"[00:01]weed"}`), nil
+		return response(200, `{"id":1,"trackName":"Song","artistName":"Artist","syncedLyrics":"[00:01]weed"}`), nil
 	})
 	c.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("unexpected Yandex request")
@@ -152,7 +152,7 @@ func TestInterruptedLyricsSourceMigration(t *testing.T) {
 	calls := 0
 	c.lrclib.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
-		return response(200, `{"id":1,"instrumental":true}`), nil
+		return response(200, `{"id":1,"trackName":"Song","artistName":"Artist","instrumental":true}`), nil
 	})
 	if err := s.processLyrics(context.Background(), c, path, saved, saved.Tracks, pending, &FetchResult{}); err != nil {
 		t.Fatal(err)

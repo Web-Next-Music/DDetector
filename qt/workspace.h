@@ -8,6 +8,8 @@
 #include <QHash>
 #include <QFileSystemWatcher>
 #include <QTimer>
+#include <QProcess>
+#include <functional>
 
 // Standalone QObject: no context properties, configuration, or QML registration required.
 // Shell commands are trusted user input, NOT sandboxed by the editor's path checks.
@@ -20,6 +22,7 @@ class GitWorkspace : public QObject {
     Q_PROPERTY(int documentRevision READ documentRevision NOTIFY documentChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
+    Q_PROPERTY(bool resolving READ resolving NOTIFY changed)
     Q_PROPERTY(QVariantList tree READ tree NOTIFY changed)
     Q_PROPERTY(QString terminalOutput READ terminalOutput NOTIFY terminalChanged)
     Q_PROPERTY(bool terminalRunning READ terminalRunning NOTIFY terminalChanged)
@@ -33,7 +36,10 @@ public:
     QString text() const { return m_text; }
     int documentRevision() const { return m_documentRevision; }
     bool dirty() const { return m_text != m_saved; }
-    QString error() const { return m_error; }
+    QString error() const;
+    bool resolving() const { return m_resolving; }
+    bool canChangeRepository() const { return !dirty() && !m_pending && !terminalRunning() && !m_resolving; }
+    void setRepositoryValidator(std::function<QString(const QString &)> validator) { m_repositoryValidator = std::move(validator); }
     QVariantList tree() const { return m_tree; }
     QString terminalOutput() const { return m_output; }
     bool terminalRunning() const { return m_terminal.running(); }
@@ -66,9 +72,13 @@ private:
     QString confined(const QString &relativePath, bool directory = false) const;
     bool loadFile(const QString &relativePath);
     void appendTree(const QString &relativePath, int depth);
-    void updateGitStatus();
+    void updateGitStatus(const QByteArray &status);
+    void rebuildTree();
     void updateWatches();
-    QByteArray gitOutput(const QStringList &arguments) const;
+    using GitCallback = std::function<void(const QByteArray &, const QString &)>;
+    void runGit(const QString &directory, const QStringList &arguments, GitCallback callback);
+    void cancelGit();
+    void finishRefresh();
     void fail(const QString &message);
     void appendOutput(const QString &text);
     QString m_repository, m_root, m_file, m_text, m_saved, m_error, m_output;
@@ -84,7 +94,15 @@ private:
     QHash<QString, QString> m_gitStatus;
     QStringList m_gitDirectories, m_trackedFiles;
     QFileSystemWatcher m_watcher;
-    QTimer m_refreshDebounce;
+    QTimer m_refreshDebounce, m_reconcile;
+    QProcess *m_git = nullptr;
+    quint64 m_gitGeneration = 0;
+    bool m_resolving = false, m_refreshActive = false, m_refreshAgain = false;
+    QString m_gitError, m_watchError;
+    int m_maximumWatches = 4096;
+    int m_gitDeadlineMs = 5000;
+    std::function<QString(const QString &)> m_repositoryValidator;
+    friend class WorkspaceTest;
     QString m_pendingFile;
     bool m_pending = false, m_pendingClose = false;
     TerminalSession m_terminal;

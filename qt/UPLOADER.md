@@ -2,6 +2,15 @@
 
 `uploader.h/.cpp` are integrated into the native application through `main.cpp` and `SendDialog.qml`. Reference directories were inspected read-only and were not modified. The backend needs Qt Core/Network, Git, a writable local FckCensorData checkout with an existing HEAD, and a configured Git author identity. It needs neither FCDServer nor a Yandex token. It never pushes or fetches.
 
+## Git library boundary
+
+The workspace optionally uses libgit2 for asynchronous read-only discovery and
+status/index snapshots. Repositories with configured external filters and library
+errors retain Git CLI fallback. The uploader's staging, commits and rollback
+remain the existing Git CLI implementation: hooks, clean/smudge filters and the
+transaction contract are not replaced by libgit2. Git remains a runtime dependency.
+See `README.md` for backend flags and credential migration limitations.
+
 ## Verified reference behavior
 
 Read-only inspection sources:
@@ -47,19 +56,25 @@ QML entry point: `send(id, title, artist, mp3Url = "")`. `busy`, `status`, `erro
 
 The application already exposes `localUploader`, persists `Config.repositoryPath`, resolves its Git root using `GitWorkspace`, and opens `SendDialog.qml` from the player Send button. The following notes describe the underlying integration API, not outstanding setup steps.
 
-1. Add `uploader.cpp uploader.h` to the application target in `qt/CMakeLists.txt`. Existing Qt Network linking is sufficient. Add them to a UI test target too if its QML references the new context object.
-2. In `qt/main.cpp`, include `uploader.h`, construct `Uploader uploader;` before the QML engine, and call `engine.rootContext()->setContextProperty("uploader", &uploader);` before loading QML. This follows the existing Config/Bridge/MusicPlayer context-object convention.
-3. Add a Send menu entry in `Main.qml`'s `trackMenu`, snapshotting `appUi.menuTrack` into a modal before editing it. The current menu has Play, Search on Yandex, Copy ID, Full lyrics, Ignore; no existing Send handler was found. Bridge model rows already expose string `id`, `title`, `artist`; the addon uses an artist array, so pass the local `artist` string.
-4. Display immutable ID/cover plus editable artist/title/MP3 URL. On accept:
+1. The application target already includes uploader sources and Qt Network.
+2. The runtime context object is **`localUploader`**, passed into `SendDialog.uploadBackend`.
+   QML consumes only `busy`, `error`, `status`, `send(...)`, `stateChanged` and `completed`;
+   no new native API is required by the shared UI controls.
+3. Send is opened from the player's music-note button, not a track-menu entry.
+   `openTrack(id, title, artist, cover)` snapshots the metadata; `artist` accepts an array
+   or string. ID and cover are display-only; artist/title/MP3 URL remain editable.
+4. The dialog submits through its injected backend:
 
    ```qml
-   uploader.send(String(selectedTrack.id),
-                 titleInput.text.trim() || selectedTrack.title || String(selectedTrack.id),
-                 artistInput.text,
-                 mp3UrlInput.text)
+   dialog.uploadBackend.send(dialog.trackId,
+                             titleInput.text.trim() || dialog.originalTitle || dialog.trackId,
+                             artistInput.text, urlInput.text.trim())
    ```
 
-5. Disable submit while `uploader.busy`, bind status to `uploader.error || uploader.status`, and use `completed` to show success/close after 1500 ms if desired. Do not close on `action` changes because a later Git failure may occur. Cancel before submit closes only the modal; do not offer cancellation of an in-progress send.
+5. Fields, submit and close controls are disabled while busy; the busy dialog ignores
+   Escape/outside clicks. Successful `completed` closes immediately and emits `sent` to
+   the shell notification stack. Error/status remain visible on failure. Cancel before
+   submit closes only the modal; there is no cancellation of an in-progress send.
 6. The backend does not need or expose credentials and does not download from MusicPlayer. The application persists the checkout in Config's `repositoryPath`; it can be changed when the workspace has no unsaved changes, its console is stopped, and no Send is running. UI access gating follows `appUi.privileged`, but is not a filesystem security boundary.
 
 ## Styling findings
@@ -77,7 +92,10 @@ The website does not contain a Send/upload modal in the inspected DDetector page
 
 Website base font is Nunito, heading font Quicksand, logo font Syne. Small/medium/large radii are 8/10/12 px. Borders use translucent neutral HSL via oklab color-mix. Accent surfaces use 8% accent and accent borders 20%. The DDetector page uses a 60 px header, 18 px bold heading, 12 px bold lyric text (1.55 line-height), and 10 px monospaced timestamps.
 
-The addon modal itself uses Nunito; black 60% overlay; 400 px box, 20 px padding, 12 px radius, 10 px gap; 64 px cover with 8 px radius; inputs with 10 px padding and 8 px radius; 13 px status; buttons with 8 px padding/radius. Its colors are Yandex `--ym-*` theme variables, not website constants. For local QML reuse `appUi.bg/surface/surface2/ink/muted/accent/borderColor` and bundled `DDetector Nunito`/heading fonts rather than loading Google Fonts.
+The addon modal itself uses Nunito; black 60% overlay; 400 px box, 20 px padding, 12 px radius, 10 px gap; 64 px cover with 8 px radius; inputs with 10 px padding and 8 px radius; 13 px status; buttons with 8 px padding/radius. Its colors are Yandex `--ym-*` theme variables, not website constants. For local QML reuse `SiteDialog`, `DialogHeader`, `SiteButton`, and `SiteTextField`,
+with bundled `DDetector Nunito`/heading fonts rather than loading Google Fonts.
+Qt intentionally raises secondary text to `#999999` for contrast; the table above
+records the website reference, not this accessibility adjustment.
 
 ## Standalone validation
 

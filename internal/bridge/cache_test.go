@@ -96,7 +96,7 @@ func TestYandexIncrementalCache(t *testing.T) {
 	if lyricsCalls != 1 || metadataCalls != 1 || s.state.Tracks[0].Status != "found" {
 		t.Fatal("not incremental", lyricsCalls, metadataCalls)
 	}
-	path := s.path + ".yandex-123.tracks-cache.json"
+	path := s.path + ".yandex-123.tracks-cache.sqlite"
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("cache permissions", err)
@@ -134,7 +134,7 @@ func TestLyricsSourceMigration(t *testing.T) {
 			calls := 0
 			c.lrclib.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				calls++
-				return response(200, `{"id":1,"syncedLyrics":"[00:01]weed","plainLyrics":"weed"}`), nil
+				return response(200, `{"id":1,"trackName":"Song","artistName":"Artist","syncedLyrics":"[00:01]weed","plainLyrics":"weed"}`), nil
 			})
 			c.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				t.Error("unexpected Yandex request")

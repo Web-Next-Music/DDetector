@@ -34,7 +34,7 @@ func TestLRCLIBPrimary(t *testing.T) {
 				if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.Header.Get("User-Agent") != lrclibUserAgent {
 					t.Error("unsafe headers", r.Header)
 				}
-				return response(200, tc.body), nil
+				return response(200, strings.Replace(tc.body, `"id":1`, `"id":1,"trackName":"Песня & song","artistName":"A+B"`, 1)), nil
 			})
 			lines, err := c.lyricsForTrack(context.Background(), Track{ID: 1, Title: " Песня & song ", Artist: "A+B"})
 			if err != nil || len(lines) != tc.count || hasTimedLyrics(lines) != tc.timed {

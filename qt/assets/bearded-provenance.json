@@ -2,7 +2,7 @@
   "extension": "beardedbear.beardedicons",
   "version": "1.22.0",
   "repository": "https://github.com/BeardedBear/bearded-icons",
-  "license": null,
+  "license": "GPL-3.0",
   "source": "installed extension; SVGs copied byte-for-byte; filename and extension mappings from icons.json; common suffix aliases use languageIds. QML has no SVG definition in this version and uses the generic file.",
   "sha256": {
     "bearded-file.svg": "753c11ce9ac8263d41f56285998d5f637735c6a5525b61a8a84aedf9cd4a8c61",

@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 // Requires QApplication, DDetector.Terminal registration, and QTermWidget data.
 // Unix PTY backend only: Windows ConPTY is not implemented.
 import QtQuick
@@ -14,7 +15,7 @@ Rectangle {
     readonly property string repositoryRoot: workspaceBackend ? workspaceBackend.rootPath : ""
     readonly property bool sessionVisible: visible && width > 0 && height > 0
                                           && Window.window !== null && Window.window.visible
-    readonly property real minimumPanelHeight: 120
+
     readonly property color accent: "#2bfef5"
     implicitWidth: 320
     implicitHeight: 230
@@ -35,37 +36,20 @@ Rectangle {
     onSessionVisibleChanged: startIfReady()
     Component.onCompleted: startIfReady()
 
-    component TerminalButton: Button {
+    component TerminalButton: SiteButton {
         id: control
-        property bool accented: false
-        property string glyph: ""
         implicitWidth: 32
         implicitHeight: 32
-        Accessible.name: text
+        iconOnly: true
+        glyphSize: 16
         property string tooltipText: text
         SiteToolTip { text: control.tooltipText }
-        leftPadding: 10
-        rightPadding: leftPadding
         font.family: "DDetector Quicksand"
-        font.pixelSize: 12
         font.weight: Font.DemiBold
-        opacity: enabled ? 1 : 0.5
-        contentItem: Item {
-            Image {
-                anchors.centerIn: parent
-                width: 16; height: 16
-                source: "qrc:/assets/lucide-" + control.glyph + ".svg"
-                layer.enabled: true
-                layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: control.accented || control.hovered ? root.accent : "#f0f0f4" }
-            }
-        }
-        background: Rectangle {
-            radius: 8
-            color: control.down ? "#242b2b" : control.hovered ? "#142bfef5" : "#0c0c0e"
-            border.color: control.activeFocus ? root.accent
-                          : control.hovered || control.accented ? "#332bfef5" : "#3397979f"
-        }
-        HoverHandler { cursorShape: control.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
+        textColor: "#f0f0f4"
+        hoverTextColor: root.accent
+        hoverColor: down ? "#242b2b" : "#142bfef5"
+        accentedColor: hovered ? hoverColor : surfaceColor
     }
 
     ColumnLayout {
@@ -76,6 +60,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 4
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
                 text: root.terminalSession && root.terminalSession.shell
@@ -120,6 +105,8 @@ Rectangle {
             }
         }
         Label {
+            textFormat: Text.PlainText
+            id: terminalError
             Layout.fillWidth: true
             visible: !!root.terminalSession && !!root.terminalSession.error
             text: root.terminalSession ? root.terminalSession.error : ""
@@ -128,7 +115,7 @@ Rectangle {
             elide: Text.ElideRight
             SiteToolTip {
                 visible: errorHover.hovered && parent.visible && text.length > 0
-                text: parent.text
+                text: terminalError.text
             }
             HoverHandler { id: errorHover }
         }

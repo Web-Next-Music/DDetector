@@ -1,10 +1,11 @@
 #include "terminal.h"
 
 #include <QApplication>
-#include <QClipboard>
+
 #include <QInputMethodEvent>
 #include <QPainter>
 #include <QWidget>
+
 #include <QQuickWindow>
 #ifndef Q_OS_WIN
 #include <qtermwidget.h>
@@ -20,7 +21,7 @@ EmbeddedTerminal::EmbeddedTerminal(QQuickItem *parent) : QQuickPaintedItem(paren
     m_repaint.setInterval(33);
     connect(&m_repaint, &QTimer::timeout, this, &EmbeddedTerminal::capture);
     connect(this, &QQuickItem::visibleChanged, this, [this] {
-        if (isVisible() && m_session) m_repaint.start(); else m_repaint.stop();
+        markDirty();
     });
 }
 
@@ -31,15 +32,15 @@ void EmbeddedTerminal::setSession(TerminalSession *session) {
     m_session = session;
     if (session) {
         connect(session, &TerminalSession::widgetChanged, this, [this] {
-            m_mouseTarget.clear(); resizeTerminal(); capture();
+            m_mouseTarget.clear(); watchWidget(); resizeTerminal(); markDirty(); capture();
         });
+        connect(session, &TerminalSession::output, this, [this](const QString &) { markDirty(); });
         connect(session, &QObject::destroyed, this, [this] {
             m_session = nullptr; m_mouseTarget.clear(); m_repaint.stop();
             m_frame = {}; emit sessionChanged(); update();
         });
     }
-    resizeTerminal();
-    if (session && isVisible()) m_repaint.start(); else m_repaint.stop();
+    watchWidget(); resizeTerminal(); markDirty();
     emit sessionChanged(); capture();
 }
 
@@ -52,19 +53,63 @@ void EmbeddedTerminal::resizeTerminal() {
 
 void EmbeddedTerminal::geometryChange(const QRectF &now, const QRectF &before) {
     QQuickPaintedItem::geometryChange(now, before);
-    resizeTerminal();
+    resizeTerminal(); markDirty();
 }
 
+void EmbeddedTerminal::watchWidget() {
+    if (m_watchedWidget) {
+        m_watchedWidget->removeEventFilter(this);
+        for (auto *child : m_watchedWidget->findChildren<QWidget *>()) child->removeEventFilter(this);
+    }
+    m_watchedWidget.clear();
+#ifndef Q_OS_WIN
+    if (m_session) m_watchedWidget = m_session->widget();
+#endif
+    if (m_watchedWidget) {
+        m_watchedWidget->installEventFilter(this);
+        for (auto *child : m_watchedWidget->findChildren<QWidget *>()) child->installEventFilter(this);
+    }
+}
+void EmbeddedTerminal::markDirty() {
+    m_dirty = true;
+    if (isVisible() && m_watchedWidget) {
+        if (!m_repaint.isActive()) m_repaint.start();
+    } else m_repaint.stop();
+}
+bool EmbeddedTerminal::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::ChildAdded) {
+        QTimer::singleShot(0, this, [this] { watchWidget(); markDirty(); });
+    }
+    if (!m_capturing) {
+        switch (event->type()) {
+        case QEvent::Paint: case QEvent::UpdateRequest: case QEvent::Resize:
+        case QEvent::PaletteChange: case QEvent::FontChange: case QEvent::StyleChange:
+        case QEvent::FocusIn: case QEvent::FocusOut:
+            markDirty(); break;
+        default: break;
+        }
+    }
+    return QQuickPaintedItem::eventFilter(watched, event);
+}
 void EmbeddedTerminal::capture() {
-    m_frame = {};
 #ifndef Q_OS_WIN
     if (m_session && m_session->widget() && isVisible()) {
         QWidget *widget = m_session->widget();
         const qreal dpr = window() ? window()->devicePixelRatio() : 1.0;
-        m_frame = QImage(widget->size() * dpr, QImage::Format_ARGB32_Premultiplied);
-        m_frame.setDevicePixelRatio(dpr);
+        const QSize pixels = widget->size() * dpr;
+        if (m_frame.size() != pixels || m_frame.devicePixelRatio() != dpr) {
+            m_frame = QImage(pixels, QImage::Format_ARGB32_Premultiplied);
+            m_frame.setDevicePixelRatio(dpr); m_dirty = true;
+        }
+        if (!m_dirty || m_frame.isNull()) return;
+        m_dirty = false; m_capturing = true;
         m_frame.fill(Qt::transparent);
         widget->render(&m_frame);
+        m_capturing = false;
+        ++m_captureCount;
+    } else {
+        if (m_frame.isNull()) return;
+        m_frame = {};
     }
 #endif
     update();

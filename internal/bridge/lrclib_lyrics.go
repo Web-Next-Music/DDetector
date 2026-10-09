@@ -115,6 +115,8 @@ func (c *lrclibClient) get(ctx context.Context, track Track) ([]Lyric, bool, err
 	}
 	var record struct {
 		ID           int64  `json:"id"`
+		TrackName    string `json:"trackName"`
+		ArtistName   string `json:"artistName"`
 		Instrumental bool   `json:"instrumental"`
 		SyncedLyrics string `json:"syncedLyrics"`
 		PlainLyrics  string `json:"plainLyrics"`
@@ -122,13 +124,24 @@ func (c *lrclibClient) get(ctx context.Context, track Track) ([]Lyric, bool, err
 	if !utf8.Valid(body) || json.Unmarshal(body, &record) != nil || record.ID <= 0 {
 		return nil, false, fmt.Errorf("invalid LRCLIB response")
 	}
+	normalize := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	if record.Instrumental || strings.TrimSpace(record.SyncedLyrics) != "" || strings.TrimSpace(record.PlainLyrics) != "" || record.TrackName != "" || record.ArtistName != "" {
+		if normalize(record.TrackName) != normalize(title) || normalize(record.ArtistName) != normalize(artist) {
+			return nil, false, fmt.Errorf("LRCLIB metadata mismatch")
+		}
+	}
 	if record.Instrumental {
 		return []Lyric{}, true, nil
 	}
-	if synced := parseLRC(record.SyncedLyrics); hasTimedLyrics(synced) {
+	synced, err := parseLRCChecked(record.SyncedLyrics)
+	if err != nil {
+		return nil, false, err
+	}
+	if hasTimedLyrics(synced) {
 		return synced, false, nil
 	}
-	return parseLyricsText(record.PlainLyrics), false, nil
+	plain, err := parseLyricsTextChecked(record.PlainLyrics)
+	return plain, false, err
 }
 
 func (c *yandexClient) lyricsForTrack(ctx context.Context, track Track) ([]Lyric, error) {

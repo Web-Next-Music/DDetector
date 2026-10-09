@@ -21,6 +21,7 @@ public:
 signals:
     void sessionChanged();
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
@@ -34,11 +35,17 @@ protected:
     void inputMethodEvent(QInputMethodEvent *event) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 private:
+    friend class TerminalTest;
     void capture();
+    void watchWidget();
+    void markDirty();
     void resizeTerminal();
     void forwardMouse(QMouseEvent *event);
     QPointer<TerminalSession> m_session;
     QPointer<QWidget> m_mouseTarget;
     QTimer m_repaint;
     QImage m_frame;
+    QPointer<QWidget> m_watchedWidget;
+    bool m_dirty = true, m_capturing = false;
+    quint64 m_captureCount = 0;
 };

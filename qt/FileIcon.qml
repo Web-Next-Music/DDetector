@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 
 // Decorative file-tree artwork: keep original Bearded colors; do not apply a tint.

@@ -6,21 +6,64 @@ The source website is not modified; the Go backend owns local library synchroniz
 
 ## Build and run
 
-Requires CMake 3.21+, C++17, and Qt6 6.4+ with Quick, Quick Controls 2, Network, Multimedia,
-Widgets, and Test (for the default test build). Unix builds also require the Qt6
+Requires CMake 3.21+, C++17, and **Qt6 6.9+** with Quick, Quick Controls 2, Network,
+Multimedia and Widgets. `ContextMenu.menu` requires 6.9; `MultiEffect` requires 6.5.
+The default test build also needs Qt Test/QuickTest and Python 3.
+CMake finds `qmllint` beside this Qt installation's `qmake`, not an older tool on PATH. Unix builds also require the Qt6
 QTermWidget development library (`qtermwidget6` CMake package) and its runtime
 keyboard/color-scheme data. On Arch Linux this is the `qtermwidget` package. Provider icons use Qt's SVG image plugin;
-the source WebP artwork needs its WebP image plugin. Both are installed here.
+the source WebP artwork needs its WebP image plugin. Install both runtime plugins on
+deployment machines, not only the development machine.
 
 From the `ddetector-go` root:
 
 ```sh
 cmake -S qt -B qt/build -DCMAKE_BUILD_TYPE=Release
 cmake --build qt/build -j 4
-ctest --test-dir qt/build --output-on-failure
+cmake --build qt/build --target qml-lint
+ctest --test-dir qt/build --output-on-failure --timeout 120
 ```
 
 For an application-only build, add `-DBUILD_TESTING=OFF` to configuration.
+
+### Native libraries
+
+`KF6SyntaxHighlighting`, `Qt6Keychain`, and `libgit2 >= 1.5` (via pkg-config)
+are required build dependencies. On Arch Linux install `syntax-highlighting`,
+`qtkeychain-qt6`, `libgit2`, and `pkgconf`. The former optional-backend switches
+are no longer supported; configuration fails when a required library is missing.
+No dependency installation or runtime downloads occur.
+
+* KSyntaxHighlighting supplies all language parsing, including Markdown, Shell,
+  YAML, Python, JSON/JSONC, JS/TS and other installed definitions. The adapter
+  preserves the editor's palette and changes layout formats only. Markdown
+  fences use embedded-language definitions; token boundaries follow KDE's
+  definitions rather than the former handwritten parser. Unknown `.txt` stays
+  unformatted.
+* QtKeychain uses asynchronous OS jobs for the **default application config**;
+  explicit-path/in-memory configs remain isolated for tests. The `DDetector` service,
+  `musicToken` key stores only the music credential, not Go OAuth or bridge secrets.
+  Plaintext migration/removal happens only after successful storage of the exact
+  current token. Pending writes, unavailable/locked services and shutdown retain
+  an owner-only, atomically saved recovery copy. This is intentionally not a
+  guarantee of zero plaintext while the OS service is unavailable. Insecure
+  QtKeychain fallback is disabled. A newer edit/logout wins over an older read or
+  write completion. A successful subsequent write removes the recovery field.
+  Transient reads and writes retry up to three times with 1/2/4-second backoff;
+  `Config::retryCredentials()` resets the retry budget. An absent credential
+  field remains absent when unrelated settings change.
+* libgit2 discovers working trees and reads status/index on QtConcurrent workers.
+  Repository generation checks discard stale results. Library errors are reported
+  without replacing the last successful status. Only status in repositories
+  configuring external `filter.*` drivers uses the bounded asynchronous Git CLI,
+  because libgit2 does not execute those drivers. Mutations remain Git CLI
+  operations to preserve hooks and filters. Library calls cannot be forcibly
+  interrupted; unusually slow filesystems may delay a worker and process exit.
+
+Tests cover library highlighting, the migration persistence contract, status,
+renames, corrupt-index recovery and existing uploader behavior. They do **not**
+exercise a real OS keychain's unlock dialog/service failures; validate migration,
+logout and restart against the deployment keychain before redistribution.
 
 Launch through the existing Go executable, with its normal Supabase environment
 configuration and private session file:
@@ -42,8 +85,8 @@ are never sent to the public Yandex artwork CDN.
 
 ## Git workspace and embedded terminal
 
-Settings → Git repository selects a local checkout. The Git page provides rounded
-file-tree/editor cards, repository-relative breadcrumbs, atomic Ctrl+S saves, and
+Settings → Git repository selects a local checkout. The Git page provides split
+file-tree/editor panes, a rounded editor frame, repository-relative breadcrumbs, atomic Ctrl+S saves, and
 Save/Discard/Cancel protection for unsaved edits. The bottom terminal remains at
 least 120 px tall. It uses QTermWidget on a real Unix PTY and starts the default
 system shell (`SHELL`, then passwd, then `/bin/sh`) in the Git root. ANSI colors,
@@ -60,9 +103,11 @@ Send; see `UPLOADER.md` for the local file-update and commit rules.
 The bottom DDetector panel is native QML, styled after Spotify (not embedded
 website components), and always uses `playerSurface: #0c0c0e`. In Settings, enter
 a Yandex Music OAuth token; it applies automatically after an 800ms debounce or Enter.
-The panel is hidden until app login/access and token validation succeed. Signing out
-immediately stops playback and hides the panel; clearing the token does the same.
-The token persists in the private Config.json described below.
+The player panel is always visible, including before login and without a Yandex
+token. Without access/token it shows a disabled empty-track placeholder; clearing
+the token or signing out stops playback without removing the panel.
+The token uses QtKeychain when available, with a private recovery copy during
+migration or backend failure as described below.
 
 Track metadata and download information are fetched with OAuth from
 `api.music.yandex.net`; audio is played locally using Qt Multimedia. The token
@@ -82,8 +127,9 @@ then signed Yandex LRC/TEXT and supplement endpoints if needed. LRCLIB receives 
 track title and artist and sees the client IP, but receives no OAuth credentials. Supabase also handles application login/access and ignore preferences,
 but supplies no track titles, covers or lyrics. This is not an entirely offline application.
 
-Cache: `<session-path>.yandex-<verified-Yandex-UID>.tracks-cache.json`, private atomic
-0600 writes, scoped to app and Yandex accounts. Cached results appear before library
+Cache: `<session-path>.yandex-<verified-Yandex-UID>.tracks-cache.sqlite`, private
+0600 transactional storage, scoped to app and Yandex accounts. Legacy JSON is
+migrated on first load and retained as a rollback copy; see the root `README.md`. Cached results appear before library
 refresh; only unseen tracks need metadata/lyrics and detection. Confirmed missing lyrics
 are cached too; transient errors are retried. Removed library IDs are pruned. Fetch refreshes
 metadata, but reuses successful cached lyrics. LRC lyrics preserve timestamps for
@@ -115,18 +161,18 @@ source versions. To force another full rebuild, remove that account's cache whil
   context-line dimming, Copy ID, and Yandex's `title artist download mp3` query.
 - Track/card context menus: Yandex, copy, ignore/unignore; full lyrics appears
   only for unsynced result cards.
-- Right-side utility buttons reload data and open Settings;
-  all have tooltips and accessible names. Reload is disabled without access or
-  during loading/fetching. A separate account avatar opens Settings / Sign out.
+- The right-side activity bar switches between Lyrics and Git. Fetch in the header
+  is disabled without access or during loading/fetching. The account avatar opens
+  Settings / Sign out; right-clicking the header opens the same menu.
   The avatar uses HTTPS `avatar_url` or `picture` public metadata, falling back
   to the account name's initial if missing or unavailable. Names use full_name,
   name, preferred_username, or email. Images use native loading without the
   backend bearer key; fetching an avatar contacts its provider.
 - Settings is a real dialog with a persisted hide-ignored control and player settings.
   Right-clicking the header also opens the account menu.
-- Login is a plain centered DDetector page with direct GitHub/Discord/Spotify
-  buttons and browser-based OAuth: no 404, artwork, website navigation or footer.
-  The compatibility auth popup remains available, without artwork.
+- Login is a modal over the disabled desktop shell, with bundled Kagami artwork,
+  GitHub/Discord/Spotify buttons and browser-based OAuth; no website navigation or footer.
+  Access errors/denials use a separate artwork modal.
   Access checking, errors, access denial and bans have separate messages;
   authenticated users retain Settings and Sign out even without access.
 - Go remains the authority for authenticated/accessChecked/hasAccess/isBanned,
@@ -189,8 +235,10 @@ DDETECTOR_TEST_SCREENSHOT_DIR=/home/admin/Documents/Git/ddetector-go/qt/build/sc
 This is a native recreation, not a browser pixel-for-pixel renderer. Qt's text
 shaping, native scrolling/menu placement, synthesized typography where no exact
 weight exists, and antialiasing differ. Rich-text marks reproduce the source
-colors but not CSS's rounded mark corners/3px padding exactly. Album artwork is
-clipped rectangularly inside the rounded cover containers. Some icon/menu
+colors with rounded highlight rectangles and horizontal padding. Result-card covers
+use a rounded shader mask on GPU renderers; other cover containers retain rectangular
+image clipping. On the software renderer shader masks/shadows are disabled, keeping
+modal contents readable instead of rendering an empty masked layer. Some icon/menu
 ornamentation, CSS entry/shadow/hover animations, footer distribution and the
 seasonal remote-logo check are simplified. The original source has no defined
 wave styles for its 404 wave markup, so that invisible decoration is omitted.
@@ -206,5 +254,68 @@ To regenerate assets after building the source website (not needed to build Qt):
 python3 qt/import_assets.py /home/admin/Documents/Git/Next-Music-Website
 ```
 
-This optional helper requires Python `fonttools` and `brotli`, and never reads
-source `.env` files or downloads fonts.
+This optional helper never reads source `.env` files or downloads fonts. For deterministic
+font output use `fonttools==4.66.1` and `brotli==1.2.0` in an isolated Python environment.
+It requires the website's cached **variable** WOFF2 subsets and installed
+`lucide-react` **1.52.0**. Input/tool/output hashes are recorded in `import-manifest.json`.
+Generation is fully validated before publication; each file is replaced atomically,
+but publication is not a multi-file filesystem transaction.
+
+```sh
+# Validate without changing either checkout:
+python3 qt/import_assets.py /path/to/Next-Music-Website --dry-run
+# Generate and subsequently verify a separate reproducible output set:
+python3 qt/import_assets.py /path/to/Next-Music-Website --output /tmp/ddetector-assets
+python3 qt/import_assets.py /path/to/Next-Music-Website --output /tmp/ddetector-assets --check
+# Only the three new window-control SVGs and their provenance:
+python3 qt/import_assets.py /path/to/Next-Music-Website --icons-only --check
+```
+
+`--check` compares regenerated bytes and the manifest; it does not claim older bundled
+font bytes were produced with the current deterministic timestamp policy. Neither
+mode emits Bearded artwork or the protected `lucide-music.svg` / `lucide-git-branch.svg`.
+Window SVGs use separate `lucide-window-*.svg` filenames; existing control assets are
+not regenerated by `--icons-only`. Licenses/artwork are not deleted or relicensed.
+See `assets/NOTICE.md` for unresolved redistribution permissions.
+
+## Shared UI and regression coverage
+
+`SiteButton` centralizes icon/text, disabled/pressed/hover and visible keyboard-focus
+states. `SiteTextField` and `SiteToggleRow` share field and setting-row behavior.
+`WindowButton` and `NotificationStack` are extracted from Main; native entry URL and
+context-object names remain unchanged. Main remains the shell/state coordinator.
+The permanently zero-height legacy title bar is removed; the 48px header still handles
+window dragging/maximizing. Window controls are installed-library Lucide exports.
+
+Secondary text is intentionally `#999999` instead of the website's `#666666` (about
+6.3:1 on `#171719`); meaningful dates and empty messages no longer have extra opacity.
+This is a contrast correction, not a new theme. Surfaces, accent, artwork and layout
+are preserved. Metadata/messages use PlainText; only escaped lyrics and the fixed
+logo use rich text.
+
+Track rows support Enter/Space and Up/Down; Menu/Shift+F10 opens track actions.
+A lyrics card is a single keyboard stop for its lines: Up/Down selects a line,
+Enter/Space plays its valid timestamp, and Menu/Shift+F10 opens actions. Its header
+buttons remain standard keyboard controls. Focus is distinct from track selection.
+Tooltips also appear on focus; Qt Dialog restores focus to the opener.
+
+CTest includes `qml-controls` (Qt Quick Test), `ui-harness` (Python unit tests), and
+`ui-smoke` in addition to native tests. Smoke uses fresh temporary settings/cache,
+explicit checks even under Python -O, authenticated polling, PNG CRC/dimension/
+nonblank checks, and distinct scenario hashes. Full stderr is retained with keys
+redacted; only the specific FFmpeg initialization and missing NVIDIA VDPAU-library
+messages are allowed. Unknown driver errors and QML warnings still fail the run.
+Screenshots are sanity checks, not a pixel-perfect or screen-reader test.
+
+`qml-lint` is strict for the new standalone controls and reports all application QML.
+Application warnings from runtime context objects/native registrations remain visible;
+fully strict application lint needs native `.qmltypes` metadata. `qt_add_resources`
+uses a single APP_QML list for app/UI tests. Migration to `qt_add_qml_module` is deferred
+until native registration and qrc entry URLs can be coordinated safely.
+
+`.github/workflows/qt-ui.yml` performs a clean Release build/lint/CTest, including smoke,
+on rolling Arch Qt6 and uploads diagnostics. This is not yet a Qt 6.9 minimum-version
+matrix or a deployment-package test. GPU effects, live playback/OAuth, large-document
+latency and screen-reader behavior need separate desktop validation. Lyrics still use
+per-card Repeaters and the editor still indexes full text; no unmeasured performance
+improvement is claimed.

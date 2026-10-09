@@ -1,0 +1,23 @@
+name: Go
+on:
+  push:
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'assets/**', '.github/workflows/go.yml']
+  pull_request:
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'assets/**', '.github/workflows/go.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Test with race detector
+        run: go test -race ./... -count=1 -timeout=120s
+      - name: Vet
+        run: go vet ./...

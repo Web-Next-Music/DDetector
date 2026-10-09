@@ -20,7 +20,9 @@ public:
 signals:
     void countChanged();
 private:
+    void rebuildIndexes();
     QList<QJsonObject> m_rows;
+    QHash<QString, int> m_indexes;
 };
 
 class Bridge final : public QObject {
@@ -33,7 +35,12 @@ class Bridge final : public QObject {
     Q_PROPERTY(QString connectionError READ connectionError NOTIFY connectionErrorChanged)
         Q_PROPERTY(QString pendingProvider READ pendingProvider NOTIFY pendingProviderChanged)
 public:
-    Bridge(const QUrl &base, const QByteArray &key, QObject *parent = nullptr, Config *config = nullptr);
+    // Go cache.go and server.go encode the same Result schema, including all
+    // lyric representations. Allow the 256 MiB serialized cache plus 16 MiB
+    // for user/state metadata and envelope growth (session budget is 1 MiB).
+    static constexpr qint64 DefaultMaximumResponseBytes = qint64(272) * 1024 * 1024;
+    Bridge(const QUrl &base, const QByteArray &key, QObject *parent = nullptr, Config *config = nullptr,
+           qint64 maximumResponseBytes = DefaultMaximumResponseBytes);
     QVariantMap state() const { return m_state.toVariantMap(); }
     TrackModel *tracks() { return &m_tracks; }
     TrackModel *cards() { return &m_cards; }
@@ -60,6 +67,7 @@ signals:
         void pendingProviderChanged();
     void toast(const QString &message);
 private:
+    friend class NativeTests;
     void request(const QString &path, const QJsonObject &body = {}, bool get = false);
     void acceptState(QJsonObject state);
     void rebuild();
@@ -81,6 +89,14 @@ private:
     QString m_search, m_connectionError, m_pendingProvider;
         QString m_yandexAttemptedToken, m_yandexAccount;
         bool m_yandexSyncing = false;
+    bool m_yandexMayHaveToken = false, m_yandexRejected = false, m_yandexAcknowledged = false;
+    QString m_yandexPendingToken, m_yandexPendingAccount, m_yandexRejectedToken, m_yandexRejectedAccount;
+    QTimer m_yandexRetry;
+    int m_yandexRetryDelay = 1000;
+    int m_requestDeadlineMs = 15000;
+    int m_postDeadlineMs = 45000; // Backend token/logout operations have a 30-second budget.
+    qint64 m_maximumResponseBytes = DefaultMaximumResponseBytes;
+    quint64 m_stateGeneration = 0;
             bool m_signingOut = false;
     int m_sort = 0;
 };

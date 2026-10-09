@@ -59,3 +59,18 @@ present in its font metadata. Source artwork redistribution rights have not
 been independently verified either. These are included for the requested local
 source-faithful implementation; **verify permission before distributing the
 application**, or remove/replace these assets and accept the visual difference.
+
+## Window controls and reproducibility
+
+`lucide-window-minus.svg`, `lucide-window-maximize.svg`, and `lucide-window-x.svg`
+are exported from the installed website `lucide-react` 1.52.0 icon data. Source package,
+license/module SHA-256 hashes and generated SVG hashes are recorded in
+`window-icons-provenance.json`. Run `import_assets.py --icons-only --check` with that
+website checkout to verify them. Existing Lucide control SVGs and the protected
+activity icons are not rewritten by this mode. Existing `LUCIDE-LICENSE.txt` notices
+are retained.
+
+The Bearded file-tree subset is covered by the bundled GPL-3.0 license text and
+`bearded-provenance.json`; SVG bytes/colors remain unchanged. Consider GPL obligations
+before redistribution. This inventory does not resolve permissions for the artwork
+or Lucky Star font listed above.

@@ -6,6 +6,8 @@
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QPointer>
+#include <QDir>
 
 class UploaderTests final : public QObject {
     Q_OBJECT
@@ -147,6 +149,64 @@ private slots:
         QVERIFY2(uploader.error().contains("Git failed"), qPrintable(uploader.error())); QCOMPARE(done.count(), 0);
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
         QVERIFY(QFile::exists(dir.path() + "/list.json"));
+    }
+    void concurrentEditsDuringDownload_data() {
+        QTest::addColumn<QString>("change");
+        for (const auto &change : {"README.md", "list.json", "tracks/99", "index", "HEAD", "symlink", "tracks-symlink", "operation"})
+            QTest::newRow(change) << QString(change);
+    }
+    void concurrentEditsDuringDownload() {
+        QFETCH(QString, change);
+        QTemporaryDir dir; QVERIFY(dir.isValid()); init(dir.path());
+        const auto originalHead = git(dir.path(), {"rev-parse", "HEAD"});
+        const auto originalReadme = get(dir.path() + "/README.md");
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        QPointer<QTcpSocket> socket;
+        bool requested = false;
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [&] { socket->readAll(); requested = true; });
+        });
+        Uploader uploader(dir.path()); QSignalSpy done(&uploader, &Uploader::completed);
+        uploader.send("99", "Song", "Artist", "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio");
+        QTRY_VERIFY(requested); QVERIFY(uploader.busy());
+        QTemporaryDir outside;
+        if (change == "index") {
+            put(dir.path() + "/index-version", "external staged work");
+            const auto blob = git(dir.path(), {"hash-object", "-w", "index-version"}).trimmed();
+            git(dir.path(), {"update-index", "--cacheinfo", "100644", QString::fromLatin1(blob), "README.md"});
+        } else if (change == "HEAD") {
+            put(dir.path() + "/unrelated", "external commit");
+            git(dir.path(), {"add", "--", "unrelated"});
+            git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "external"});
+        } else if (change == "operation") {
+            put(dir.path() + "/.git/MERGE_HEAD", originalHead);
+        } else if (change == "tracks-symlink") {
+            QVERIFY(QFile::link(outside.path(), dir.path() + "/tracks"));
+        } else if (change == "symlink") {
+            put(outside.path() + "/README.md", "outside work");
+            QVERIFY(QFile::remove(dir.path() + "/README.md"));
+            QVERIFY(QFile::link(outside.path() + "/README.md", dir.path() + "/README.md"));
+        } else {
+            if (change.startsWith("tracks/")) QVERIFY(QDir().mkpath(dir.path() + "/tracks"));
+            put(dir.path() + "/" + change, "external edits");
+        }
+        const auto expectedHead = git(dir.path(), {"rev-parse", "HEAD"});
+        const auto expectedIndex = git(dir.path(), {"diff", "--cached", "--binary"});
+        socket->write("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nmp3"); socket->disconnectFromHost();
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY2(!uploader.error().isEmpty(), qPrintable(uploader.status())); QCOMPARE(done.count(), 0);
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), expectedHead);
+        QCOMPARE(git(dir.path(), {"diff", "--cached", "--binary"}), expectedIndex);
+        if (change == "symlink") QCOMPARE(get(outside.path() + "/README.md"), QByteArray("outside work"));
+        else if (change == "index") QVERIFY(!QFile::exists(dir.path() + "/list.json"));
+        else if (change == "operation") QCOMPARE(get(dir.path() + "/.git/MERGE_HEAD"), originalHead);
+        else if (change == "tracks-symlink") QVERIFY(!QFile::exists(outside.path() + "/99"));
+        else if (change != "HEAD") QCOMPARE(get(dir.path() + "/" + change), QByteArray("external edits"));
+        if (change != "README.md" && change != "symlink") QCOMPARE(get(dir.path() + "/README.md"), originalReadme);
+        if (change != "tracks/99") QVERIFY(!QFile::exists(dir.path() + "/tracks/99"));
+        if (change != "HEAD") QCOMPARE(expectedHead, originalHead);
+        if (socket) delete socket;
     }
     void audioOverwriteSkippedDoesNotCommit() {
         QTemporaryDir dir; init(dir.path()); Uploader uploader(dir.path());

@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
@@ -6,8 +7,31 @@ Rectangle {
     required property var ui
     required property var row
     required property int number
+    property url placeholderSource: "qrc:/assets/track-placeholder.svg"
     height: 58
     radius: 8
+    activeFocusOnTab: true
+    Accessible.role: Accessible.ListItem
+    Accessible.name: (row.title || "") + ", " + (row.artist || "") + ", " + (row.status || "")
+    Accessible.selected: active
+    Accessible.onPressAction: ui.choose(row)
+    Keys.onReturnPressed: ui.choose(row)
+    Keys.onEnterPressed: ui.choose(row)
+    Keys.onSpacePressed: ui.choose(row)
+    Keys.onMenuPressed: ui.context(row, root, width / 2, height / 2, false)
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)) {
+            ui.context(row, root, width / 2, height / 2, false);
+            event.accepted = true;
+        } else if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down) && ListView.view) {
+            const view = ListView.view;
+            view.currentIndex = Math.max(0, Math.min(view.count - 1, number - 1 + (event.key === Qt.Key_Down ? 1 : -1)));
+            view.positionViewAtIndex(view.currentIndex, ListView.Contain);
+            if (view.currentItem) view.currentItem.forceActiveFocus(Qt.TabFocusReason);
+            event.accepted = true;
+        }
+    }
+    SiteFocusRing { active: root.activeFocus }
     property bool active: ui.selectedId === row.id
     property bool ignored: !!row.ignored
     color: ignored ? (active ? "#47a01e1e" : hover.hovered ? "#3da01e1e" : "#2ea01e1e") : active ? "#0d2bfef5" : hover.hovered ? ui.surface : "transparent"
@@ -18,7 +42,9 @@ Rectangle {
     }
     TapHandler {
         acceptedButtons: Qt.LeftButton
-        onTapped: root.ui.choose(root.row)
+        onTapped: {
+            root.ui.choose(root.row);
+        }
     }
     TapHandler {
         acceptedButtons: Qt.RightButton
@@ -29,6 +55,7 @@ Rectangle {
         anchors.margins: 10
         spacing: 10
         Text {
+            textFormat: Text.PlainText
             Layout.preferredWidth: 26
             text: root.number
             color: root.ui.muted
@@ -45,7 +72,7 @@ Rectangle {
             Image {
                 anchors.centerIn: parent
                 width: 15; height: 15
-                source: "qrc:/assets/track-placeholder.svg"
+                source: root.placeholderSource
                 visible: cover.status !== Image.Ready
             }
             Image {
@@ -61,6 +88,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 2
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: root.row.title || ""
                 color: root.ui.ink
@@ -69,6 +97,7 @@ Rectangle {
                 elide: Text.ElideRight
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: root.row.artist || ""
                 color: root.ui.muted
@@ -77,10 +106,10 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             visible: text !== ""
             text: root.row.date || ""
             color: root.ui.muted
-            opacity: 0.5
             font.pixelSize: 12
         }
         Rectangle {
@@ -92,6 +121,7 @@ Rectangle {
             border.color: found ? (root.ignored ? "#4dc83c3c" : root.ui.accentBorder) : root.row.status === "pending" ? root.ui.borderColor : "transparent"
             opacity: root.row.status === "pending" ? 0.5 : 1
             Text {
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: ({
                         pending: "…",

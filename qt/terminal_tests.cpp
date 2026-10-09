@@ -127,6 +127,28 @@ private slots:
         QTest::qWait(100); QVERIFY(session.running());
 #endif
     }
+    void dirtyCaptureReusesIdleFrameAndObservesWidgetUpdates() {
+#ifndef Q_OS_WIN
+        QTemporaryDir directory; TerminalSession session; QQuickWindow window; EmbeddedTerminal view;
+        window.resize(720, 320); view.setParentItem(window.contentItem()); window.show();
+        view.setSize(QSizeF(720, 320)); view.setSession(&session);
+        QVERIFY(session.start(directory.path()));
+        session.widget()->setBlinkingCursor(false);
+        QTest::qWait(200); view.capture();
+        const auto count = view.m_captureCount;
+        const auto buffer = view.m_frame.constBits();
+        for (int i = 0; i < 30; ++i) view.capture();
+        QCOMPARE(view.m_captureCount, count); QCOMPARE(view.m_frame.constBits(), buffer);
+        QTest::qWait(250);
+        QVERIFY(view.m_captureCount <= count + 1); // Idle timer ticks must not rasterize every frame.
+        for (auto *child : session.widget()->findChildren<QWidget *>()) child->update();
+        QTRY_VERIFY(view.m_captureCount > count);
+        view.setVisible(false);
+        QVERIFY(!view.m_repaint.isActive());
+        view.setVisible(true); QTRY_VERIFY(view.m_captureCount > count + 1);
+        session.stop(); QVERIFY(!view.m_repaint.isActive()); QVERIFY(view.m_frame.isNull());
+#endif
+    }
     void workspaceCompatibilityAndQml() {
         qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
         qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
@@ -135,6 +157,7 @@ private slots:
         QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
         GitWorkspace workspace;
         workspace.setRepositoryPath(directory.path());
+        QTRY_VERIFY(!workspace.resolving());
         QQmlEngine engine;
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         QQmlComponent component(&engine, QUrl::fromLocalFile(

@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
@@ -6,11 +7,12 @@ Dialog {
     id: dialog
 
     property url icon: ""
+    property url assetRoot: "qrc:/assets/"
     property color surface: "#0c0c0e"
     property color surface2: "#171719"
     property color borderColor: "#3397979f"
     property color ink: "#f0f0f4"
-    property color muted: "#666666"
+    property color muted: "#999999"
     property color accentBg: "#142bfef5"
     property color accentBorder: "#332bfef5"
     property color overlayColor: "#a3000000"
@@ -21,12 +23,13 @@ Dialog {
     signal closeRequested()
 
     onCloseRequested: close()
+
     modal: true
     focus: true
     parent: Overlay.overlay
     anchors.centerIn: parent
-    padding: 16
-    topPadding: 8
+    padding: 8
+    topPadding: 0
     standardButtons: Dialog.NoButton
     font.family: "DDetector Nunito"
     palette.window: surface
@@ -35,6 +38,7 @@ Dialog {
 
     header: DialogHeader {
         icon: dialog.icon
+        assetRoot: dialog.assetRoot
         title: dialog.title
         surface: dialog.surface
         surface2: dialog.surface2
@@ -53,7 +57,7 @@ Dialog {
         color: dialog.backgroundColor
         radius: 16
         border.color: dialog.borderColor
-        layer.enabled: true
+        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
         layer.effect: MultiEffect {
             shadowEnabled: true
             shadowColor: "#40000000"

@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 
@@ -8,8 +9,9 @@ ToolTip {
     property color borderColor: "#3397979f"
     property color textColor: "#f0f0f4"
     property real maximumWidth: 320
+    property Control owner: parent as Control
 
-    visible: parent && parent.enabled && parent.hovered && text.length > 0
+    visible: owner && owner.enabled && (owner.hovered || owner.activeFocus) && text.length > 0
     delay: 500
     timeout: -1
     margins: 8

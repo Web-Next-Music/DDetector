@@ -1,0 +1,37 @@
+name: Qt UI
+on:
+  push:
+    paths: ['qt/**', '.github/workflows/qt-ui.yml']
+  pull_request:
+    paths: ['qt/**', '.github/workflows/qt-ui.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 20
+    steps:
+      - name: Install Qt and build dependencies
+        run: pacman -Syu --noconfirm --needed git cmake ninja python qt6-base qt6-declarative qt6-multimedia qt6-svg qt6-imageformats qt6-tools qtermwidget syntax-highlighting qtkeychain-qt6 libgit2 pkgconf
+      - uses: actions/checkout@v4
+      - name: Configure fresh Release build
+        run: cmake -S qt -B qt/build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build qt/build-ci --parallel 2
+      - name: Lint QML
+        run: cmake --build qt/build-ci --target qml-lint
+      - name: Native and UI regression tests, including smoke
+        run: ctest --test-dir qt/build-ci --output-on-failure --timeout 120
+
+      - name: Preserve smoke and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-ui-diagnostics
+          path: |
+            qt/build-ci/screenshots/
+            qt/build-ci/Testing/Temporary/
+
+          if-no-files-found: ignore

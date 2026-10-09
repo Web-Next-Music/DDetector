@@ -45,6 +45,8 @@ type FetchResult struct {
 	Added         int    `json:"added"`
 	Removed       int    `json:"removed"`
 	LyricsFetched int    `json:"lyrics_fetched"`
+	LyricsFailed  int    `json:"lyrics_failed,omitempty"`
+	Partial       bool   `json:"partial,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
 type pendingLogin struct {
@@ -57,7 +59,13 @@ type Server struct {
 	client          *Client
 	yandex          *yandexClient
 	jobCancel       context.CancelFunc
+	operationCancel context.CancelFunc
 	jobDone         chan struct{}
+	lifecycle       context.Context
+	lifecycleCancel context.CancelFunc
+	maintenanceDone chan struct{}
+	closing         bool
+	logoutPending   int
 	yandexFactory   func(string) *yandexClient
 	key, base, path string
 	session         *Session
@@ -85,7 +93,8 @@ func NewServer(c *Client, key, base, path string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{client: c, key: key, base: base, path: path, session: session, detector: NewDetector(), state: State{Tracks: []Result{}}}
+	lifecycle, lifecycleCancel := context.WithCancel(context.Background())
+	s := &Server{lifecycle: lifecycle, lifecycleCancel: lifecycleCancel, client: c, key: key, base: base, path: path, session: session, detector: NewDetector(), state: State{Tracks: []Result{}}}
 	if session != nil {
 		s.state.Authenticated = true
 		u := session.User
@@ -143,8 +152,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.state.LoginPending = false
 			s.state.Error = "Login expired"
 		}
-		s.sendState(w, r)
 		s.mu.Unlock()
+		s.sendState(w, r)
 		return
 	}
 	if r.Method != "POST" {
@@ -170,11 +179,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendState is called with mu held. User values are immutable session snapshots;
+// sendState captures an immutable snapshot under mu, then marshals and writes
+// outside the lock. User values are immutable session snapshots;
 // LastFetch is copied so even direct scalar writes invalidate the encoding.
 // Track replacements (including publishResults) change the backing slice; all
 // in-place track edits must increment tracksRevision under mu.
 func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
 	current := s.state
 	current.Tracks = nil
 	if current.LastFetch != nil {
@@ -186,28 +197,38 @@ func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
 		sameTracks = &s.state.Tracks[0] == &s.cachedTracks[0]
 	}
 	if s.stateJSON == nil || !sameTracks || s.tracksRevision != s.cachedRevision || !reflect.DeepEqual(current, s.cachedState) {
-		encoded, err := json.Marshal(s.state)
+		snapshot := current
+		snapshot.Tracks = append([]Result(nil), s.state.Tracks...)
+		if s.state.Tracks != nil && snapshot.Tracks == nil {
+			snapshot.Tracks = []Result{}
+		}
+		tracks, revision := s.state.Tracks, s.tracksRevision
+		s.mu.Unlock()
+		encoded, err := json.Marshal(snapshot)
 		if err != nil {
 			failure(w, 500, "unable to encode state")
 			return
 		}
+		s.mu.Lock()
 		s.stateJSON = append(encoded, '\n')
 		s.stateETag = fmt.Sprintf(`"%x"`, sha256.Sum256(s.stateJSON))
 		s.cachedState = current
-		s.cachedTracks = s.state.Tracks
-		s.cachedRevision = s.tracksRevision
+		s.cachedTracks = tracks
+		s.cachedRevision = revision
 	}
-	w.Header().Set("ETag", s.stateETag)
+	encoded, etag := s.stateJSON, s.stateETag
+	s.mu.Unlock()
+	w.Header().Set("ETag", etag)
 	for _, tag := range strings.Split(r.Header.Get("If-None-Match"), ",") {
 		tag = strings.TrimSpace(tag)
-		if tag == "*" || strings.TrimPrefix(tag, "W/") == s.stateETag {
+		if tag == "*" || strings.TrimPrefix(tag, "W/") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(s.stateJSON)
+	_, _ = w.Write(encoded)
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
@@ -234,7 +255,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 		failure(w, 400, "unsupported provider")
 		return
 	}
-	if !s.op.TryLock() {
+	if !s.tryOperation() {
 		failure(w, 409, "operation in progress")
 		return
 	}
@@ -261,7 +282,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		failure(w, 405, "method not allowed")
 		return
 	}
-	if !s.op.TryLock() {
+	if !s.tryOperation() {
 		failure(w, 409, "operation in progress")
 		return
 	}
@@ -282,7 +303,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sess Session
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := s.operationContext(r.Context(), 30*time.Second)
 	defer cancel()
 	err := s.client.request(ctx, "POST", "/auth/v1/token?grant_type=pkce", "", map[string]string{"auth_code": r.URL.Query().Get("code"), "code_verifier": p.Verifier}, nil, &sess)
 	if err == nil {
@@ -375,18 +396,25 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 	return sess.Access, nil
 }
 func (s *Server) startJob(w http.ResponseWriter, fetch bool) {
-	if !s.op.TryLock() {
+	if !s.tryOperation() {
 		failure(w, 409, "operation in progress")
 		return
 	}
 	s.mu.Lock()
+	if s.closing || s.logoutPending > 0 || s.lifecycle.Err() != nil {
+		s.mu.Unlock()
+		s.op.Unlock()
+		failure(w, 409, "operation in progress")
+		return
+	}
+
 	if s.session == nil {
 		s.mu.Unlock()
 		s.op.Unlock()
 		failure(w, 401, "login required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(s.lifecycle, 5*time.Minute)
 	done := make(chan struct{})
 	s.jobCancel, s.jobDone = cancel, done
 	s.state.Loading = true
@@ -414,7 +442,7 @@ func (s *Server) startJob(w http.ResponseWriter, fetch bool) {
 	}()
 	send(w, 202, map[string]any{"ok": true, "accepted": true})
 }
-func (s *Server) load(ctx context.Context, fetch bool) error {
+func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	token, err := s.authorize(ctx)
 	if err != nil {
 		return err
@@ -426,9 +454,12 @@ func (s *Server) load(ctx context.Context, fetch bool) error {
 	if c == nil {
 		return errors.New("Yandex Music token required")
 	}
-	cachePath := s.path + ".yandex-" + c.uid + ".tracks-cache.json"
-	cache, cacheErr := readTracksCache(cachePath, uid, c.base+"/users/"+c.uid)
+	cachePath := s.path + ".yandex-" + c.uid + ".tracks-cache.sqlite"
+	cache, cacheErr := readTracksCacheContext(ctx, cachePath, uid, c.base+"/users/"+c.uid)
 	if cacheErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		log.Print("Yandex cache unavailable; rebuilding")
 	}
 	s.publishResults(cache.Tracks)
@@ -466,6 +497,16 @@ func (s *Server) load(ctx context.Context, fetch bool) error {
 	results := []Result{}
 	pending := []int{}
 	stats := FetchResult{Total: len(tracks)}
+	defer func() {
+		if loadErr != nil {
+			stats.Partial = true
+			stats.Error = loadErr.Error()
+		}
+		s.mu.Lock()
+		s.state.LastFetch = &stats
+		s.state.Error = stats.Error
+		s.mu.Unlock()
+	}()
 	present := map[int64]bool{}
 	for _, member := range tracks {
 		if err := ctx.Err(); err != nil {
@@ -502,9 +543,6 @@ func (s *Server) load(ctx context.Context, fetch bool) error {
 	if err := s.processLyrics(ctx, c, cachePath, cache, results, pending, &stats); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.state.LastFetch = &stats
-	s.mu.Unlock()
 	return nil
 }
 func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
@@ -516,12 +554,12 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 		failure(w, 400, "expected positive track_id and ignored boolean")
 		return
 	}
-	if !s.op.TryLock() {
+	if !s.tryOperation() {
 		failure(w, 409, "operation in progress")
 		return
 	}
 	defer s.op.Unlock()
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := s.operationContext(r.Context(), 90*time.Second)
 	defer cancel()
 	token, err := s.authorize(ctx)
 	if err != nil {
@@ -564,12 +602,27 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 	send(w, 200, map[string]any{"ok": true, "track_id": in.ID, "ignored": *in.Ignored})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	// Serialize deletion with operations that can refresh and persist the session.
+	// Block new operations before cancellation, while preserving refresh/deletion serialization.
+	s.mu.Lock()
+	s.logoutPending++
+	if s.jobCancel != nil {
+		s.jobCancel()
+	}
+	if s.operationCancel != nil {
+		s.operationCancel()
+	}
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.logoutPending--; s.mu.Unlock() }()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for !s.op.TryLock() {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
+			failure(w, 504, "logout cancellation timed out")
 			return
-		case <-time.After(10 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 	defer s.op.Unlock()
@@ -590,7 +643,23 @@ func Listen() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") }
 
 // Start maintains restored sessions and loads newly authenticated accounts.
 func (s *Server) Start(ctx context.Context) {
+	s.mu.Lock()
+	if s.closing || s.maintenanceDone != nil {
+		s.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	s.maintenanceDone = done
+	lifecycle := s.lifecycle
+	s.mu.Unlock()
 	go func() {
+		defer close(done)
+		// Parent cancellation also cancels API jobs, not just maintenance.
+		maintenance, cancelMaintenance := context.WithCancel(lifecycle)
+		stopParent := context.AfterFunc(ctx, s.lifecycleCancel)
+		defer stopParent()
+		defer cancelMaintenance()
+		ctx = maintenance
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -599,7 +668,7 @@ func (s *Server) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 			}
-			if !s.op.TryLock() {
+			if !s.tryOperation() {
 				continue
 			}
 			s.mu.Lock()
@@ -609,6 +678,12 @@ func (s *Server) Start(ctx context.Context) {
 			s.mu.Unlock()
 			if needsLoad || needsRefresh {
 				work, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				s.mu.Lock()
+				s.jobCancel = cancel
+				if s.logoutPending > 0 || s.closing {
+					cancel()
+				}
+				s.mu.Unlock()
 				var err error
 				if needsLoad {
 					s.mu.Lock()
@@ -620,6 +695,7 @@ func (s *Server) Start(ctx context.Context) {
 				}
 				cancel()
 				s.mu.Lock()
+				s.jobCancel = nil
 				s.state.Loading = false
 				s.state.Processing = false
 				if err != nil {
@@ -639,4 +715,65 @@ func (s *Server) Start(ctx context.Context) {
 			s.op.Unlock()
 		}
 	}()
+}
+
+// tryOperation closes the race between a pending logout/shutdown and a new job.
+func (s *Server) tryOperation() bool {
+	if !s.op.TryLock() {
+		return false
+	}
+	s.mu.Lock()
+	blocked := s.closing || s.logoutPending > 0 || (s.lifecycle != nil && s.lifecycle.Err() != nil)
+	s.mu.Unlock()
+	if blocked {
+		s.op.Unlock()
+		return false
+	}
+	return true
+}
+
+// Close cancels background work and waits for its final cache checkpoint.
+// It is safe to retry with a fresh timeout if the first wait expires.
+func (s *Server) Close(ctx context.Context) error {
+	s.mu.Lock()
+	s.closing = true
+	s.lifecycleCancel()
+	if s.jobCancel != nil {
+		s.jobCancel()
+	}
+	if s.operationCancel != nil {
+		s.operationCancel()
+	}
+	jobDone, maintenanceDone := s.jobDone, s.maintenanceDone
+	s.mu.Unlock()
+	for _, done := range []chan struct{}{jobDone, maintenanceDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// Called with op held: logout can cancel an in-flight refresh or mutation too.
+func (s *Server) operationContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	stop := context.AfterFunc(s.lifecycle, cancel)
+	s.mu.Lock()
+	s.operationCancel = cancel
+	if s.closing || s.logoutPending > 0 {
+		cancel()
+	}
+	s.mu.Unlock()
+	return ctx, func() {
+		cancel()
+		stop()
+		s.mu.Lock()
+		s.operationCancel = nil
+		s.mu.Unlock()
+	}
 }

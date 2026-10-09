@@ -3,8 +3,8 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -40,27 +40,15 @@ func (s *Session) normalize() error {
 	return nil
 }
 func ReadSession(path string) (*Session, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	data, err := readPrivateFile(path, maxSessionBytes, false)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	link, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || link.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return nil, fmt.Errorf("session file must be regular, non-symlink, mode 0600")
-	}
 	var s Session
-	if err = json.NewDecoder(f).Decode(&s); err != nil {
+	if err = json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("invalid saved session")
 	}
 	if err = s.normalize(); err != nil {
@@ -69,43 +57,7 @@ func ReadSession(path string) (*Session, error) {
 	return &s, nil
 }
 func SaveSession(path string, s *Session) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("session directory must be private (0700)")
-	}
-	f, err := os.CreateTemp(dir, ".session-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	defer os.Remove(name)
-	if err = f.Chmod(0600); err == nil {
-		err = json.NewEncoder(f).Encode(s)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err = os.Rename(name, path); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return writePrivateFile(path, ".session-*", maxSessionBytes, func(w io.Writer) error {
+		return json.NewEncoder(w).Encode(s)
+	})
 }

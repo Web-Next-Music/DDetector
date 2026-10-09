@@ -166,11 +166,17 @@ func (c *yandexClient) supplement(ctx context.Context, id int64) ([]Lyric, error
 	if v.Lyrics == nil || strings.TrimSpace(v.Lyrics.Full) == "" {
 		return []Lyric{}, nil
 	}
+	if len(v.Lyrics.Full) > maxLyricsBytes {
+		return nil, fmt.Errorf("lyrics input too large")
+	}
 	out := []Lyric{}
 	for _, line := range strings.Split(strings.ReplaceAll(v.Lyrics.Full, "\r\n", "\n"), "\n") {
+		if len(line) > maxLyricLineBytes || len(out) >= maxLyricsLines {
+			return nil, fmt.Errorf("lyrics line budget exceeded")
+		}
 		out = append(out, Lyric{Text: line})
 	}
-	return out, nil
+	return out, validateLyrics(out)
 }
 
 // HTTP status errors never include response bodies or signed URLs.
@@ -203,11 +209,14 @@ func (s *Server) setYandexToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.op.TryLock() {
+	if !s.tryOperation() {
 		failure(w, 409, "operation in progress")
 		return
 	}
 	defer s.op.Unlock()
+	work, finish := s.operationContext(ctx, 30*time.Second)
+	defer finish()
+	ctx = work
 	// Discard the previous credential even when replacement validation fails.
 	s.mu.Lock()
 	s.yandex = nil

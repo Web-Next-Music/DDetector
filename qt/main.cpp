@@ -1,15 +1,18 @@
 #include "bridge.h"
+#include "posixshutdown.h"
 #include "player.h"
 #include "coverimageprovider.h"
 #include "avatarimage.h"
 #include "workspace.h"
 #include "uploader.h"
+#include "repositorycoordinator.h"
 #include <QCommandLineParser>
 #include <QDirIterator>
 #include <QFontDatabase>
 #include <QApplication>
 #include "terminal.h"
 #include "syntaxhighlighter.h"
+#include "lyricslayout.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -19,6 +22,12 @@
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    PosixShutdown shutdown;
+    if (!shutdown.isInstalled()) {
+        qCritical().noquote() << shutdown.error();
+        return 2;
+    }
+    qmlRegisterType<LyricsLayout>("DDetector.Lyrics", 1, 0, "LyricsLayout");
     qmlRegisterType<SyntaxHighlighter>("DDetector.Syntax", 1, 0, "SyntaxHighlighter");
     qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
     qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
@@ -48,16 +57,11 @@ int main(int argc, char **argv) {
     while (fonts.hasNext()) QFontDatabase::addApplicationFont(fonts.next());
     QFont font("DDetector Nunito"); font.setWeight(QFont::Bold); font.setPixelSize(13); app.setFont(font);
     Config config;
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &config, [&config] { config.flush(); });
     Bridge bridge(base, parser.value("bridge-key").toUtf8(), nullptr, &config);
     GitWorkspace workspace;
     Uploader uploader;
-    auto applyRepository = [&] {
-        workspace.setRepositoryPath(config.repositoryPath());
-        uploader.setDirectory(workspace.rootPath());
-    };
-    applyRepository();
-    QObject::connect(&config, &Config::settingsChanged, &workspace, applyRepository);
-    QObject::connect(&uploader, &Uploader::completed, &workspace, [&](const QString &) { workspace.refreshTree(); });
+    RepositoryCoordinator repositories(config, workspace, uploader);
     MusicPlayer musicPlayer;
     musicPlayer.setVolume(config.volume());
 
@@ -102,5 +106,6 @@ int main(int argc, char **argv) {
             app.quit();
         });
     }
+    if (shutdown.wasRequested()) return 0;
     return app.exec();
 }

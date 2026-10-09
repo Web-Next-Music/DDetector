@@ -2,11 +2,15 @@
 
 #include <QPointer>
 #include <QQuickTextDocument>
-#include <QSyntaxHighlighter>
+
+#include <KSyntaxHighlighting/SyntaxHighlighter>
+#include <KSyntaxHighlighting/Repository>
+#include <KSyntaxHighlighting/Theme>
+
 
 // Applies layout formats only; never replaces text or changes the editor model.
 // Register with qmlRegisterType<SyntaxHighlighter>(uri, 1, 0, "SyntaxHighlighter").
-class SyntaxHighlighter : public QSyntaxHighlighter {
+class SyntaxHighlighter : public KSyntaxHighlighting::SyntaxHighlighter {
     Q_OBJECT
     Q_PROPERTY(QQuickTextDocument *document READ quickDocument WRITE setQuickDocument NOTIFY documentChanged)
     Q_PROPERTY(QString filePath READ filePath WRITE setFilePath NOTIFY filePathChanged)
@@ -20,11 +24,11 @@ signals:
     void documentChanged();
     void filePathChanged();
 protected:
-    void highlightBlock(const QString &text) override;
+    void applyFormat(int offset, int length, const KSyntaxHighlighting::Format &format) override;
 private:
-    enum Language { Plain, Python, Json, Markdown, JavaScript, Yaml, Shell };
+    KSyntaxHighlighting::Repository m_repository;
     QPointer<QQuickTextDocument> m_document;
     QMetaObject::Connection m_destroyed;
     QString m_filePath;
-    Language m_language = Plain;
+
 };

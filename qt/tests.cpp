@@ -1,10 +1,19 @@
 #include "bridge.h"
+#include "posixshutdown.h"
+#include <QApplication>
+#include <QProcess>
+#include <cstdio>
 #include "player.h"
 #include "avatarimage.h"
 #include "workspace.h"
 #include "terminal.h"
 #include "syntaxhighlighter.h"
+#include "lyricslayout.h"
 #include "uploader.h"
+#include "repositorycoordinator.h"
+#include <optional>
+#include <QElapsedTimer>
+#include <algorithm>
 #include <QAbstractItemModelTester>
 #include <QClipboard>
 #include <QFile>
@@ -40,6 +49,8 @@ public:
     QList<QByteArray> requests;
     int notModified = 0;
     int getDelayMs = 0;
+    bool holdConnection = false;
+    std::function<std::optional<QByteArray>(const QByteArray &, QTcpSocket *)> wireHook;
     MockBackend() {
         QFile fixture(":/test-fixtures/state.json");
         if (!fixture.open(QIODevice::ReadOnly)) qFatal("Test fixture is missing");
@@ -57,7 +68,17 @@ public:
                     for (auto line : buffer->left(headers).split('\n'))
                         if (line.toLower().startsWith("content-length:")) length = line.mid(15).trimmed().toInt();
                     if (buffer->size() < headers + 4 + length) return;
+                    if (socket->property("handled").toBool()) return;
+                    socket->setProperty("handled", true);
                     requests.append(*buffer);
+                    if (wireHook) {
+                        const auto wire = wireHook(*buffer, socket);
+                        if (wire) {
+                            socket->write(*wire);
+                            if (!holdConnection) socket->disconnectFromHost();
+                            return;
+                        }
+                    }
                     const bool get = buffer->startsWith("GET /api/state ");
                     if (buffer->startsWith("POST /api/ignore ")) {
                         const auto body = QJsonDocument::fromJson(buffer->mid(headers + 4, length)).object();
@@ -94,16 +115,8 @@ struct LocalContexts {
     GitWorkspace workspace;
     Uploader uploader;
 
-    explicit LocalContexts(Config &config) {
-        const auto applyRepository = [this, &config] {
-            workspace.setRepositoryPath(config.repositoryPath());
-            uploader.setDirectory(workspace.rootPath());
-        };
-        applyRepository();
-        QObject::connect(&config, &Config::settingsChanged, &workspace, applyRepository);
-        QObject::connect(&uploader, &Uploader::completed, &workspace,
-                         [this](const QString &) { workspace.refreshTree(); });
-    }
+    RepositoryCoordinator repositories;
+    explicit LocalContexts(Config &config) : repositories(config, workspace, uploader) {}
 
     void attach(QQmlApplicationEngine &engine) {
         engine.rootContext()->setContextProperty("gitWorkspace", &workspace);
@@ -114,12 +127,100 @@ struct LocalContexts {
 class NativeTests final : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
+public:
+    static int runSignalFlushChild(const QString &path) {
+        PosixShutdown shutdown;
+        if (!shutdown.isInstalled()) return 10;
+        Config config(path);
+        config.m_saveDebounce.setInterval(60000);
+        bool quitting = false, flushed = false;
+        QObject::connect(qApp, &QCoreApplication::aboutToQuit, &config, [&] {
+            quitting = true;
+            flushed = config.flush();
+        });
+        QTimer::singleShot(0, &config, [&] {
+            config.setMusicToken("signal-pending-token");
+            config.setVolume(0.73);
+            if (QFile::exists(path)) { qApp->exit(11); return; }
+            std::fputs("READY\n", stdout);
+            std::fflush(stdout);
+        });
+        QTimer::singleShot(10000, qApp, [] { qApp->exit(12); });
+        const int result = qApp->exec();
+        return result == 0 && shutdown.wasRequested() && quitting && flushed ? 0 : 13;
+    }
 private slots:
+    void configSignalShutdown_data() {
+#ifdef Q_OS_UNIX
+        QTest::addColumn<int>("signalNumber");
+        QTest::newRow("SIGINT") << int(SIGINT);
+        QTest::newRow("SIGTERM") << int(SIGTERM);
+#endif
+    }
+    void configSignalShutdown() {
+#ifndef Q_OS_UNIX
+        QSKIP("POSIX signal regression");
+#else
+        QFETCH(int, signalNumber);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("Config.json");
+        QProcess child;
+        struct ReapChild {
+            QProcess &process;
+            ~ReapChild() { if (process.state() != QProcess::NotRunning) { process.kill(); process.waitForFinished(5000); } }
+        } reap{child};
+        child.start(QCoreApplication::applicationFilePath(), {"--signal-flush-child", path});
+        QVERIFY(child.waitForStarted(5000));
+        QByteArray output;
+        QElapsedTimer timer; timer.start();
+        while (!output.contains("READY\n") && timer.elapsed() < 5000) {
+            child.waitForReadyRead(100);
+            output += child.readAllStandardOutput();
+        }
+        QVERIFY2(output.contains("READY\n"), child.readAllStandardError().constData());
+        QVERIFY(!QFile::exists(path));
+        QCOMPARE(::kill(pid_t(child.processId()), signalNumber), 0);
+        QVERIFY(child.waitForFinished(5000));
+        QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(child.exitCode(), 0);
+        Config restored(path);
+        QCOMPARE(restored.musicToken(), QString("signal-pending-token"));
+        QCOMPARE(restored.volume(), 0.73);
+#endif
+    }
+    void bridgeLargeGoStateAndConfiguredBudget() {
+        MockBackend server;
+        QJsonArray lyrics, allLines, tracks;
+        const QString text(8192, QLatin1Char('x'));
+        for (int line = 0; line < 128; ++line) {
+            lyrics.append(QJsonObject{{"ts", QJsonValue::Null}, {"text", text}});
+            allLines.append(QJsonObject{{"ts", QJsonValue::Null}, {"isDrug", false},
+                {"parts", QJsonArray{QJsonObject{{"text", text}, {"marked", false}}}}});
+        }
+        for (int id = 1; id <= 12; ++id)
+            tracks.append(QJsonObject{{"id", id}, {"title", "large valid track"}, {"artist", "artist"},
+                {"status", "none"}, {"ignored", false}, {"lyrics", lyrics},
+                {"lines", QJsonArray{}}, {"allLines", allLines}});
+        server.state.insert("tracks", tracks);
+        const auto body = QJsonDocument(server.state).toJson(QJsonDocument::Compact);
+        QVERIFY(body.size() > 16 * 1024 * 1024);
+        QVERIFY(body.size() < 256 * 1024 * 1024);
+        QVERIFY(Bridge::DefaultMaximumResponseBytes >= qint64(257) * 1024 * 1024);
+        Config config{QString()};
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_COMPARE_WITH_TIMEOUT(bridge.tracks()->count(), 12, 10000);
+        QCOMPARE(bridge.m_source.first().toObject().value("lyrics").toArray().first().toObject().value("text").toString(), text);
+        Bridge limited(server.url(), "key", nullptr, &config, 1024);
+        QTRY_COMPARE(limited.connectionError(), QString("Backend response exceeds size limit"));
+        QCOMPARE(limited.tracks()->count(), 0);
+    }
     void initTestCase() {
         QVERIFY(settings.isValid());
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
         QQuickStyle::setStyle("Basic");
+        qmlRegisterType<LyricsLayout>("DDetector.Lyrics", 1, 0, "LyricsLayout");
         qmlRegisterType<SyntaxHighlighter>("DDetector.Syntax", 1, 0, "SyntaxHighlighter");
         qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
         qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
@@ -180,6 +281,7 @@ private slots:
         config.setVolume(0.75);
         QVERIFY(config.error().isEmpty());
         QCOMPARE(changed.count(), 5);
+        QVERIFY(config.flush());
         Config restored(path);
         QCOMPARE(restored.repositoryPath(), repositoryPath);
         QCOMPARE(restored.musicToken(), QString("test-private-token"));
@@ -196,6 +298,7 @@ private slots:
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).object().value("repositoryPath").toString(), repositoryPath);
         file.close();
         config.setRepositoryPath(QString());
+        QVERIFY(config.flush());
         Config cleared(path);
         QVERIFY(cleared.repositoryPath().isEmpty());
         QCOMPARE(changed.count(), 6);
@@ -226,6 +329,304 @@ private slots:
         QCOMPARE(persistent.row(), 1); QCOMPARE(changed.count(), 1); QCOMPARE(reset.count(), 0);
         model.sync({updated});
         QCOMPARE(persistent.row(), 0); QCOMPARE(model.count(), 1);
+    }
+    void modelRejectsDuplicateIdsAndBulkReorders() {
+        TrackModel model;
+        QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.sync({{{"id", 1}}, {{"id", "1"}}, {{"id", ""}}, {{"id", 0}}, {{"id", -1}},
+                    {{"id", 1.5}}, {{"title", "missing"}}, {{"id", "../2"}}, {{"id", "2"}}});
+        QCOMPARE(model.count(), 2);
+        QCOMPARE(model.indexOf("1"), 0); QCOMPARE(model.indexOf("2"), 1);
+        QList<QJsonObject> rows;
+        for (int i = 1; i <= 10000; ++i) rows.append({{"id", QString::number(i)}, {"title", "track"}});
+        model.sync(rows);
+        QPersistentModelIndex held(model.index(42));
+        QSignalSpy resets(&model, &QAbstractItemModel::modelReset);
+        QSignalSpy moves(&model, &QAbstractItemModel::rowsMoved);
+        std::reverse(rows.begin(), rows.end());
+        model.sync(rows);
+        QCOMPARE(held.row(), 10000 - 43);
+        QCOMPARE(held.data(Qt::UserRole).toMap().value("id").toString(), QString("43"));
+        QCOMPARE(resets.count(), 0); QCOMPARE(moves.count(), 0);
+        QCOMPARE(model.indexOf("1"), 9999);
+    }
+    void configDebounceFailureRetryAndShutdown() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString path = dir.filePath("settings/Config.json");
+        {
+            Config config(path);
+            for (int i = 0; i < 100; ++i) config.setVolume(i / 100.0);
+            QVERIFY(!QFile::exists(path));
+            QTRY_VERIFY(QFile::exists(path));
+            Config loaded(path); QCOMPARE(loaded.volume(), 0.99);
+            config.setVolume(0.25);
+            // Destruction must flush an unexpired debounce.
+        }
+        Config loaded(path); QCOMPARE(loaded.volume(), 0.25);
+        const QString blocked = dir.filePath("blocked");
+        QFile file(blocked); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("file, not directory"); file.close();
+        Config failed(blocked + "/Config.json"); failed.setMusicToken("retry-token");
+        QVERIFY(!failed.flush()); QVERIFY(!failed.error().isEmpty());
+        QVERIFY(QFile::remove(blocked)); QVERIFY(QDir().mkdir(blocked));
+        failed.setMusicToken("retry-token");
+        QTRY_VERIFY(QFile::exists(blocked + "/Config.json"));
+        QVERIFY(failed.error().isEmpty());
+        Config recovered(blocked + "/Config.json"); QCOMPARE(recovered.musicToken(), QString("retry-token"));
+        QFile stored(blocked + "/Config.json"); QVERIFY(stored.open(QIODevice::ReadOnly));
+        const auto original = stored.readAll(); stored.close();
+        failed.setMusicToken(QString(1024 * 1024, 'x')); QVERIFY(!failed.flush());
+        QVERIFY(failed.error().contains("1 MiB"));
+        QVERIFY(stored.open(QIODevice::ReadOnly)); QCOMPARE(stored.readAll(), original); stored.close();
+        failed.setMusicToken("retry-token"); QVERIFY(failed.flush()); QVERIFY(failed.error().isEmpty());
+    }
+    void tokenRetriesTransientFailure() {
+        MockBackend server;
+        int sends = 0;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (request.startsWith("POST /api/yandex/token ") && ++sends == 1)
+                return QByteArray("HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            return std::nullopt;
+        };
+        Config config{QString()}; config.setMusicToken("test-token");
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_COMPARE_WITH_TIMEOUT(sends, 2, 5000);
+        QTRY_COMPARE(bridge.m_yandexAttemptedToken, QString("test-token"));
+        QVERIFY(!bridge.m_yandexRetry.isActive());
+        QTRY_VERIFY(std::any_of(server.requests.cbegin(), server.requests.cend(), [](const auto &request) {
+            return request.startsWith("POST /api/load ");
+        }));
+        int loads = 0;
+        for (const auto &request : server.requests) if (request.startsWith("POST /api/load ")) ++loads;
+        QCOMPARE(loads, 1);
+    }
+    void logoutClearsUnacknowledgedTokenAndCancelsRetry() {
+        MockBackend server; int sends = 0;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (request.startsWith("POST /api/yandex/token ") && ++sends == 1)
+                return QByteArray("HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            if (request.startsWith("POST /api/logout ")) {
+                server.state.insert("authenticated", false); server.state.insert("hasAccess", false);
+            }
+            return std::nullopt;
+        };
+        Config config{QString()}; config.setMusicToken("uncertain-token");
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_VERIFY(bridge.m_yandexRetry.isActive());
+        bridge.logout();
+        QTRY_COMPARE(sends, 2); QTRY_VERIFY(!bridge.m_yandexSyncing);
+        QVERIFY(!bridge.m_yandexRetry.isActive()); QVERIFY(!bridge.m_yandexMayHaveToken);
+        bool cleared = false;
+        for (const auto &request : server.requests)
+            if (request.startsWith("POST /api/yandex/token ") && request.contains("\"access_token\":\"\"")) cleared = true;
+        QVERIFY(cleared);
+        QTest::qWait(1200); QCOMPARE(sends, 2);
+    }
+    void stalePollCannotResurrectLogout() {
+        MockBackend server; Config config{QString()};
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6); QTRY_VERIFY(!bridge.m_polling);
+        bridge.m_poll.stop(); server.getDelayMs = 250;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (request.startsWith("POST /api/logout ")) {
+                server.state.insert("authenticated", false); server.state.insert("hasAccess", false);
+            }
+            return std::nullopt;
+        };
+        const int before = server.requests.size();
+        bridge.m_stateETag.clear(); bridge.request("/api/state", {}, true);
+        QTRY_VERIFY(server.requests.size() > before);
+        bridge.logout();
+        bool resurrected = false;
+        connect(&bridge, &Bridge::stateChanged, this, [&] {
+            if (bridge.state().value("authenticated").toBool()) resurrected = true;
+        });
+        QTRY_VERIFY(server.requests.size() >= before + 3);
+        QTRY_VERIFY(!bridge.m_polling);
+        QVERIFY(!resurrected); QVERIFY(!bridge.state().value("authenticated").toBool());
+        QCOMPARE(bridge.tracks()->count(), 0);
+    }
+    void tokenPermanentFailureDoesNotLoop() {
+        MockBackend server; int sends = 0;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (request.startsWith("POST /api/yandex/token ")) {
+                ++sends;
+                return QByteArray("HTTP/1.1 401 Unauthorized\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndenied");
+            }
+            return std::nullopt;
+        };
+        Config config{QString()}; config.setMusicToken("bad-token");
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_COMPARE(sends, 1); QTRY_VERIFY(!bridge.m_yandexSyncing);
+        QTest::qWait(1200); QCOMPARE(sends, 1);
+        config.setMusicToken("different-token"); QTRY_COMPARE(sends, 2);
+    }
+    void bridgeResponseBudgetAndAbsoluteDeadline() {
+        MockBackend server; Config config{QString()};
+        Bridge bridge(server.url(), "key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6); QTRY_VERIFY(!bridge.m_polling);
+        bridge.m_poll.stop(); bridge.m_maximumResponseBytes = 64;
+        for (bool chunked : {false, true}) {
+            server.wireHook = [chunked](const QByteArray &, QTcpSocket *) -> std::optional<QByteArray> {
+                return chunked
+                    ? QByteArray("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3e8\r\n") + QByteArray(1000, 'x') + "\r\n0\r\n\r\n"
+                    : QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n") + QByteArray(1000, 'x');
+            };
+            bridge.setConnectionError({}); bridge.m_stateETag.clear(); bridge.request("/api/state", {}, true);
+            QTRY_VERIFY(!bridge.m_polling);
+            QVERIFY(bridge.connectionError().contains("size limit"));
+            QCOMPARE(bridge.tracks()->count(), 6);
+        }
+        server.holdConnection = true;
+        server.wireHook = [](const QByteArray &, QTcpSocket *socket) -> std::optional<QByteArray> {
+            auto timer = new QTimer(socket);
+            QObject::connect(timer, &QTimer::timeout, socket, [socket] { socket->write(" "); });
+            timer->start(20);
+            return QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{");
+        };
+        bridge.m_maximumResponseBytes = 4096; bridge.m_requestDeadlineMs = 120;
+        bridge.request("/api/state", {}, true);
+        QTRY_VERIFY_WITH_TIMEOUT(bridge.connectionError().contains("timed out"), 1500);
+        QVERIFY(!bridge.m_polling); QCOMPARE(bridge.tracks()->count(), 6);
+    }
+    void credentialMigrationPersistenceContract() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("Config.json");
+        Config config(path);
+        config.setMusicToken("legacy-secret"); QVERIFY(config.flush());
+        config.m_useKeychain = true;
+        // Model an OS write pending/failed: the only durable copy must survive.
+        config.scheduleSave(); QVERIFY(config.flush());
+        const auto read = [&] {
+            QFile file(path); if (!file.open(QIODevice::ReadOnly)) return QJsonObject();
+            return QJsonDocument::fromJson(file.readAll()).object();
+        };
+        QCOMPARE(read().value("musicToken").toString(), QString("legacy-secret"));
+        config.m_credentialStored = true; config.m_storedToken = "legacy-secret";
+        config.scheduleSave(); QVERIFY(config.flush());
+        QVERIFY(!read().contains("musicToken"));
+        config.setMusicToken("replacement"); QVERIFY(config.flush());
+        QCOMPARE(read().value("musicToken").toString(), QString("replacement"));
+        config.setMusicToken({}); QVERIFY(config.flush());
+        QVERIFY(read().contains("musicToken")); // Explicit logout overrides a stale keychain value.
+        QCOMPARE(read().value("musicToken").toString(), QString());
+        config.m_storedToken.clear(); config.scheduleSave(); QVERIFY(config.flush());
+        QVERIFY(!read().contains("musicToken"));
+        Config pending(directory.filePath("pending.json"));
+        pending.m_useKeychain = true; pending.setVolume(0.7); QVERIFY(pending.flush());
+        QFile file(directory.filePath("pending.json")); QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!QJsonDocument::fromJson(file.readAll()).object().contains("musicToken"));
+    }
+    void credentialFallbackAndDelayedRead() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("Config.json");
+        {
+            Config fallback(path);
+            fallback.setVolume(0.7);
+            QVERIFY(fallback.flush());
+        }
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!QJsonDocument::fromJson(file.readAll()).object().contains("musicToken"));
+        file.close();
+        Config restored(path);
+        QVERIFY(!restored.m_credentialEdited);
+        QVERIFY(restored.acceptCredentialRead(true, false, "stored-secret"));
+        QCOMPARE(restored.musicToken(), QString("stored-secret"));
+        Config clearing{QString()};
+        clearing.setMusicToken({});
+        QVERIFY(clearing.m_credentialEdited);
+        QVERIFY(clearing.acceptCredentialRead(true, false, "old-secret"));
+        QVERIFY(clearing.musicToken().isEmpty());
+        Config retry{QString()};
+        QVERIFY(!retry.acceptCredentialRead(false, false, {}));
+        QVERIFY(!retry.m_credentialReady);
+        QVERIFY(retry.m_credentialRetry.isActive());
+        retry.setMusicToken("replacement");
+        QVERIFY(retry.acceptCredentialRead(true, false, "old-secret"));
+        QVERIFY(!retry.m_credentialRetry.isActive());
+        QCOMPARE(retry.musicToken(), QString("replacement"));
+    }
+    void credentialWriteRetryAndStaleCompletion() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("Config.json");
+        Config config(path);
+        config.setMusicToken("replacement"); QVERIFY(config.flush());
+        QVERIFY(!config.acceptCredentialWrite(false, "old-secret"));
+        QVERIFY(config.m_credentialWriteRetry.isActive());
+        QCOMPARE(config.m_credentialWriteAttempts, 1);
+        config.m_credentialWriteRetry.stop();
+        QVERIFY(config.acceptCredentialWrite(true, "old-secret"));
+        QVERIFY(!config.m_credentialWriteRetry.isActive());
+        QCOMPARE(config.musicToken(), QString("replacement"));
+        config.m_useKeychain = true;
+        QVERIFY(config.flush());
+        const auto read = [&] {
+            QFile file(path); if (!file.open(QIODevice::ReadOnly)) return QJsonObject();
+            return QJsonDocument::fromJson(file.readAll()).object();
+        };
+        QCOMPARE(read().value("musicToken").toString(), QString("replacement"));
+        QVERIFY(!config.acceptCredentialWrite(true, "replacement"));
+        QVERIFY(config.flush());
+        QVERIFY(!read().contains("musicToken"));
+        // Failure retries are bounded; explicit retryCredentials resets the budget.
+        for (int i = 0; i < 4; ++i) {
+            config.m_credentialWriteRetry.stop();
+            QVERIFY(!config.acceptCredentialWrite(false, "replacement"));
+        }
+        QCOMPARE(config.m_credentialWriteAttempts, 3);
+        QVERIFY(!config.m_credentialWriteRetry.isActive());
+    }
+    void repositoryCoordinatorRejectsUnsafeSwitches() {
+        QTemporaryDir a, b; QVERIFY(a.isValid()); QVERIFY(b.isValid());
+        const auto git = [](const QString &root, const QStringList &args) {
+            QProcess process; process.setWorkingDirectory(root);
+            process.start("git", QStringList{"--no-pager", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"} + args);
+            return process.waitForFinished(5000) && process.exitCode() == 0;
+        };
+        for (const auto &root : {a.path(), b.path()}) {
+            QVERIFY(git(root, {"init", "-q"}));
+            QFile file(root + "/README.md"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("# Tracks\n"); file.close();
+            QVERIFY(git(root, {"add", "README.md"}));
+            QVERIFY(git(root, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"}));
+            QVERIFY(git(root, {"config", "user.name", "Test"}));
+            QVERIFY(git(root, {"config", "user.email", "test@example.invalid"}));
+        }
+        Config config{QString()}; config.setRepositoryPath(a.path());
+        LocalContexts local(config);
+        QVERIFY(local.workspace.resolving()); QVERIFY(local.uploader.directory().isEmpty());
+        config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
+        QTRY_VERIFY(!local.workspace.resolving()); QCOMPARE(local.uploader.directory(), a.path());
+        local.workspace.openFile("README.md"); local.workspace.setText("dirty");
+        config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
+        local.uploader.send("1", "song", "artist"); QVERIFY(!local.uploader.busy());
+        QVERIFY(local.uploader.error().contains("edits"));
+        local.workspace.setText("# Tracks\n");
+        local.workspace.startTerminal(); QVERIFY(local.workspace.terminalRunning());
+        config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
+        local.workspace.stopTerminal();
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        QPointer<QTcpSocket> audio;
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            audio = server.nextPendingConnection();
+            connect(audio, &QTcpSocket::readyRead, audio, [audio] { audio->readAll(); });
+        });
+        local.uploader.send("1", "song", "artist", "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio");
+        QTRY_VERIFY(audio); QVERIFY(local.uploader.busy());
+        config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
+        local.workspace.setRepositoryPath(b.path()); QCOMPARE(local.workspace.repositoryPath(), a.path());
+        QVERIFY(!local.uploader.setDirectory(b.path()));
+        local.workspace.setText("local edits"); QVERIFY(!local.workspace.save());
+        audio->write("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nmp3");
+        audio->disconnectFromHost();
+        QTRY_VERIFY_WITH_TIMEOUT(!local.uploader.busy(), 20000);
+        QCOMPARE(local.uploader.directory(), a.path());
+        local.workspace.requestClose(); local.workspace.resolveUnsaved("discard");
+        config.setRepositoryPath(b.path());
+        QCOMPARE(config.repositoryPath(), b.path());
+        QVERIFY(local.uploader.directory().isEmpty());
+        QTRY_VERIFY(!local.workspace.resolving()); QCOMPARE(local.workspace.rootPath(), b.path());
+        QCOMPARE(local.uploader.directory(), b.path());
+        config.setVolume(0.123); QCOMPARE(local.workspace.rootPath(), b.path());
+        if (audio) delete audio;
     }
     void filterSortAndSettings() {
         Config config{QString()};
@@ -386,8 +787,7 @@ private slots:
                 QVERIFY(account); QCOMPARE(account->property("visible").toBool(), true);
                 QVERIFY(QMetaObject::invokeMethod(account, "close"));
                 QVERIFY(window->flags().testFlag(Qt::FramelessWindowHint));
-                auto titleBar = window->findChild<QObject *>("titleBar");
-                QVERIFY(titleBar); QCOMPARE(titleBar->property("height").toInt(), 0);
+                QVERIFY(!window->findChild<QObject *>("titleBar"));
                 auto settingsEntry = account->findChild<QObject *>("accountSettingsEntry");
                 QVERIFY(settingsEntry);
                 QVERIFY(QMetaObject::invokeMethod(settingsEntry, "triggered"));
@@ -574,8 +974,8 @@ private slots:
         if (feature == "panel") {
             auto panel = window->findChild<QQuickItem *>("playerPanel");
             QVERIFY2(panel, "Main.qml must expose the player panel with objectName: playerPanel");
-            QVERIFY(!panel->isVisible());
-            QCOMPARE(panel->height(), 0.0);
+            QVERIFY(panel->isVisible());
+            QCOMPARE(panel->height(), 88.0);
             QVERIFY(!panel->isEnabled());
             auto timeline = window->findChild<QQuickItem *>("playerTimeline");
             QVERIFY(timeline);
@@ -777,5 +1177,11 @@ private slots:
         QCOMPARE(warnings.count(), 0);
     }
 };
-QTEST_MAIN(NativeTests)
+int main(int argc, char **argv) {
+    QApplication app(argc, argv);
+    if (app.arguments().size() == 3 && app.arguments().at(1) == "--signal-flush-child")
+        return NativeTests::runSignalFlushChild(app.arguments().at(2));
+    NativeTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "tests.moc"

@@ -9,6 +9,11 @@
 #include <QProcess>
 #include <QTimer>
 #include <QStringEncoder>
+#include <QLockFile>
+#include <memory>
+#include <git2.h>
+#include <QtConcurrent>
+#include <QFutureWatcher>
 
 namespace {
 // Qt's UTF-16 converter can preserve unpaired surrogates without reporting errors.
@@ -34,6 +39,9 @@ GitWorkspace::GitWorkspace(QObject *parent) : QObject(parent) {
     const auto schedule = [this](const QString &) { m_refreshDebounce.start(); };
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, schedule);
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, schedule);
+    // File-watch limits and ignore/config changes must not silently leave stale status.
+    m_reconcile.setInterval(2000);
+    connect(&m_reconcile, &QTimer::timeout, this, &GitWorkspace::refreshTree);
     connect(&m_terminal, &TerminalSession::output, this, &GitWorkspace::appendOutput);
     connect(&m_terminal, &TerminalSession::changed, this, [this] { emit terminalChanged(); });
     connect(&m_terminal, &TerminalSession::finished, this, [this] {
@@ -41,7 +49,29 @@ GitWorkspace::GitWorkspace(QObject *parent) : QObject(parent) {
     });
 }
 
-GitWorkspace::~GitWorkspace() = default;
+GitWorkspace::~GitWorkspace() {
+    cancelGit();
+    // Normal operation never waits; teardown reaps already-killed children before
+    // QObject destroys them (including processes retired by repository switches).
+    for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (process->state() != QProcess::NotRunning) { process->kill(); process->waitForFinished(1000); }
+    }
+}
+QString GitWorkspace::error() const {
+    QStringList errors;
+    for (const auto &error : {m_error, m_gitError, m_watchError})
+        if (!error.isEmpty()) errors.append(error);
+    return errors.join('\n');
+}
+void GitWorkspace::cancelGit() {
+    ++m_gitGeneration;
+    if (!m_git) return;
+    auto *process = m_git; m_git = nullptr;
+    process->disconnect();
+    connect(process, &QProcess::finished, process, &QObject::deleteLater);
+    process->kill();
+    if (process->state() == QProcess::NotRunning) process->deleteLater();
+}
 
 void GitWorkspace::fail(const QString &message) {
     m_error = message;
@@ -49,7 +79,11 @@ void GitWorkspace::fail(const QString &message) {
 }
 
 void GitWorkspace::setRepositoryPath(const QString &path) {
-    if (path == m_repository) return;
+    if (path == m_repository && (!m_root.isEmpty() || m_resolving || path.trimmed().isEmpty())) return;
+    if (m_repositoryValidator) {
+        const auto rejection = m_repositoryValidator(path);
+        if (!rejection.isEmpty()) { fail(rejection); return; }
+    }
     if (dirty() || m_pending) {
         fail("Save or discard the current document before changing the repository.");
         return;
@@ -58,6 +92,9 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
         fail("Stop the shell before changing the repository.");
         return;
     }
+    cancelGit();
+    m_resolving = false; m_refreshActive = false; m_refreshAgain = false;
+    m_gitError.clear(); m_watchError.clear(); m_reconcile.stop();
     m_loadingDocument = true;
     emit documentAboutToChange();
     ++m_documentRevision;
@@ -73,36 +110,39 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
     if (path.trimmed().isEmpty()) { emit changed(); return; }
     QFileInfo input(path);
     if (!input.isDir()) { fail("Repository path must be an existing directory."); return; }
-    QProcess git;
-    git.setWorkingDirectory(input.canonicalFilePath());
-    // Ignore inherited Git overrides so validation applies to the requested directory.
-    auto env = QProcessEnvironment::systemEnvironment();
-    for (const QString &key : env.keys())
-        if (key.startsWith("GIT_")) env.remove(key);
-    git.setProcessEnvironment(env);
-    git.start("git", {"rev-parse", "--show-toplevel"});
-    if (!git.waitForStarted(3000) || !git.waitForFinished(5000)) {
-        git.kill(); git.waitForFinished(1000);
-        fail("Git validation timed out or git could not be started."); return;
-    }
-    if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
-        fail("Not a Git working tree: " + QString::fromUtf8(git.readAllStandardError()).trimmed());
-        return;
-    }
-    QString root = QString::fromUtf8(git.readAllStandardOutput());
-    if (root.endsWith('\n')) root.chop(1);
-    if (root.endsWith('\r')) root.chop(1);
-    m_root = QFileInfo(root).canonicalFilePath();
-    if (m_root.isEmpty() || !QFileInfo(m_root).isDir()) {
-        m_root.clear(); fail("Git returned an invalid working tree root."); return;
-    }
-    for (const QString &option : {QString("--absolute-git-dir"), QString("--git-common-dir")}) {
-        QByteArray output = gitOutput({"rev-parse", option});
-        if (output.endsWith('\n')) output.chop(1);
-        const QString directory = QFileInfo(QDir(m_root).absoluteFilePath(QFile::decodeName(output))).canonicalFilePath();
-        if (!directory.isEmpty() && !m_gitDirectories.contains(directory)) m_gitDirectories.append(directory);
-    }
-    refreshTree();
+    m_resolving = true;
+    struct Discovery { QString root; QStringList directories; };
+    const auto generation = m_gitGeneration;
+    const auto directory = input.canonicalFilePath();
+    auto *watcher = new QFutureWatcher<Discovery>(this);
+    connect(watcher, &QFutureWatcher<Discovery>::finished, this, [this, watcher, generation, directory] {
+        const auto result = watcher->result(); watcher->deleteLater();
+        if (generation != m_gitGeneration) return;
+        if (result.root.isEmpty()) {
+            m_resolving = false; m_gitError = "Git failed: no working tree found."; emit changed(); return;
+        }
+        m_root = result.root; m_gitDirectories = result.directories;
+        m_resolving = false; m_reconcile.start(); rebuildTree(); refreshTree();
+    });
+    watcher->setFuture(QtConcurrent::run([directory] {
+        Discovery result;
+        git_libgit2_init();
+        git_repository *repository = nullptr;
+        const auto encoded = QFile::encodeName(directory);
+        // Match the CLI's sanitized GIT_* environment, including worktrees.
+        if (git_repository_open_ext(&repository, encoded.constData(), 0, nullptr) == 0
+            && !git_repository_is_bare(repository)) {
+            result.root = QFileInfo(QFile::decodeName(git_repository_workdir(repository))).canonicalFilePath();
+            for (const char *path : {git_repository_path(repository), git_repository_commondir(repository)}) {
+                const auto canonical = QFileInfo(QFile::decodeName(path)).canonicalFilePath();
+                if (!canonical.isEmpty() && !result.directories.contains(canonical)) result.directories.append(canonical);
+            }
+        }
+        git_repository_free(repository); git_libgit2_shutdown();
+        return result;
+    }));
+    emit changed();
+
 }
 
 QString GitWorkspace::confined(const QString &relativePath, bool directory) const {
@@ -146,26 +186,55 @@ void GitWorkspace::appendTree(const QString &relativePath, int depth) {
     }
 }
 
-QByteArray GitWorkspace::gitOutput(const QStringList &arguments) const {
-    QProcess git;
-    git.setWorkingDirectory(m_root);
+void GitWorkspace::runGit(const QString &directory, const QStringList &arguments, GitCallback callback) {
+    Q_ASSERT(!m_git);
+    auto *process = new QProcess(this);
+    m_git = process;
+    const auto generation = m_gitGeneration;
     auto env = QProcessEnvironment::systemEnvironment();
-    for (const QString &key : env.keys())
-        if (key.startsWith("GIT_")) env.remove(key);
-    env.insert("GIT_OPTIONAL_LOCKS", "0"); // Status must not rewrite the watched index.
-    git.setProcessEnvironment(env);
-    git.start("git", arguments);
-    if (!git.waitForStarted(3000) || !git.waitForFinished(5000)) {
-        git.kill(); git.waitForFinished(1000);
-        return {};
-    }
-    if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) return {};
-    return git.readAllStandardOutput();
+    for (const QString &key : env.keys()) if (key.startsWith("GIT_")) env.remove(key);
+    env.insert("GIT_OPTIONAL_LOCKS", "0");
+    env.insert("GIT_TERMINAL_PROMPT", "0");
+    process->setProcessEnvironment(env);
+    process->setWorkingDirectory(directory);
+    struct Output { QByteArray out, err; QString failure; bool completed = false; };
+    const auto output = std::make_shared<Output>();
+    auto *deadline = new QTimer(process);
+    deadline->setSingleShot(true);
+    const auto drain = [process, output] {
+        constexpr qsizetype maximumOutput = 16 * 1024 * 1024;
+        output->out += process->readAllStandardOutput();
+        output->err += process->readAllStandardError();
+        if (output->out.size() > maximumOutput || output->err.size() > 64 * 1024) {
+            output->failure = "Git output exceeds the safety limit; previous status retained.";
+            output->out.truncate(maximumOutput); output->err.truncate(64 * 1024); process->kill();
+        }
+    };
+    const auto complete = [this, process, deadline, output, generation, callback = std::move(callback), drain] {
+        if (output->completed) return;
+        output->completed = true;
+        deadline->stop(); drain();
+        if (output->failure.isEmpty() && (process->exitStatus() != QProcess::NormalExit || process->exitCode() != 0))
+            output->failure = "Git failed: " + QString::fromUtf8(output->err).trimmed().left(1024);
+        if (m_git == process) m_git = nullptr;
+        process->deleteLater();
+        if (generation == m_gitGeneration) callback(output->out, output->failure);
+    };
+    connect(process, &QProcess::readyReadStandardOutput, this, drain);
+    connect(process, &QProcess::readyReadStandardError, this, drain);
+    connect(process, &QProcess::finished, this, complete);
+    connect(process, &QProcess::errorOccurred, this, [output, complete](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) { output->failure = "Cannot start Git."; complete(); }
+    });
+    connect(deadline, &QTimer::timeout, this, [process, output] {
+        output->failure = "Git timed out; previous status retained."; process->kill();
+    });
+    deadline->start(m_gitDeadlineMs);
+    process->start("git", QStringList{"--no-pager", "-c", "core.fsmonitor=false"} + arguments);
 }
-
-void GitWorkspace::updateGitStatus() {
+void GitWorkspace::updateGitStatus(const QByteArray &statusOutput) {
     m_gitStatus.clear();
-    const auto records = gitOutput({"status", "--porcelain=v1", "-z", "--untracked-files=all"}).split('\0');
+    const auto records = statusOutput.split('\0');
     const auto mark = [this](QString path, const QString &status) {
         // Modified wins for directories containing a mixture of new and changed files.
         while (!path.isEmpty()) {
@@ -187,74 +256,187 @@ void GitWorkspace::updateGitStatus() {
                 mark(QFile::decodeName(records.at(i)), "modified");
         }
     }
-    m_trackedFiles.clear();
-    for (const QByteArray &path : gitOutput({"ls-files", "-z"}).split('\0'))
-        if (!path.isEmpty()) m_trackedFiles.append(QFile::decodeName(path));
 }
 
 void GitWorkspace::updateWatches() {
     QSet<QString> desired;
-    const auto add = [&desired](const QString &path) {
-        if (!path.isEmpty() && QFileInfo::exists(path)) desired.insert(path);
+    bool limited = false;
+    const auto add = [&](const QString &path) {
+        if (path.isEmpty() || desired.contains(path)) return;
+        if (desired.size() >= m_maximumWatches) { limited = true; return; }
+        if (QFileInfo::exists(path)) desired.insert(path);
     };
+    // Metadata and directory replacement notifications have priority over files.
     add(m_root);
-    for (const QVariant &row : m_tree) {
-        const auto item = row.toMap();
-        if (!item.value("directory").toBool() || item.value("expanded").toBool())
-            add(QDir(m_root).filePath(item.value("path").toString()));
-    }
-    for (const QString &path : m_trackedFiles) {
-        add(confined(path));
-        // Also observe replacements/deletions in collapsed tracked directories.
-        QString parent = path;
-        while (parent.contains('/')) {
-            parent.truncate(parent.lastIndexOf('/'));
-            add(confined(parent, true));
-        }
-    }
     const QString gitLink = QDir(m_root).filePath(".git");
     if (QFileInfo(gitLink).isFile()) add(gitLink);
     for (const QString &directory : m_gitDirectories) {
         add(directory);
-        for (const QString &name : {"HEAD", "index", "packed-refs", "config", "commondir"})
-            add(QDir(directory).filePath(name));
-        add(QDir(directory).filePath("info"));
-        add(QDir(directory).filePath("info/exclude"));
-        for (const QString &name : QDir(directory).entryList({"sharedindex.*"}, QDir::Files))
+        for (const QString &name : {"HEAD", "index", "packed-refs", "config", "commondir", "info", "info/exclude"})
             add(QDir(directory).filePath(name));
         const QString refs = QDir(directory).filePath("refs");
         add(refs);
-        QDirIterator it(refs, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
+        QDirIterator it(refs, QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
+        while (it.hasNext() && desired.size() < m_maximumWatches) {
             it.next();
             if (!it.fileInfo().isSymLink()) add(it.filePath());
         }
+        if (it.hasNext()) limited = true;
+    }
+    QSet<QString> parents;
+    for (const QString &path : m_trackedFiles) {
+        QString parent = path;
+        while (parent.contains('/')) {
+            parent.truncate(parent.lastIndexOf('/'));
+            if (parents.contains(parent)) break;
+            parents.insert(parent);
+            add(confined(parent, true));
+            if (desired.size() >= m_maximumWatches) { limited = true; break; }
+        }
+        if (limited) break;
+    }
+    for (const QVariant &row : m_tree) {
+        const auto item = row.toMap();
+        if (item.value("directory").toBool() && item.value("expanded").toBool())
+            add(QDir(m_root).filePath(item.value("path").toString()));
+    }
+    for (const QString &path : m_trackedFiles) {
+        if (desired.size() >= m_maximumWatches) { limited = true; break; }
+        add(confined(path));
+    }
+    for (const QVariant &row : m_tree) {
+        if (desired.size() >= m_maximumWatches) { limited = true; break; }
+        const auto item = row.toMap();
+        if (!item.value("directory").toBool()) add(confined(item.value("path").toString()));
     }
     QSet<QString> current;
     for (const QString &path : m_watcher.files() + m_watcher.directories()) current.insert(path);
     const auto removed = current - desired;
     const auto added = desired - current;
     if (!removed.isEmpty()) m_watcher.removePaths(removed.values());
-    if (!added.isEmpty()) m_watcher.addPaths(added.values());
+    const auto failed = added.isEmpty() ? QStringList() : m_watcher.addPaths(added.values());
+    m_watchError = limited || !failed.isEmpty()
+        ? QString("File watch coverage limited (%1 failed); status reconciles every 2 seconds.").arg(failed.size())
+        : QString();
 }
 
+void GitWorkspace::rebuildTree() {
+    m_tree.clear();
+    if (!m_root.isEmpty()) { appendTree({}, 0); updateWatches(); }
+    emit changed();
+}
+void GitWorkspace::finishRefresh() {
+    m_refreshActive = false;
+    rebuildTree();
+    if (m_refreshAgain) { m_refreshAgain = false; m_refreshDebounce.start(); }
+}
 void GitWorkspace::refreshTree() {
     m_refreshDebounce.stop();
-    m_tree.clear();
-    if (!m_root.isEmpty()) {
-        updateGitStatus();
-        appendTree({}, 0);
-        updateWatches();
+    if (m_resolving || m_refreshActive) { m_refreshAgain = true; return; }
+    if (m_root.isEmpty()) {
+        if (!m_repository.trimmed().isEmpty()) setRepositoryPath(m_repository);
+        else rebuildTree();
+        return;
     }
-    // Never reload editor content here: external edits must still fail save's disk check.
-    emit changed();
+    struct Snapshot { QHash<QString, QString> status; QStringList tracked; QString error; bool filters = false; };
+    m_refreshActive = true;
+    const auto generation = m_gitGeneration;
+    auto *watcher = new QFutureWatcher<Snapshot>(this);
+    connect(watcher, &QFutureWatcher<Snapshot>::finished, this, [this, watcher, generation] {
+        const auto snapshot = watcher->result();
+        watcher->deleteLater();
+        if (generation != m_gitGeneration) return;
+        if (!snapshot.error.isEmpty()) {
+            m_gitError = snapshot.error; finishRefresh();
+        } else if (snapshot.filters) {
+            // libgit2 does not execute configured external clean/smudge drivers.
+            // Only status needs Git here; index paths always come from libgit2.
+            runGit(m_root, {"status", "--porcelain=v1", "-z", "--untracked-files=all"},
+                [this, tracked = snapshot.tracked](const QByteArray &status, const QString &error) {
+                    if (!error.isEmpty()) m_gitError = error;
+                    else { updateGitStatus(status); m_trackedFiles = tracked; m_gitError.clear(); }
+                    finishRefresh();
+                });
+        } else {
+            m_gitStatus = snapshot.status; m_trackedFiles = snapshot.tracked;
+            m_gitError.clear(); finishRefresh();
+        }
+    });
+    const auto root = QFile::encodeName(m_root);
+    watcher->setFuture(QtConcurrent::run([root] {
+        Snapshot result;
+        git_libgit2_init();
+        git_repository *raw = nullptr;
+        if (git_repository_open(&raw, root.constData()) == 0) {
+            {
+                std::unique_ptr<git_repository, decltype(&git_repository_free)> repo(raw, git_repository_free);
+                git_config *config = nullptr;
+                bool filters = false;
+                if (git_repository_config_snapshot(&config, raw) == 0) {
+                    git_config_foreach(config, [](const git_config_entry *entry, void *payload) {
+                        if (QByteArray(entry->name).startsWith("filter.")) *static_cast<bool *>(payload) = true;
+                        return 0;
+                    }, &filters);
+                    git_config_free(config);
+                } else result.error = "Git failed: cannot read repository configuration.";
+                result.filters = filters;
+                git_status_options options = GIT_STATUS_OPTIONS_INIT;
+                options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS
+                    | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX | GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
+                git_status_list *list = nullptr;
+                git_index *index = nullptr;
+                if (result.error.isEmpty() && git_repository_index(&index, raw) == 0
+                    && (filters || git_status_list_new(&list, raw, &options) == 0)) {
+                    qsizetype bytes = 0;
+                    const auto mark = [&](const char *name, const QString &status) {
+                        QString path = QFile::decodeName(name);
+                        bytes += path.size();
+                        while (!path.isEmpty()) {
+                            if (result.status.value(path) != "modified") result.status.insert(path, status);
+                            const int slash = path.lastIndexOf('/');
+                            if (slash < 0) break;
+                            path.truncate(slash);
+                        }
+                    };
+                    for (size_t i = 0; !filters && i < git_status_list_entrycount(list); ++i) {
+                        const auto *entry = git_status_byindex(list, i);
+                        const auto flags = entry->status;
+                        if (flags == GIT_STATUS_CURRENT || flags == GIT_STATUS_IGNORED) continue;
+                        const auto *delta = entry->index_to_workdir ? entry->index_to_workdir : entry->head_to_index;
+                        if (!delta || !delta->new_file.path) { result.error = "Git failed: invalid status path."; break; }
+                        const bool added = flags == GIT_STATUS_WT_NEW || flags == GIT_STATUS_INDEX_NEW
+                            || flags == (GIT_STATUS_INDEX_NEW | GIT_STATUS_WT_MODIFIED);
+                        mark(delta->new_file.path, added ? "new" : "modified");
+                        for (const auto *rename : {entry->head_to_index, entry->index_to_workdir})
+                            if (rename && rename->status == GIT_DELTA_RENAMED && rename->old_file.path)
+                                mark(rename->old_file.path, "modified");
+                        if (bytes > 16 * 1024 * 1024) { result.error = "Git output exceeds the safety limit; previous status retained."; break; }
+                    }
+                    for (size_t i = 0; result.error.isEmpty() && i < git_index_entrycount(index); ++i) {
+                        const auto *path = git_index_get_byindex(index, i)->path;
+                        bytes += qstrlen(path);
+                        result.tracked.append(QFile::decodeName(path));
+                        if (bytes > 16 * 1024 * 1024) result.error = "Git output exceeds the safety limit; previous status retained.";
+                    }
+                }
+                if (result.error.isEmpty() && (!index || (!filters && !list))) {
+                    const auto *error = git_error_last();
+                    result.error = "Git failed: " + QString::fromUtf8(error ? error->message : "cannot read status/index");
+                }
+                git_index_free(index); git_status_list_free(list);
+            }
+        }
+        if (!raw) result.error = "Git failed: cannot open repository.";
+        git_libgit2_shutdown();
+        return result;
+    }));
+
 }
 
 void GitWorkspace::toggleDirectory(const QString &path) {
     if (confined(path, true).isEmpty()) { fail("Directory is unavailable or outside the workspace."); return; }
     if (m_expanded.contains(path)) m_expanded.remove(path); else m_expanded.insert(path);
-    refreshTree();
+    rebuildTree();
 }
 
 void GitWorkspace::setText(const QString &text) {
@@ -348,6 +530,10 @@ void GitWorkspace::openFile(const QString &path) {
 }
 
 bool GitWorkspace::save() {
+    QLockFile uploadLock(m_root + "/.ddetector-upload.lock");
+    if (m_root.isEmpty() || !uploadLock.tryLock(0)) {
+        fail("Cannot save while an uploader is writing this repository."); return false;
+    }
     const QString path = confined(m_file);
     if (path.isEmpty()) { fail("Cannot save: file is no longer a confined regular file."); return false; }
     if (dirty() && m_mixedEndings) {
@@ -455,6 +641,8 @@ void GitWorkspace::clearTerminal() {
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QDateTime>
+#include <QStandardPaths>
+#include <QScopeGuard>
 #include <QtTest>
 #ifdef GIT_WORKSPACE_QML_TEST
 #include "terminal.h"
@@ -517,6 +705,7 @@ private slots:
                      "commit", "-qm", "initial"}));
         GitWorkspace workspace;
         workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive);
         const auto metadata = [&](const QString &path, const QString &key) {
             for (const QVariant &row : workspace.tree()) {
                 const auto item = row.toMap();
@@ -568,6 +757,134 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(metadata("tracked.txt", "status"), QString(), 3000);
         QVERIFY(write("tracked.txt", "changed again\n"));
         QTRY_COMPARE_WITH_TIMEOUT(metadata("tracked.txt", "status"), QString("modified"), 3000);
+    }
+    void asyncGitFailureRetainsStatusAndReconcilesLimitedWatches() {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        QProcess git; git.start("git", {"init", "-q", temp.path()});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        QFile file(temp.filePath("file")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("new\n"); file.close();
+        GitWorkspace workspace;
+        workspace.m_maximumWatches = 1;
+        workspace.setRepositoryPath(temp.path());
+        QVERIFY(workspace.resolving()); // No blocking validation in the setter.
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive);
+        QVERIFY(workspace.error().contains("watch coverage limited"));
+        const auto status = [&] {
+            for (const auto &row : workspace.tree())
+                if (row.toMap().value("path").toString() == "file") return row.toMap().value("status").toString();
+            return QString("missing");
+        };
+        QCOMPARE(status(), QString("new"));
+        QFile index(temp.filePath(".git/index")); QVERIFY(index.open(QIODevice::WriteOnly)); index.write("corrupt"); index.close();
+        workspace.refreshTree();
+        QTRY_VERIFY(workspace.m_gitError.contains("Git failed"));
+        QCOMPARE(status(), QString("new")); // Failed status is not a clean snapshot.
+        QVERIFY(QFile::remove(index.fileName()));
+        git.setWorkingDirectory(temp.path()); git.start("git", {"add", "file"});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        git.start("git", {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "fixture"});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        QTRY_COMPARE_WITH_TIMEOUT(status(), QString(), 4000);
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write("modified\n"); file.close();
+        // Root directory watches don't observe in-place file content changes.
+        QTRY_COMPARE_WITH_TIMEOUT(status(), QString("modified"), 4000);
+        QVERIFY(workspace.m_gitError.isEmpty());
+    }
+    void gitDeadlineAndStaleRepositoryResult() {
+#ifndef Q_OS_WIN
+        QTemporaryDir a, b, tools; QVERIFY(a.isValid()); QVERIFY(b.isValid()); QVERIFY(tools.isValid());
+        const QString actualGit = QStandardPaths::findExecutable("git"); QVERIFY(!actualGit.isEmpty());
+        for (const auto &root : {a.path(), b.path()}) {
+            QProcess git; git.start(actualGit, {"init", "-q", root});
+            QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        }
+        QFile fake(tools.filePath("git")); QVERIFY(fake.open(QIODevice::WriteOnly));
+        fake.write("#!/bin/sh\nexec /bin/sleep 2\n"); fake.close();
+        QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QByteArray oldPath = qgetenv("PATH");
+        const auto restore = qScopeGuard([&] { qputenv("PATH", oldPath); });
+        qputenv("PATH", tools.path().toUtf8() + ':' + oldPath);
+        GitWorkspace workspace; workspace.m_gitDeadlineMs = 120;
+        int heartbeats = 0; QTimer heartbeat; heartbeat.setInterval(10);
+        connect(&heartbeat, &QTimer::timeout, this, [&] { ++heartbeats; }); heartbeat.start();
+        workspace.setRepositoryPath(a.path());
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive);
+        workspace.runGit(a.path(), {"status"}, [&workspace](const QByteArray &, const QString &error) { workspace.m_gitError = error; });
+        QTRY_VERIFY_WITH_TIMEOUT(!workspace.m_git, 1500);
+        QVERIFY(workspace.error().contains("timed out")); QVERIFY(heartbeats > 2);
+        workspace.setRepositoryPath(b.path()); // Cancel this slow validation with a third request.
+        qputenv("PATH", oldPath);
+        workspace.m_gitDeadlineMs = 5000;
+        workspace.setRepositoryPath(a.path());
+        QTRY_VERIFY(!workspace.resolving()); QCOMPARE(workspace.rootPath(), a.path());
+        QTest::qWait(200); QCOMPARE(workspace.rootPath(), a.path());
+#endif
+    }
+    void gitFailedStartCanBeRetriedAndFsmonitorIsDisabled() {
+#ifndef Q_OS_WIN
+        QTemporaryDir temp, tools; QVERIFY(temp.isValid()); QVERIFY(tools.isValid());
+        const QString gitExecutable = QStandardPaths::findExecutable("git"); QVERIFY(!gitExecutable.isEmpty());
+        QProcess git; git.start(gitExecutable, {"init", "-q", temp.path()});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        const QByteArray oldPath = qgetenv("PATH");
+        const auto restore = qScopeGuard([&] { qputenv("PATH", oldPath); });
+        qputenv("PATH", tools.path().toUtf8());
+        GitWorkspace workspace; workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving());
+        QCOMPARE(workspace.rootPath(), temp.path());
+        workspace.runGit(temp.path(), {"status"}, [&workspace](const QByteArray &, const QString &error) { workspace.m_gitError = error; });
+        QTRY_VERIFY(workspace.error().contains("Cannot start Git"));
+        qputenv("PATH", oldPath);
+        QFile helper(temp.filePath("fsmonitor-helper")); QVERIFY(helper.open(QIODevice::WriteOnly));
+        helper.write("#!/bin/sh\n: > fsmonitor-was-executed\n"); helper.close();
+        QVERIFY(helper.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        git.setWorkingDirectory(temp.path()); git.start(gitExecutable, {"config", "core.fsmonitor", helper.fileName()});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        workspace.refreshTree();
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive);
+        QCOMPARE(workspace.rootPath(), temp.path()); QVERIFY(workspace.m_gitError.isEmpty());
+        QVERIFY(!QFile::exists(temp.filePath("fsmonitor-was-executed")));
+#endif
+    }
+    void configuredCleanFilterStatus() {
+#ifndef Q_OS_WIN
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        const auto git = [&](const QStringList &arguments) {
+            QProcess process; process.setWorkingDirectory(temp.path()); process.start("git", arguments);
+            return process.waitForFinished() && process.exitCode() == 0;
+        };
+        QVERIFY(git({"init", "-q"}));
+        QVERIFY(git({"config", "filter.fixture.clean", "sed s/WORKTREE/CANONICAL/g"}));
+        QVERIFY(git({"config", "filter.fixture.smudge", "sed s/CANONICAL/WORKTREE/g"}));
+        QVERIFY(git({"config", "filter.fixture.required", "true"}));
+        QFile attributes(temp.filePath(".gitattributes")); QVERIFY(attributes.open(QIODevice::WriteOnly));
+        attributes.write("file filter=fixture\n"); attributes.close();
+        QFile file(temp.filePath("file")); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("WORKTREE\n"); file.close();
+        QVERIFY(git({"add", "."}));
+        QVERIFY(git({"-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "fixture"}));
+        GitWorkspace workspace; workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive);
+        QVERIFY2(workspace.error().isEmpty(), qPrintable(workspace.error()));
+        QVERIFY(workspace.m_gitStatus.value("file").isEmpty());
+        QVERIFY(workspace.m_trackedFiles.contains("file"));
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write("changed\n"); file.close();
+        workspace.refreshTree();
+        QTRY_VERIFY(!workspace.m_refreshActive);
+        QCOMPARE(workspace.m_gitStatus.value("file"), QString("modified"));
+#endif
+    }
+    void saveRespectsUploadLock() {
+        QTemporaryDir temp; QProcess git; git.start("git", {"init", "-q", temp.path()});
+        QVERIFY(git.waitForFinished());
+        QFile file(temp.filePath("README.md")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("original"); file.close();
+        GitWorkspace workspace; workspace.setRepositoryPath(temp.path()); QTRY_VERIFY(!workspace.resolving());
+        workspace.openFile("README.md"); workspace.setText("edited");
+        QLockFile lock(temp.filePath(".ddetector-upload.lock")); QVERIFY(lock.tryLock(0));
+        QVERIFY(!workspace.save()); QVERIFY(workspace.dirty());
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("original")); file.close();
+        lock.unlock(); QVERIFY(workspace.save());
     }
     void formatting_data() {
         QTest::addColumn<QByteArray>("original");
@@ -622,7 +939,8 @@ private slots:
         const QString path = temp.filePath("document");
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(original), original.size()); file.close();
-        GitWorkspace backend; backend.setRepositoryPath(temp.path()); backend.openFile("document");
+        GitWorkspace backend; backend.setRepositoryPath(temp.path());
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("document");
         QCOMPARE(backend.filePath(), "document"); QCOMPARE(backend.text(), model); QVERIFY(!backend.dirty());
 #ifdef GIT_WORKSPACE_QML_TEST
         QQmlEngine engine;
@@ -716,6 +1034,7 @@ private slots:
         }
         GitWorkspace backend;
         backend.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!backend.resolving());
         QObject *editor = nullptr;
         int staleRevision = -1;
         QString staleText;
@@ -827,7 +1146,7 @@ private slots:
         file.write("hello"); file.close();
         GitWorkspace backend;
         QVERIFY(object->setProperty("workspaceBackend", QVariant::fromValue<QObject *>(&backend)));
-        backend.setRepositoryPath(temp.path()); backend.openFile("a.txt");
+        backend.setRepositoryPath(temp.path()); QTRY_VERIFY(!backend.resolving()); backend.openFile("a.txt");
         QTest::qWait(50); QCOMPARE(warnings.count(), 0);
         backend.setText("edited"); backend.requestClose();
         QTest::qWait(50); QCOMPARE(warnings.count(), 0);
@@ -850,7 +1169,8 @@ private slots:
         write("invalid", bom + QByteArray::fromHex("c328"));
         write("nul", bom + QByteArray("a\0b", 3));
         write("utf16", QByteArray::fromHex("fffe00d8"));
-        GitWorkspace backend; backend.setRepositoryPath(temp.path()); backend.openFile("valid");
+        GitWorkspace backend; backend.setRepositoryPath(temp.path());
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("valid");
         QCOMPARE(backend.text(), QString(QChar(0xfeff)) + "hello\n");
         for (const QString &name : {QString("invalid"), QString("nul"), QString("utf16")}) {
             backend.openFile(name); QCOMPARE(backend.filePath(), "valid"); QVERIFY(!backend.error().isEmpty());
@@ -889,7 +1209,8 @@ private slots:
         QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
         QFile file(temp.filePath("bad.json")); QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(bytes), bytes.size()); file.close();
-        GitWorkspace backend; backend.setRepositoryPath(temp.path()); backend.openFile("bad.json");
+        GitWorkspace backend; backend.setRepositoryPath(temp.path());
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("bad.json");
         QVERIFY(backend.filePath().isEmpty());
         QVERIFY2(backend.error().contains("bad.json"), qPrintable(backend.error()));
         QVERIFY2(backend.error().contains(encoding), qPrintable(backend.error()));
@@ -905,7 +1226,8 @@ private slots:
             const QByteArray original = utf16Bytes("{}\r\n", le);
             QFile file(temp.filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly));
             QCOMPARE(file.write(original), original.size()); file.close();
-            GitWorkspace backend; backend.setRepositoryPath(temp.path()); backend.openFile(name);
+            GitWorkspace backend; backend.setRepositoryPath(temp.path());
+                        QTRY_VERIFY(!backend.resolving()); backend.openFile(name);
             for (const QString &invalid : {QString("a") + QChar(0) + "b", QString(QChar(0xd800)), QString(QChar(0xdc00))}) {
                 backend.setText(invalid); QVERIFY(!backend.save()); QVERIFY(backend.dirty());
                 QVERIFY(backend.error().contains(name)); QVERIFY(backend.error().contains("UTF-16"));
@@ -931,6 +1253,7 @@ private slots:
         write("large", QByteArray(GitWorkspace::MaximumTextBytes + 1, 'x'));
         GitWorkspace workspace;
         workspace.setRepositoryPath(dir.filePath("sub"));
+        QTRY_VERIFY(!workspace.resolving());
         QCOMPARE(workspace.rootPath(), dir.canonicalPath());
         for (const auto &row : workspace.tree()) QVERIFY(row.toMap().value("name") != ".git");
         workspace.toggleDirectory("sub");
