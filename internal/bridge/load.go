@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const lyricsConcurrency = 50
+
 // Workers never mutate published results. The coordinator owns results and persists
 // successful batches, including the last partial batch when a scan is interrupted.
 func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string, cache tracksCache, results []Result, pending []int, stats *FetchResult) (err error) {
@@ -66,7 +68,7 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		result Result
 		err    error
 	}
-	done := make(chan completion, 4)
+	done := make(chan completion, lyricsConcurrency)
 	defer func() {
 		cancel()
 		// Drain while workers finish, including completions beyond the buffer.
@@ -100,7 +102,7 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		}
 	}()
 	jobs := make(chan int)
-	for n := 0; n < 4 && n < len(pending); n++ {
+	for n := 0; n < lyricsConcurrency && n < len(pending); n++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()

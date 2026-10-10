@@ -15,7 +15,7 @@ import (
 
 func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 	var active, peak atomic.Int32
-	entered := make(chan struct{}, 20)
+	entered := make(chan struct{}, 60)
 	release := make(chan struct{}, 1)
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/lyrics") {
@@ -40,7 +40,7 @@ func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 	s := testServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected request") })
 	c := newYandexClient("token")
 	c.base = remote.URL
-	results := make([]Result, 12)
+	results := make([]Result, 60)
 	pending := make([]int, len(results))
 	for i := range results {
 		results[i] = Result{Track: Track{ID: int64(i + 1), Title: "Song"}, Status: "pending"}
@@ -52,7 +52,7 @@ func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 	defer cancel()
 	finished := make(chan error, 1)
 	go func() { finished <- s.processLyrics(ctx, c, path, cache, results, pending, &FetchResult{}) }()
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 50; i++ {
 		select {
 		case <-entered:
 		case <-time.After(3 * time.Second):
@@ -62,7 +62,7 @@ func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 	s.mu.Lock()
 	snapshot := s.state.Tracks
 	revision := s.tracksRevision
-	visible := len(snapshot) == 12 && s.state.Processing && s.state.Processed == 0 && snapshot[0].Title == "Song"
+	visible := len(snapshot) == 60 && s.state.Processing && s.state.Processed == 0 && snapshot[0].Title == "Song"
 	s.mu.Unlock()
 	if !visible {
 		t.Fatal("metadata list not visible before lyrics")
@@ -96,7 +96,7 @@ func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancel did not stop workers")
 	}
-	if peak.Load() != 4 {
+	if peak.Load() != 50 {
 		t.Fatal("unexpected concurrency", peak.Load())
 	}
 	saved, err := readTracksCache(path, "u", c.base)
@@ -108,7 +108,12 @@ func TestLyricsProgressConcurrencyAndCancel(t *testing.T) {
 func TestInterruptedLyricsSourceMigration(t *testing.T) {
 	s := testServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected request") })
 	c := newYandexClient("secret")
-	c.lrclib.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	var migrationCalls atomic.Int32
+	c.lrclib.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if migrationCalls.Add(1) > 1 {
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
 		return response(200, `{"id":1,"trackName":"Song","artistName":"Artist","syncedLyrics":"[00:01]weed"}`), nil
 	})
 	c.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {

@@ -109,7 +109,7 @@ func TestLRCLIBInvalidAndSafeResponses(t *testing.T) {
 	}
 }
 
-func TestLRCLIBSerializesRequests(t *testing.T) {
+func TestLRCLIBSpacesRequests(t *testing.T) {
 	c := newLRCLIBClient()
 	arrivals := make(chan time.Time, 2)
 	c.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -131,8 +131,49 @@ func TestLRCLIBSerializesRequests(t *testing.T) {
 		}
 	}
 	first, second := <-arrivals, <-arrivals
-	if second.Sub(first) < 250*time.Millisecond {
+	if second.Sub(first) < lrclibRequestInterval {
 		t.Fatal("requests were not spaced", second.Sub(first))
+	}
+}
+
+func TestLRCLIBOverlapsSlowRequests(t *testing.T) {
+	c := newLRCLIBClient()
+	arrivals := make(chan time.Time, 2)
+	release := make(chan struct{})
+	c.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		arrivals <- time.Now()
+		select {
+		case <-release:
+			return response(404, ""), nil
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, _, err := c.get(ctx, Track{Title: "Song", Artist: "Artist"})
+			done <- err
+		}()
+	}
+	var times [2]time.Time
+	for i := range times {
+		select {
+		case times[i] = <-arrivals:
+		case <-ctx.Done():
+			t.Fatal("slow request blocked the next request")
+		}
+	}
+	close(release)
+	if times[1].Sub(times[0]) < lrclibRequestInterval {
+		t.Fatal("request spacing lost")
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

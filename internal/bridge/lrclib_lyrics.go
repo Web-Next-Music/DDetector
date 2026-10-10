@@ -15,10 +15,12 @@ import (
 
 const lrclibGetURL = "https://lrclib.net/api/get"
 const lrclibUserAgent = "DDetector-Go/1 (https://github.com/Web-Next-Music/DDetector)"
+const lrclibRequestInterval = 50 * time.Millisecond
 
 // The endpoint is fixed; tests inject a transport rather than relaxing HTTPS.
-// Each client serializes requests and waits 250 ms after completion, as requested
-// by https://lrclib.net/docs. The gate also protects the Retry-After deadline.
+// Pace request starts without serializing network latency.
+// The gate also protects the shared Retry-After deadline; scan workers bound
+// the number of in-flight requests.
 type lrclibClient struct {
 	transport http.RoundTripper
 	gate      chan struct{}
@@ -50,12 +52,25 @@ func (c *lrclibClient) get(ctx context.Context, track Track) ([]Lyric, bool, err
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	}
-	defer func() { <-c.gate }()
-	if delay := time.Until(c.next); delay > 0 {
+	locked := true
+	defer func() {
+		if locked {
+			<-c.gate
+		}
+	}()
+	for delay := time.Until(c.next); delay > 0; delay = time.Until(c.next) {
+		<-c.gate
+		locked = false
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, false, ctx.Err()
+		}
+		select {
+		case c.gate <- struct{}{}:
+			locked = true
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
 		}
@@ -63,13 +78,10 @@ func (c *lrclibClient) get(ctx context.Context, track Track) ([]Lyric, bool, err
 	if ctx.Err() != nil {
 		return nil, false, ctx.Err()
 	}
+	c.next = time.Now().Add(lrclibRequestInterval)
+	<-c.gate
+	locked = false
 	retryAt := time.Time{}
-	defer func() {
-		c.next = time.Now().Add(250 * time.Millisecond)
-		if retryAt.After(c.next) {
-			c.next = retryAt
-		}
-	}()
 	params := url.Values{"track_name": {title}, "artist_name": {artist}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lrclibGetURL+"?"+params.Encode(), nil)
 	if err != nil {
@@ -96,6 +108,13 @@ func (c *lrclibClient) get(ctx context.Context, track Track) ([]Lyric, bool, err
 		} else {
 			retryAt = time.Now().Add(time.Minute)
 		}
+		// Publish backoff before this worker can request another track. Requests
+		// already in flight are allowed to finish.
+		c.gate <- struct{}{}
+		if retryAt.After(c.next) {
+			c.next = retryAt
+		}
+		<-c.gate
 	}
 	if res.StatusCode == http.StatusNotFound {
 		return []Lyric{}, false, nil
