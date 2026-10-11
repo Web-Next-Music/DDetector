@@ -240,7 +240,7 @@ Item {
                                 parent: editorScroll
                                 z: 1
                                 objectName: "editorLineNumbers"
-                                visible: editor.enabled
+                                visible: editor.enabled && root.available && !root.workspaceBackend.largeFileMode
                                 x: 4
                                 y: editorScroll.topPadding
                                 width: Math.max(32, editorMetrics.averageCharacterWidth * String(editor.lineCount).length + 16)
@@ -282,7 +282,10 @@ Item {
                                 enabled: root.available && !!root.workspaceBackend.filePath
                                 textFormat: TextEdit.PlainText
                                 SyntaxHighlighter {
-                                    document: editor.textDocument
+                                    // QQuickTextEdit lays out the complete document. Avoid combining
+                                    // full-document highlighting with pathological scene-graph geometry.
+                                    document: root.available && !root.workspaceBackend.largeFileMode
+                                              ? editor.textDocument : null
                                     filePath: root.available ? root.workspaceBackend.filePath : ""
                                 }
                                 property bool loadingDocument: false
@@ -324,7 +327,8 @@ Item {
                                 font.family: "monospace"
                                 font.pixelSize: 14
                                 readonly property real lineHeight: Math.max(1, positionToRectangle(0).height)
-                                wrapMode: TextEdit.NoWrap
+                                wrapMode: root.available && root.workspaceBackend.largeFileMode
+                                          ? TextEdit.WrapAnywhere : TextEdit.NoWrap
                                 selectByMouse: true
                                 ContextMenu.menu: SiteEditMenu {
                                     objectName: "editorContextMenu"

@@ -110,6 +110,7 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
     m_gitStatus.clear(); m_gitDirectories.clear(); m_trackedFiles.clear();
     m_repository = path;
     m_root.clear(); m_file.clear(); m_text.clear(); m_saved.clear();
+    m_largeFileMode = false;
     m_diskBytes.clear(); m_tree.clear(); m_expanded.clear(); m_error.clear();
     emit documentChanged();
     m_loadingDocument = false;
@@ -445,10 +446,29 @@ void GitWorkspace::toggleDirectory(const QString &path) {
     rebuildTree();
 }
 
+void GitWorkspace::updateLargeFileMode() {
+    // QQuickTextEdit is not virtualized. A very large document makes full syntax
+    // highlighting expensive, while one huge unwrapped line can create scene-graph
+    // geometry millions of pixels wide and crash the renderer.
+    constexpr qsizetype largeDocumentCharacters = 256 * 1024;
+    constexpr qsizetype longLineCharacters = 16 * 1024;
+    m_largeFileMode = m_text.size() > largeDocumentCharacters;
+    if (m_largeFileMode) return;
+    qsizetype lineLength = 0;
+    for (const QChar character : m_text) {
+        if (character == '\n') lineLength = 0;
+        else if (++lineLength > longLineCharacters) {
+            m_largeFileMode = true;
+            return;
+        }
+    }
+}
+
 void GitWorkspace::setText(const QString &text) {
     const QString normalized = editorText(text);
     if (m_loadingDocument || m_file.isEmpty() || m_text == normalized) return;
     m_text = normalized;
+    updateLargeFileMode();
     emit documentChanged();
     emit changed();
 }
@@ -520,6 +540,7 @@ bool GitWorkspace::loadFile(const QString &relativePath) {
     m_mixedEndings = endings.size() > 1;
     m_lineEnding = endings.size() == 1 ? *endings.cbegin() : QString("\n");
     m_file = relativePath; m_text = editorText(text); m_saved = m_text; m_diskBytes = bytes;
+    updateLargeFileMode();
     m_error.clear();
     emit documentChanged();
     emit changed();
@@ -894,6 +915,27 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("original")); file.close();
         lock.unlock(); QVERIFY(workspace.save());
     }
+    void largeFileMode() {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        QProcess git; git.start("git", {"init", temp.path()});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        const auto write = [&](const QString &name, const QByteArray &contents) {
+            QFile file(temp.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(contents), qint64(contents.size()));
+        };
+        write("normal.txt", "one\ntwo\n");
+        write("long-line.txt", QByteArray(16 * 1024 + 1, 'x'));
+        write("large.txt", QByteArray(256 * 1024 + 1, 'x').replace(1024, 1, "\n"));
+
+        GitWorkspace workspace; workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving());
+        workspace.openFile("normal.txt"); QVERIFY(!workspace.largeFileMode());
+        workspace.openFile("long-line.txt"); QVERIFY(workspace.largeFileMode());
+        workspace.openFile("large.txt"); QVERIFY(workspace.largeFileMode());
+        workspace.setText("small again\n"); QVERIFY(!workspace.largeFileMode());
+    }
+
     void formatting_data() {
         QTest::addColumn<QByteArray>("original");
         QTest::addColumn<QString>("model");

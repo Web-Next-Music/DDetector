@@ -20,6 +20,7 @@ class GitWorkspace : public QObject {
     Q_PROPERTY(QString filePath READ filePath NOTIFY documentChanged)
     Q_PROPERTY(QString text READ text WRITE setText NOTIFY documentChanged)
     Q_PROPERTY(int documentRevision READ documentRevision NOTIFY documentChanged)
+    Q_PROPERTY(bool largeFileMode READ largeFileMode NOTIFY documentChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(bool resolving READ resolving NOTIFY changed)
@@ -35,6 +36,7 @@ public:
     QString filePath() const { return m_file; }
     QString text() const { return m_text; }
     int documentRevision() const { return m_documentRevision; }
+    bool largeFileMode() const { return m_largeFileMode; }
     bool dirty() const { return m_text != m_saved; }
     QString error() const;
     bool resolving() const { return m_resolving; }
@@ -73,6 +75,7 @@ signals:
     void closeApproved();
 private:
     QString confined(const QString &relativePath, bool directory = false) const;
+    void updateLargeFileMode();
     bool loadFile(const QString &relativePath);
     void appendTree(const QString &relativePath, int depth);
     void updateGitStatus(const QByteArray &status);
@@ -88,6 +91,7 @@ private:
     QByteArray m_diskBytes;
     int m_documentRevision = 0;
     bool m_loadingDocument = false;
+    bool m_largeFileMode = false;
     // The editor uses LF without a transport BOM; disk formatting is separate.
     QString m_lineEnding = "\n";
     QStringConverter::Encoding m_encoding = QStringConverter::Utf8;
