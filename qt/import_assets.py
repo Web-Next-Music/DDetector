@@ -21,7 +21,22 @@ from typing import Protocol, cast
 
 PROTECTED = {"lucide-music.svg", "lucide-git-branch.svg"}
 WINDOW_ICONS = {"minus": "lucide-window-minus.svg", "square": "lucide-window-maximize.svg", "x": "lucide-window-x.svg"}
-CONTROL_ICONS = {"panel-top": "lucide-panel-top.svg"}
+CONTROL_ICONS = {
+    "compass": "lucide-compass.svg",
+    "container": "lucide-container.svg",
+    "cpu": "lucide-cpu.svg",
+    "database": "lucide-database.svg",
+    "globe": "lucide-globe.svg",
+    "gauge": "lucide-gauge.svg",
+    "languages": "lucide-languages.svg",
+    "layers": "lucide-layers.svg",
+    "link": "lucide-link.svg",
+    "list-filter": "lucide-list-filter.svg",
+    "navigation": "lucide-navigation.svg",
+    "panel-top": "lucide-panel-top.svg",
+    "radar": "lucide-radar.svg",
+    "sliders-horizontal": "lucide-sliders-horizontal.svg",
+}
 
 
 class FontTimestamps(Protocol):
@@ -48,10 +63,24 @@ def generate(source, icons_only=False):
     read(package + "LICENSE")
     for name, target in {**WINDOW_ICONS, **CONTROL_ICONS}.items():
         module = read(package + f"dist/esm/icons/{name}.mjs").decode()
-        match = re.search(r"node:\s*(\[[\s\S]*\])\s*\n};", module)
-        if not match:
+        node_marker = module.find("node:")
+        start = module.find("[", node_marker)
+        depth = 0
+        end = -1
+        for index in range(start, len(module)):
+            if module[index] == "[":
+                depth += 1
+            elif module[index] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+        if node_marker < 0 or start < 0 or end < 0:
             raise RuntimeError(f"Cannot find installed icon data: {name}")
-        nodes = json.loads(re.sub(r'([{,]\s*)([a-zA-Z]\w*)\s*:', r'\1"\2":', match[1]))
+        try:
+            nodes = json.loads(re.sub(r'([{,]\s*)([a-zA-Z]\w*)\s*:', r'\1"\2":', module[start:end]))
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"Invalid installed icon data: {name}") from error
         svg = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg", "viewBox": "0 0 24 24", "fill": "none", "stroke": "#000000", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round"})
         for tag, attributes in nodes:
             ET.SubElement(svg, tag, {k: str(v) for k, v in attributes.items() if k != "key"})

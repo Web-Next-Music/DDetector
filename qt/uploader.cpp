@@ -140,7 +140,7 @@ Result perform(const QString &root, const QString &id, const QString &title,
     Result result;
     bool saved = false, overwritten = false;
     try {
-        require(QRegularExpression("\\A[0-9]{1,32}\\z").match(id).hasMatch(), "Track ID must contain 1–32 ASCII digits");
+        require(QRegularExpression("\\A[0-9]{1,32}\\z").match(id).hasMatch(), "Track ID must contain 1-32 ASCII digits");
         require(QDir(root).exists(), "Data directory does not exist");
         require(QFileInfo(root).canonicalFilePath() == root, "Data directory must be canonical (no symlinks)");
         QLockFile lock(root + "/.ddetector-upload.lock");

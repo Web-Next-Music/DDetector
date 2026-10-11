@@ -6,6 +6,7 @@
 #include <QNetworkAccessManager>
 #include "config.h"
 #include <QTimer>
+#include <functional>
 
 class TrackModel final : public QAbstractListModel {
     Q_OBJECT
@@ -33,6 +34,9 @@ private:
 class Bridge final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantMap state READ state NOTIFY stateChanged)
+        Q_PROPERTY(QVariantMap censorState READ censorState NOTIFY censorStateChanged)
+        Q_PROPERTY(bool censorBusy READ censorBusy NOTIFY censorBusyChanged)
+    Q_PROPERTY(QVariantMap censorSelectedJob READ censorSelectedJob NOTIFY censorSelectedJobChanged)
     Q_PROPERTY(TrackModel *tracks READ tracks CONSTANT)
     Q_PROPERTY(TrackModel *cards READ cards CONSTANT)
     Q_PROPERTY(bool hideIgnored READ hideIgnored WRITE setHideIgnored NOTIFY settingsChanged)
@@ -47,6 +51,24 @@ public:
     Bridge(const QUrl &base, const QByteArray &key, QObject *parent = nullptr, Config *config = nullptr,
            qint64 maximumResponseBytes = DefaultMaximumResponseBytes);
     QVariantMap state() const { return m_state.toVariantMap(); }
+        QVariantMap censorState() const { return m_censorState.toVariantMap(); }
+        bool censorBusy() const { return m_censorBusy; }
+            Q_INVOKABLE bool nativePublicationBusy() const;
+            void setNativePublicationValidator(std::function<QString()> validator) {
+                            m_nativePublicationValidator = std::move(validator);
+                            configureNativeRepository();
+                        }
+    void configureNativeRepository();
+    void setNativeRepositoryProvider(std::function<QString()> provider) {
+        m_nativeRepositoryProvider = std::move(provider);
+        configureNativeRepository();
+    }
+        Q_INVOKABLE void censorCommand(const QString &action, const QVariantMap &args = {});
+    QVariantMap censorSelectedJob() const { return m_censorSelectedJob.toVariantMap(); }
+
+    Q_INVOKABLE void censorSelectJob(const QString &id);
+    Q_INVOKABLE void censorPage(int offset);
+    Q_INVOKABLE void censorResolvePlayback(QString jobId, QString candidateId, int requestId);
     TrackModel *tracks() { return &m_tracks; }
     TrackModel *cards() { return &m_cards; }
     bool hideIgnored() const { return m_config->hideIgnored(); }
@@ -67,14 +89,34 @@ public:
     Q_INVOKABLE void openBrowser(const QUrl &url);
 signals:
     void stateChanged();
+        void censorStateChanged();
+        void censorBusyChanged();
+    void censorSelectedJobChanged();
+    void censorPlaybackResolved(int requestId, QString jobId, QString candidateId, QUrl url, QString error);
+    void censorCommandFinished(const QString &action, bool success, const QString &error);
     void settingsChanged();
     void connectionErrorChanged();
         void pendingProviderChanged();
     void toast(const QString &message);
 private:
     friend class NativeTests;
-    void request(const QString &path, const QJsonObject &body = {}, bool get = false);
+    void request(const QString &path, const QJsonObject &body = {}, bool get = false, int busyRetries = 0);
     void acceptState(QJsonObject state);
+        void censorRequest(const QString &action = {}, const QVariantMap &args = {}, int busyRetries = 0);
+        QTimer m_censorPoll;
+        QJsonObject m_censorState;
+        bool m_censorPolling = false, m_censorBusy = false;
+        quint64 m_censorGeneration = 0;
+        QString m_nativeConfiguredPath, m_nativeAttemptedPath, m_nativeAction;
+        QVariantMap m_nativeArgs;
+        std::function<QString()> m_nativePublicationValidator;
+    std::function<QString()> m_nativeRepositoryProvider;
+        bool m_nativeRecoveryPending = true;
+        QJsonObject m_censorSelectedJob;
+    QString m_censorSelectedId;
+    int m_censorOffset = 0;
+    bool m_censorDetailPolling = false;
+    quint64 m_censorSelectionGeneration = 0;
     void rebuild();
     void setConnectionError(const QString &error);
         void syncYandexToken();
@@ -102,6 +144,7 @@ private:
     int m_postDeadlineMs = 45000; // Backend token/logout operations have a 30-second budget.
     qint64 m_maximumResponseBytes = DefaultMaximumResponseBytes;
     quint64 m_stateGeneration = 0;
+    quint64 m_censorPlaybackGeneration = 0;
             bool m_signingOut = false;
     int m_sort = 0;
 };

@@ -29,9 +29,11 @@ QString defaultPath() {
 }
 }
 Config::Config(QObject *parent) : Config(defaultPath(), parent) {
-    if (m_path.isEmpty()) { m_blocked = true; fail("Configuration location is unavailable."); }
+    if (m_path.isEmpty()) { m_blocked = true; fail("Configuration location is unavailable"); }
     m_useKeychain = !m_path.isEmpty() && !m_blocked;
-    if (m_useKeychain) QTimer::singleShot(0, this, &Config::startCredentialRead);
+    if (m_useKeychain) {
+        QTimer::singleShot(0, this, &Config::startCredentialRead);
+    }
 
 }
 Config::Config(const QString &path, QObject *parent) : QObject(parent), m_path(path) {
@@ -45,6 +47,10 @@ Config::Config(const QString &path, QObject *parent) : QObject(parent), m_path(p
     load();
 }
 Config::~Config() { flush(); }
+bool Config::repositoryDirectoryExists(const QString &path) const {
+    const QFileInfo info(path.trimmed());
+    return info.isAbsolute() && info.isDir();
+}
 void Config::scheduleSave() {
     if (m_path.isEmpty() || m_blocked) return;
     m_savePending = true;
@@ -64,12 +70,12 @@ void Config::load() {
     if (m_path.isEmpty() || !QFileInfo::exists(m_path)) return;
     QFile file(m_path);
     if (!file.open(QIODevice::ReadOnly)) {
-        m_blocked = true; fail("Unable to read configuration."); return;
+        m_blocked = true; fail("Unable to read configuration"); return;
     }
     QJsonParseError parse;
     const auto bytes = file.read(maximumConfigBytes + 1);
     if (bytes.size() > maximumConfigBytes) {
-        m_blocked = true; fail("Configuration exceeds the 1 MiB limit; original preserved."); return;
+        m_blocked = true; fail("Configuration exceeds the 1 MiB limit; original preserved"); return;
     }
     const auto document = QJsonDocument::fromJson(bytes, &parse);
     const auto object = document.object();
@@ -87,10 +93,10 @@ void Config::load() {
                 || (!windowControls.isUndefined() && !windowControls.isBool())
         || (!volume.isUndefined() && (!volume.isDouble() || !std::isfinite(volume.toDouble())
                                      || volume.toDouble() < 0 || volume.toDouble() > 1))) {
-        m_blocked = true; fail("Invalid configuration; original file has been preserved."); return;
+        m_blocked = true; fail("Invalid configuration; original file has been preserved"); return;
     }
     if (!file.setPermissions(filePermissions)) {
-        m_blocked = true; fail("Unable to secure configuration permissions."); return;
+        m_blocked = true; fail("Unable to secure configuration permissions"); return;
     }
     m_token = token.toString();
     m_credentialEdited = !token.isUndefined();
@@ -104,12 +110,12 @@ void Config::save() {
     if (m_path.isEmpty() || m_blocked) return;
     const auto directory = QFileInfo(m_path).absolutePath();
     if (!QDir().mkpath(directory) || !QFile::setPermissions(directory, directoryPermissions)) {
-        fail("Unable to create or secure configuration directory."); return;
+        fail("Unable to create or secure configuration directory"); return;
     }
     QSaveFile file(m_path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(filePermissions)) {
-        fail("Unable to open secure configuration file."); return;
+        fail("Unable to open secure configuration file"); return;
     }
     QJsonObject settings{{"repositoryPath", m_repositoryPath}, {"hideIgnored", m_hideIgnored}, {"hideWindowControls", m_hideWindowControls}, {"volume", m_volume}, {"visualizerEnabled", m_visualizerEnabled}};
     // Pending/failed writes remain recoverable across shutdown. Never remove the
@@ -118,9 +124,9 @@ void Config::save() {
         && (!m_useKeychain || !m_credentialStored || m_storedToken != m_token))
         settings.insert("musicToken", m_token);
     const auto bytes = QJsonDocument(settings).toJson();
-    if (bytes.size() > maximumConfigBytes) { fail("Configuration exceeds the 1 MiB limit; original preserved."); return; }
+    if (bytes.size() > maximumConfigBytes) { fail("Configuration exceeds the 1 MiB limit; original preserved"); return; }
     if (file.write(bytes) != bytes.size() || !file.commit()) {
-        fail("Unable to save configuration atomically."); return;
+        fail("Unable to save configuration atomically"); return;
     }
     m_savePending = false;
     fail({});
@@ -175,7 +181,7 @@ bool Config::acceptCredentialRead(bool success, bool missing, const QString &val
     m_credentialBusy = false;
     m_credentialReady = success || missing;
     if (!m_credentialReady) {
-        fail("OS keychain unavailable; recoverable credential copy preserved.");
+        fail("OS keychain unavailable; recoverable credential copy preserved");
         if (m_credentialReadAttempts < 3)
             m_credentialRetry.start(1000 * (1 << m_credentialReadAttempts++));
         return false;
@@ -215,7 +221,7 @@ void Config::storeCredential() {
 bool Config::acceptCredentialWrite(bool success, const QString &value) {
     m_credentialBusy = false;
     if (!success) {
-        fail("OS keychain write failed; recoverable credential copy preserved.");
+        fail("OS keychain write failed; recoverable credential copy preserved");
         if (m_credentialWriteAttempts < 3)
             m_credentialWriteRetry.start(1000 * (1 << m_credentialWriteAttempts++));
         return false;

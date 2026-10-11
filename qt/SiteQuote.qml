@@ -7,13 +7,14 @@ Control {
     property alias text: label.text
     property color textColor: "#999999"
     property color borderColor: "#3397979f"
+    property real backgroundRadius: 6
     padding: 8
     leftPadding: 16
     rightPadding: 16
     implicitHeight: contentItem.implicitHeight + topPadding + bottomPadding
     background: Rectangle {
         color: "#0af0f0f4"
-        radius: 6
+        radius: quote.backgroundRadius
         Rectangle {
             x: 0
             y: 8
@@ -31,6 +32,6 @@ Control {
         font.family: "DDetector Nunito"
         font.pixelSize: 14
         font.weight: Font.Medium
-        lineHeight: 1.8
+        lineHeight: 1.0
     }
 }

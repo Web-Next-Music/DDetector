@@ -86,7 +86,7 @@ Item {
         function send(id, title, artist, url) { busy = true; stateChanged(); }
     }
     Component { id: sendFactory; UI.SendDialog { uploadBackend: fakeUploader } }
-    Component { id: quoteFactory; UI.SiteQuote { width: 220; text: "A long warning that wraps across several lines without leaving the shared quote block." } }
+    Component { id: quoteFactory; UI.SiteQuote { width: 220; text: "A long warning that wraps across several lines without leaving the shared quote block" } }
     Component { id: buttonFactory; UI.SiteButton { text: "<b>literal</b>" } }
     Component { id: fieldFactory; UI.SiteTextField { Accessible.name: "Artist" } }
     Component { id: toggleFactory; UI.SiteToggleRow { text: "Hide ignored"; width: 300 } }
@@ -191,6 +191,8 @@ Item {
             compare(quote.leftPadding, 16);
             compare(quote.contentItem.textFormat, Text.PlainText);
             compare(quote.contentItem.wrapMode, Text.Wrap);
+            compare(quote.contentItem.lineHeightMode, Text.ProportionalHeight);
+            compare(quote.contentItem.lineHeight, 1.0);
         }
         function test_fieldSelectionAndToggleKeyboard() {
             const field = createTemporaryObject(fieldFactory, scene, {text: "Artist"});

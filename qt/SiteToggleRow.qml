@@ -7,6 +7,11 @@ import QtQuick.Effects
 CheckBox {
     id: control
     property string glyph: ""
+    property url iconSource: ""
+    property color iconColor: "transparent"
+    property int iconWidth: 18
+    property rect iconSourceClipRect: Qt.rect(0, 0, 0, 0)
+    readonly property bool hasIconSource: iconSource.toString().length > 0
     implicitHeight: 56
     padding: 16
     Accessible.name: text
@@ -38,15 +43,17 @@ CheckBox {
     contentItem: RowLayout {
         spacing: 12
         Image {
-            visible: !!control.glyph
-            Layout.preferredWidth: visible ? 18 : 0
+            visible: control.hasIconSource || !!control.glyph
+            Layout.preferredWidth: visible ? control.iconWidth : 0
             Layout.preferredHeight: 18
-            source: control.glyph ? "qrc:/assets/lucide-" + control.glyph + ".svg" : ""
-            layer.enabled: true
+            source: control.hasIconSource ? control.iconSource : (control.glyph ? "qrc:/assets/lucide-" + control.glyph + ".svg" : "")
+            sourceClipRect: control.hasIconSource ? control.iconSourceClipRect : Qt.rect(0, 0, 0, 0)
+            fillMode: Image.PreserveAspectFit
+            layer.enabled: !control.hasIconSource || control.iconColor.a > 0
             layer.effect: MultiEffect {
                 brightness: 1
                 colorization: 1
-                colorizationColor: "#999999"
+                colorizationColor: control.hasIconSource ? control.iconColor : (control.enabled ? "#999999" : "#666666")
             }
             Accessible.ignored: true
         }

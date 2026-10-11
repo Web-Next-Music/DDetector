@@ -21,6 +21,7 @@ public:
         // Flush debounced settings; failed writes remain pending and can be retried.
         Q_INVOKABLE bool flush();
     Q_INVOKABLE void retryCredentials();
+    Q_INVOKABLE bool repositoryDirectoryExists(const QString &path) const;
         void setRepositoryValidator(std::function<QString(const QString &)> validator) {
             m_repositoryValidator = std::move(validator);
         }

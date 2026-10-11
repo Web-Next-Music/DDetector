@@ -40,7 +40,8 @@ public:
     bool resolving() const { return m_resolving; }
     bool canChangeRepository() const { return !dirty() && !m_pending && !terminalRunning() && !m_resolving; }
     void setRepositoryValidator(std::function<QString(const QString &)> validator) { m_repositoryValidator = std::move(validator); }
-    QVariantList tree() const { return m_tree; }
+    void setWriteValidator(std::function<QString()> validator) { m_writeValidator = std::move(validator); }
+        QVariantList tree() const { return m_tree; }
     QString terminalOutput() const { return m_output; }
     bool terminalRunning() const { return m_terminal.running(); }
     TerminalSession *terminalSession() { return &m_terminal; }
@@ -102,6 +103,7 @@ private:
     int m_maximumWatches = 4096;
     int m_gitDeadlineMs = 5000;
     std::function<QString(const QString &)> m_repositoryValidator;
+        std::function<QString()> m_writeValidator;
     friend class WorkspaceTest;
     QString m_pendingFile;
     bool m_pending = false, m_pendingClose = false;

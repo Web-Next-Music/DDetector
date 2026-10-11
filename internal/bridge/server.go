@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"ddetector-go/internal/censor"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -56,10 +57,12 @@ type pendingLogin struct {
 type Server struct {
 	mu                 sync.Mutex
 	op                 sync.Mutex
+	refreshMu          sync.Mutex
 	client             *Client
 	yandex             *yandexClient
 	jobCancel          context.CancelFunc
 	operationCancel    context.CancelFunc
+	playbackCancels    map[chan struct{}]context.CancelFunc
 	jobDone            chan struct{}
 	lifecycle          context.Context
 	lifecycleCancel    context.CancelFunc
@@ -69,10 +72,14 @@ type Server struct {
 	yandexFactory      func(string) *yandexClient
 	exclusionTransport http.RoundTripper
 	key, base, path    string
+	customSession      bool
 	session            *Session
 	state              State
 	login              *pendingLogin
 	detector           *Detector
+	censor             CensorBackend
+	censorRuntime      *censorRuntime
+	censorProcessor    censor.Processor
 	OpenBrowser        func(string) error
 	tracksRevision     uint64
 	cachedRevision     uint64
@@ -89,13 +96,14 @@ func RandomKey() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
-func NewServer(c *Client, key, base, path string) (*Server, error) {
+func NewServer(c *Client, key, base, path string, customSession ...bool) (*Server, error) {
 	session, err := ReadSession(path)
 	if err != nil {
 		return nil, err
 	}
 	lifecycle, lifecycleCancel := context.WithCancel(context.Background())
 	s := &Server{lifecycle: lifecycle, lifecycleCancel: lifecycleCancel, client: c, key: key, base: base, path: path, session: session, detector: NewDetector(), state: State{Tracks: []Result{}}}
+	s.customSession = len(customSession) > 0 && customSession[0]
 	if session != nil {
 		s.state.Authenticated = true
 		u := session.User
@@ -139,6 +147,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	expected := "Bearer " + s.key
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
 		failure(w, 401, "bridge authentication required")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/censor/") {
+		s.handleCensor(w, r)
 		return
 	}
 	if r.URL.Path == "/api/state" {
@@ -311,29 +323,51 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		err = sess.normalize()
 	}
 	if err == nil {
-		err = SaveSession(s.path, &sess)
+		s.mu.Lock()
+		rt := s.censorRuntime
+		s.mu.Unlock()
+		if rt != nil && rt.uid != sess.User.ID {
+			err = s.closeCensor(ctx, true)
+		}
+	}
+	if err == nil {
+		// Commit disk and memory together with refresh; a concurrent playback
+		// refresh must not overwrite the newly selected account's saved session.
+		s.mu.Lock()
+		if s.closing || s.logoutPending > 0 || ctx.Err() != nil {
+			err = errors.New("login canceled")
+		} else {
+			err = SaveSession(s.path, &sess)
+			if err == nil {
+				s.session = &sess
+				s.yandex = nil
+				u := sess.User
+				s.state = State{Authenticated: true, User: &u, Tracks: []Result{}}
+			}
+		}
+		s.mu.Unlock()
 	}
 	if err != nil {
 		s.setError(err)
 		failure(w, 502, "Unable to complete login")
 		return
 	}
-	s.mu.Lock()
-	s.session = &sess
-	s.yandex = nil
-	u := sess.User
-	s.state = State{Authenticated: true, User: &u, Tracks: []Result{}}
-	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("Login complete. You can close this window and return to DDetector."))
+	_, _ = w.Write([]byte("Login complete. You can close this window and return to DDetector"))
 }
 func (s *Server) setError(err error) { s.mu.Lock(); defer s.mu.Unlock(); s.state.Error = err.Error() }
 
-// Called only while holding op, so refresh rotation and identity changes cannot race.
+// Refresh rotation is serialized separately; user/access checks may run concurrently.
+// Session guards prevent late network results from reviving a logged-out account.
 func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
+	var observed *Session
 	defer func() {
 		if authErr != nil {
 			s.mu.Lock()
+			if s.session != observed || s.closing || s.logoutPending > 0 {
+				s.mu.Unlock()
+				return
+			}
 			s.state.HasAccess = false
 			s.state.Tracks = []Result{}
 			s.state.Processed = 0
@@ -341,10 +375,19 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 			s.mu.Unlock()
 		}
 	}()
+	s.refreshMu.Lock()
+	refreshLocked := true
+	defer func() {
+		if refreshLocked {
+			s.refreshMu.Unlock()
+		}
+	}()
 	s.mu.Lock()
 	sess := s.session
+	observed = sess
+	blocked := s.closing || s.logoutPending > 0
 	s.mu.Unlock()
-	if sess == nil {
+	if sess == nil || blocked {
 		return "", errors.New("login required")
 	}
 	if sess.ExpiresAt <= time.Now().Add(60*time.Second).Unix() {
@@ -359,16 +402,24 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 		if next.User.ID != sess.User.ID {
 			return "", errors.New("refresh changed user identity")
 		}
+		s.mu.Lock()
+		if s.session != sess || s.closing || s.logoutPending > 0 || ctx.Err() != nil {
+			s.mu.Unlock()
+			return "", errors.New("session changed")
+		}
 		if err = SaveSession(s.path, &next); err != nil {
+			s.mu.Unlock()
 			return "", err
 		}
-		s.mu.Lock()
 		s.session = &next
 		sess = &next
+		observed = sess
 		u := next.User
 		s.state.User = &u
 		s.mu.Unlock()
 	}
+	s.refreshMu.Unlock()
+	refreshLocked = false
 	var user User
 	if err := s.client.request(ctx, "GET", "/auth/v1/user", sess.Access, nil, nil, &user); err != nil {
 		return "", err
@@ -378,6 +429,10 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 	}
 	allowed, banned, err := s.client.permitted(ctx, sess.Access, user.ID)
 	s.mu.Lock()
+	if s.session != sess || s.closing || s.logoutPending > 0 || ctx.Err() != nil {
+		s.mu.Unlock()
+		return "", errors.New("session changed")
+	}
 	s.state.User = &user
 	s.state.AccessChecked = err == nil
 	s.state.HasAccess = err == nil && allowed
@@ -462,7 +517,11 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 			return err
 		}
 	}
-	cachePath := s.path + ".yandex-" + c.uid + ".tracks-cache.sqlite"
+	cachePath, releaseStorage, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
+	if err != nil {
+		return err
+	}
+	defer releaseStorage()
 	cache, cacheErr := readTracksCacheContext(ctx, cachePath, uid, c.base+"/users/"+c.uid)
 	if cacheErr != nil {
 		if ctx.Err() != nil {
@@ -639,10 +698,18 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if s.operationCancel != nil {
 		s.operationCancel()
 	}
+	for _, cancel := range s.playbackCancels {
+		cancel()
+	}
 	s.mu.Unlock()
+	s.cancelCensor()
 	defer func() { s.mu.Lock(); s.logoutPending--; s.mu.Unlock() }()
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	if err := s.closeCensor(ctx, false); err != nil {
+		failure(w, 504, "censor cancellation timed out")
+		return
+	}
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for !s.op.TryLock() {
@@ -654,6 +721,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer s.op.Unlock()
+	if err := s.closeCensor(ctx, true); err != nil {
+		failure(w, 500, "unable to close censor runtime")
+		return
+	}
 	err := os.Remove(s.path)
 	if err != nil && !os.IsNotExist(err) {
 		failure(w, 500, "unable to remove saved session")
@@ -772,8 +843,14 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.operationCancel != nil {
 		s.operationCancel()
 	}
+	for _, cancel := range s.playbackCancels {
+		cancel()
+	}
 	jobDone, maintenanceDone := s.jobDone, s.maintenanceDone
 	s.mu.Unlock()
+	if err := s.closeCensor(ctx, false); err != nil {
+		return err
+	}
 	for _, done := range []chan struct{}{jobDone, maintenanceDone} {
 		if done == nil {
 			continue
@@ -784,7 +861,17 @@ func (s *Server) Close(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	return nil
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !s.op.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	defer s.op.Unlock()
+	return s.closeCensor(ctx, true)
 }
 
 // Called with op held: logout can cancel an in-flight refresh or mutation too.

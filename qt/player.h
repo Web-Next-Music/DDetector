@@ -30,6 +30,7 @@ class MusicPlayer final : public QObject {
     Q_PROPERTY(QString cover READ cover NOTIFY stateChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
     Q_PROPERTY(QString trackId READ trackId NOTIFY stateChanged)
+    Q_PROPERTY(QUrl streamUrl READ streamUrl NOTIFY stateChanged)
     Q_PROPERTY(qint64 duration READ duration NOTIFY durationChanged)
     Q_PROPERTY(qint64 position READ position NOTIFY positionChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY stateChanged)
@@ -46,6 +47,7 @@ public:
     bool busy() const { return m_busy; }
     bool playing() const { return m_player.playbackState() == QMediaPlayer::PlayingState; }
     QString trackId() const { return m_trackId; }
+    QUrl streamUrl() const;
     QString title() const { return m_title; }
     QString artist() const { return m_artist; }
     QString cover() const { return m_cover; }
@@ -57,6 +59,7 @@ public:
     Q_INVOKABLE void playTrack(QString trackId);
     Q_INVOKABLE void playAt(QString trackId, QString timestamp);
     Q_INVOKABLE void toggle();
+    Q_INVOKABLE void pause();
     Q_INVOKABLE void seek(qint64 milliseconds);
     Q_INVOKABLE void setVolume(double volume);
     Q_INVOKABLE void next();

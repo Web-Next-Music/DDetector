@@ -83,7 +83,7 @@ Rectangle {
     activeFocusOnTab: true
     Accessible.role: Accessible.Pane
     Accessible.name: "Lyrics for " + (row.title || "") + ", " + (row.artist || "")
-    Accessible.description: "Use Up and Down to choose a line, Enter to play, and Menu for track actions."
+    Accessible.description: "Use Up and Down to choose a line, Enter to play, and Menu for track actions"
     property int keyboardLine: 0
     onDisplayLinesChanged: {
         keyboardLine = Math.max(0, Math.min(keyboardLine, displayLines.length - 1));
@@ -357,7 +357,7 @@ Rectangle {
                     x: 12
                     anchors.verticalCenter: parent.verticalCenter
                     width: 46
-                    text: (line.modelData.ts || "—:——").replace(/\.[0-9]+$/, "")
+                    text: (line.modelData.ts || "-:--").replace(/\.[0-9]+$/, "")
                     color: card.ignored ? "#c86464" : card.ui.accent
                     opacity: 0.8
                     font.family: "monospace"

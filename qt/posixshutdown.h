@@ -21,11 +21,11 @@ public:
     explicit PosixShutdown(QObject *parent = nullptr) : QObject(parent) {
 #ifdef Q_OS_UNIX
         if (s_handlerWriteFd.load(std::memory_order_acquire) >= 0) {
-            m_error = QStringLiteral("A POSIX shutdown handler is already installed.");
+            m_error = QStringLiteral("A POSIX shutdown handler is already installed");
             return;
         }
         if (!ensurePipe()) {
-            m_error = QStringLiteral("Cannot create POSIX shutdown pipe (errno %1).").arg(errno);
+            m_error = QStringLiteral("Cannot create POSIX shutdown pipe (errno %1)").arg(errno);
             return;
         }
         drainPipe();
@@ -38,14 +38,14 @@ public:
         s_handlerWriteFd.store(s_pipeWriteFd, std::memory_order_release);
         if (sigaction(SIGINT, &action, &m_oldInterrupt) != 0) {
             s_handlerWriteFd.store(-1, std::memory_order_release);
-            m_error = QStringLiteral("Cannot install SIGINT handler (errno %1).").arg(errno);
+            m_error = QStringLiteral("Cannot install SIGINT handler (errno %1)").arg(errno);
             return;
         }
         if (sigaction(SIGTERM, &action, &m_oldTerminate) != 0) {
             const int error = errno;
             s_handlerWriteFd.store(-1, std::memory_order_release);
             sigaction(SIGINT, &m_oldInterrupt, nullptr);
-            m_error = QStringLiteral("Cannot install SIGTERM handler (errno %1).").arg(error);
+            m_error = QStringLiteral("Cannot install SIGTERM handler (errno %1)").arg(error);
             return;
         }
         m_notifier = new QSocketNotifier(s_pipeReadFd, QSocketNotifier::Read, this);
@@ -76,7 +76,7 @@ private:
     QString m_error;
 #ifdef Q_OS_UNIX
     static_assert(std::atomic<int>::is_always_lock_free,
-                  "Signal delivery requires a lock-free descriptor atomic.");
+                  "Signal delivery requires a lock-free descriptor atomic");
     inline static std::atomic<int> s_handlerWriteFd{-1};
     // These two nonblocking, CLOEXEC descriptors are process-owned, not
     // instance-owned. Keep them alive until process exit: a handler already

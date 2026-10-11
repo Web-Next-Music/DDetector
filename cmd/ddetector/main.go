@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"ddetector-go/internal/bridge"
+
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,6 +33,12 @@ func run() (runErr error) {
 	}
 	session := flag.String("session-file", filepath.Join(cache, "ddetector-go", "session.json"), "private session file")
 	flag.Parse()
+	customSession := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "session-file" {
+			customSession = true
+		}
+	})
 	if !*serve && *qt == "" {
 		return fmt.Errorf("provide --qt executable, DDETECTOR_QT_EXECUTABLE, or --serve")
 	}
@@ -55,12 +62,13 @@ func run() (runErr error) {
 	defer listener.Close()
 	base := "http://" + listener.Addr().String()
 	key := bridge.RandomKey()
-	backend, err := bridge.NewServer(client, key, base, *session)
+	backend, err := bridge.NewServer(client, key, base, *session, customSession)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	backend.Start(ctx)
+
 	server := &http.Server{Handler: backend.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 100 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
@@ -69,6 +77,7 @@ func run() (runErr error) {
 	childExited := false
 	defer func() {
 		stop()
+
 		if child != nil && !childExited {
 			stopChild(child, childDone)
 		}

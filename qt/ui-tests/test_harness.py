@@ -71,13 +71,51 @@ class SmokeTests(unittest.TestCase):
 
     def test_protected_icons_are_not_export_targets(self):
         self.assertFalse(assets.PROTECTED.intersection(assets.WINDOW_ICONS.values()))
+        self.assertFalse(assets.PROTECTED.intersection(assets.CONTROL_ICONS.values()))
         self.assertEqual(len(assets.WINDOW_ICONS), 3)
+
+    def test_settings_icons_are_exported_and_muted(self):
+        expected = {"compass", "container", "cpu", "database", "gauge", "globe", "languages",
+                    "layers", "link", "list-filter", "navigation", "panel-top", "radar", "sliders-horizontal"}
+        self.assertEqual(set(assets.CONTROL_ICONS), expected)
+        for name, filename in assets.CONTROL_ICONS.items():
+            source = (ROOT / "assets" / filename).read_text()
+            self.assertIn("lucide-react 1.52.0", source, name)
+            self.assertIn('stroke="#000000"', source, name)
+        card = (ROOT / "SiteSettingsCard.qml").read_text()
+        self.assertIn('readonly property color leadingGlyphColor: "#999999"', card)
+        self.assertIn("colorizationColor: card.leadingGlyphColor", card)
+
+    def test_censor_scroll_and_subtitle_structure(self):
+        detector = (ROOT / "CensorDetector.qml").read_text()
+        viewport = detector[detector.index("id: detectorScroll"):detector.index("contentWidth: availableWidth")]
+        self.assertIn("anchors.fill: parent", viewport)
+        self.assertIn("anchors.margins: 16", viewport)
+        self.assertIn("anchors.fill: detectorScroll", detector)
+        self.assertIn('shadowColor: "#0c0c0e"', detector)
+        self.assertIn('ctx.fillStyle = "#D50811"', detector)
+
+        subtitle = (ROOT / "SiteSubtitle.qml").read_text()
+        self.assertIn('color: "transparent"', subtitle)
+        self.assertIn("border.width: 0", subtitle)
+        self.assertIn("radius: 0", subtitle)
+        self.assertIn('readonly property color glyphColor: "#999999"', subtitle)
+
+        panel = (ROOT / "CensorSettingsPanel.qml").read_text()
+        self.assertEqual(panel.count("SiteSubtitle {"), 0)
+        for title in ["Processing resources", "Candidate search"]:
+            before_title = panel[:panel.index(f'title: "{title}"')]
+            self.assertEqual(before_title.rsplit("{", 1)[0].rstrip().splitlines()[-1].strip(), "SiteSettingsCard")
+        self.assertNotIn("censorCleanTemp", panel)
+        self.assertNotIn("censorAutoReplace", panel)
+        self.assertNotIn("censorVocalAnalysis", panel)
+        self.assertNotIn("Hardware acceleration", panel)
 
     def test_no_manual_window_canvas_or_dead_titlebar(self):
         source = (ROOT / "Main.qml").read_text()
         self.assertNotIn("id: titleBar", source)
         self.assertNotIn("Canvas {", (ROOT / "WindowButton.qml").read_text())
-        self.assertIn('model: ["music", "git-branch"]', source)
+        self.assertIn('model: ["music", "git-branch", "search"]', source)
 
     def test_bearded_provenance(self):
         import hashlib

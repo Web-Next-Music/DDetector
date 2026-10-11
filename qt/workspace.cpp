@@ -85,11 +85,11 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
         if (!rejection.isEmpty()) { fail(rejection); return; }
     }
     if (dirty() || m_pending) {
-        fail("Save or discard the current document before changing the repository.");
+        fail("Save or discard the current document before changing the repository");
         return;
     }
     if (terminalRunning()) {
-        fail("Stop the shell before changing the repository.");
+        fail("Stop the shell before changing the repository");
         return;
     }
     cancelGit();
@@ -109,7 +109,7 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
     m_loadingDocument = false;
     if (path.trimmed().isEmpty()) { emit changed(); return; }
     QFileInfo input(path);
-    if (!input.isDir()) { fail("Repository path must be an existing directory."); return; }
+    if (!input.isDir()) { fail("Repository path must be an existing directory"); return; }
     m_resolving = true;
     struct Discovery { QString root; QStringList directories; };
     const auto generation = m_gitGeneration;
@@ -119,7 +119,7 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
         const auto result = watcher->result(); watcher->deleteLater();
         if (generation != m_gitGeneration) return;
         if (result.root.isEmpty()) {
-            m_resolving = false; m_gitError = "Git failed: no working tree found."; emit changed(); return;
+            m_resolving = false; m_gitError = "Git failed: no working tree found"; emit changed(); return;
         }
         m_root = result.root; m_gitDirectories = result.directories;
         m_resolving = false; m_reconcile.start(); rebuildTree(); refreshTree();
@@ -206,7 +206,7 @@ void GitWorkspace::runGit(const QString &directory, const QStringList &arguments
         output->out += process->readAllStandardOutput();
         output->err += process->readAllStandardError();
         if (output->out.size() > maximumOutput || output->err.size() > 64 * 1024) {
-            output->failure = "Git output exceeds the safety limit; previous status retained.";
+            output->failure = "Git output exceeds the safety limit; previous status retained";
             output->out.truncate(maximumOutput); output->err.truncate(64 * 1024); process->kill();
         }
     };
@@ -224,10 +224,10 @@ void GitWorkspace::runGit(const QString &directory, const QStringList &arguments
     connect(process, &QProcess::readyReadStandardError, this, drain);
     connect(process, &QProcess::finished, this, complete);
     connect(process, &QProcess::errorOccurred, this, [output, complete](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { output->failure = "Cannot start Git."; complete(); }
+        if (error == QProcess::FailedToStart) { output->failure = "Cannot start Git"; complete(); }
     });
     connect(deadline, &QTimer::timeout, this, [process, output] {
-        output->failure = "Git timed out; previous status retained."; process->kill();
+        output->failure = "Git timed out; previous status retained"; process->kill();
     });
     deadline->start(m_gitDeadlineMs);
     process->start("git", QStringList{"--no-pager", "-c", "core.fsmonitor=false"} + arguments);
@@ -316,7 +316,7 @@ void GitWorkspace::updateWatches() {
     if (!removed.isEmpty()) m_watcher.removePaths(removed.values());
     const auto failed = added.isEmpty() ? QStringList() : m_watcher.addPaths(added.values());
     m_watchError = limited || !failed.isEmpty()
-        ? QString("File watch coverage limited (%1 failed); status reconciles every 2 seconds.").arg(failed.size())
+        ? QString("File watch coverage limited (%1 failed); status reconciles every 2 seconds").arg(failed.size())
         : QString();
 }
 
@@ -378,7 +378,7 @@ void GitWorkspace::refreshTree() {
                         return 0;
                     }, &filters);
                     git_config_free(config);
-                } else result.error = "Git failed: cannot read repository configuration.";
+                } else result.error = "Git failed: cannot read repository configuration";
                 result.filters = filters;
                 git_status_options options = GIT_STATUS_OPTIONS_INIT;
                 options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS
@@ -403,20 +403,20 @@ void GitWorkspace::refreshTree() {
                         const auto flags = entry->status;
                         if (flags == GIT_STATUS_CURRENT || flags == GIT_STATUS_IGNORED) continue;
                         const auto *delta = entry->index_to_workdir ? entry->index_to_workdir : entry->head_to_index;
-                        if (!delta || !delta->new_file.path) { result.error = "Git failed: invalid status path."; break; }
+                        if (!delta || !delta->new_file.path) { result.error = "Git failed: invalid status path"; break; }
                         const bool added = flags == GIT_STATUS_WT_NEW || flags == GIT_STATUS_INDEX_NEW
                             || flags == (GIT_STATUS_INDEX_NEW | GIT_STATUS_WT_MODIFIED);
                         mark(delta->new_file.path, added ? "new" : "modified");
                         for (const auto *rename : {entry->head_to_index, entry->index_to_workdir})
                             if (rename && rename->status == GIT_DELTA_RENAMED && rename->old_file.path)
                                 mark(rename->old_file.path, "modified");
-                        if (bytes > 16 * 1024 * 1024) { result.error = "Git output exceeds the safety limit; previous status retained."; break; }
+                        if (bytes > 16 * 1024 * 1024) { result.error = "Git output exceeds the safety limit; previous status retained"; break; }
                     }
                     for (size_t i = 0; result.error.isEmpty() && i < git_index_entrycount(index); ++i) {
                         const auto *path = git_index_get_byindex(index, i)->path;
                         bytes += qstrlen(path);
                         result.tracked.append(QFile::decodeName(path));
-                        if (bytes > 16 * 1024 * 1024) result.error = "Git output exceeds the safety limit; previous status retained.";
+                        if (bytes > 16 * 1024 * 1024) result.error = "Git output exceeds the safety limit; previous status retained";
                     }
                 }
                 if (result.error.isEmpty() && (!index || (!filters && !list))) {
@@ -426,7 +426,7 @@ void GitWorkspace::refreshTree() {
                 git_index_free(index); git_status_list_free(list);
             }
         }
-        if (!raw) result.error = "Git failed: cannot open repository.";
+        if (!raw) result.error = "Git failed: cannot open repository";
         git_libgit2_shutdown();
         return result;
     }));
@@ -434,7 +434,7 @@ void GitWorkspace::refreshTree() {
 }
 
 void GitWorkspace::toggleDirectory(const QString &path) {
-    if (confined(path, true).isEmpty()) { fail("Directory is unavailable or outside the workspace."); return; }
+    if (confined(path, true).isEmpty()) { fail("Directory is unavailable or outside the workspace"); return; }
     if (m_expanded.contains(path)) m_expanded.remove(path); else m_expanded.insert(path);
     rebuildTree();
 }
@@ -457,13 +457,13 @@ bool GitWorkspace::editDocument(int revision, const QString &text) {
 
 bool GitWorkspace::loadFile(const QString &relativePath) {
     const QString path = confined(relativePath);
-    if (path.isEmpty()) { fail("File is unavailable, a symlink, or outside the workspace."); return false; }
+    if (path.isEmpty()) { fail("File is unavailable, a symlink, or outside the workspace"); return false; }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) { fail(file.errorString()); return false; }
-    if (file.size() > MaximumTextBytes) { fail("Text files are limited to 2 MiB."); return false; }
+    if (file.size() > MaximumTextBytes) { fail("Text files are limited to 2 MiB"); return false; }
     const QByteArray bytes = file.read(MaximumTextBytes + 1);
     if (file.error() != QFileDevice::NoError || bytes.size() > MaximumTextBytes) {
-        fail("Could not read file within the 2 MiB limit."); return false;
+        fail("Could not read file within the 2 MiB limit"); return false;
     }
     auto reject = [&](const QString &encoding, const QString &reason) {
         fail(QString("Cannot edit '%1' (%2): %3").arg(relativePath, encoding, reason));
@@ -472,7 +472,7 @@ bool GitWorkspace::loadFile(const QString &relativePath) {
     // Check UTF-32 first: its LE BOM starts with the UTF-16 LE BOM.
     if (bytes.startsWith(QByteArray::fromHex("fffe0000"))
         || bytes.startsWith(QByteArray::fromHex("0000feff")))
-        return reject("UTF-32 BOM", "unsupported encoding; use UTF-8 or BOM-marked UTF-16.");
+        return reject("UTF-32 BOM", "unsupported encoding; use UTF-8 or BOM-marked UTF-16");
     auto encoding = QStringConverter::Utf8;
     QString encodingName = "UTF-8 (no BOM)";
     qsizetype bomSize = 0;
@@ -485,9 +485,9 @@ bool GitWorkspace::loadFile(const QString &relativePath) {
     }
     const QByteArray payload = bytes.mid(bomSize);
     if (encoding != QStringConverter::Utf8 && payload.size() % 2 != 0)
-        return reject(encodingName, "truncated UTF-16 code unit (odd payload byte count).");
+        return reject(encodingName, "truncated UTF-16 code unit (odd payload byte count)");
     if (encoding == QStringConverter::Utf8 && payload.contains('\0'))
-        return reject(encodingName, "NUL byte found; binary or BOM-less UTF-16 is not supported.");
+        return reject(encodingName, "NUL byte found; binary or BOM-less UTF-16 is not supported");
     // Strip exactly one transport BOM, retaining any subsequent U+FEFF as content.
     QStringDecoder decoder(encoding, QStringConverter::Flag::ConvertInitialBom
                                      | QStringConverter::Flag::Stateless);
@@ -495,9 +495,9 @@ bool GitWorkspace::loadFile(const QString &relativePath) {
     QStringEncoder encoder(encoding, QStringConverter::Flag::Stateless);
     const QByteArray roundTrip = encoder.encode(text);
     if (!validUnicode(text) || decoder.hasError() || encoder.hasError() || roundTrip != payload)
-        return reject(encodingName, "malformed or truncated Unicode sequence; lossless decoding failed.");
+        return reject(encodingName, "malformed or truncated Unicode sequence; lossless decoding failed");
     if (text.contains(QChar(0)))
-        return reject(encodingName, "decoded NUL character found; binary content cannot be edited.");
+        return reject(encodingName, "decoded NUL character found; binary content cannot be edited");
     QSet<QString> endings;
     for (qsizetype i = 0; i < text.size(); ++i) {
         if (text.at(i) == '\r') {
@@ -530,14 +530,15 @@ void GitWorkspace::openFile(const QString &path) {
 }
 
 bool GitWorkspace::save() {
+    if (m_writeValidator) { const auto error = m_writeValidator(); if (!error.isEmpty()) { fail(error); return false; } }
     QLockFile uploadLock(m_root + "/.ddetector-upload.lock");
     if (m_root.isEmpty() || !uploadLock.tryLock(0)) {
-        fail("Cannot save while an uploader is writing this repository."); return false;
+        fail("Cannot save while an uploader is writing this repository"); return false;
     }
     const QString path = confined(m_file);
-    if (path.isEmpty()) { fail("Cannot save: file is no longer a confined regular file."); return false; }
+    if (path.isEmpty()) { fail("Cannot save: file is no longer a confined regular file"); return false; }
     if (dirty() && m_mixedEndings) {
-        fail("Save refused: mixed line endings cannot be safely preserved. Discard changes or normalize the file externally.");
+        fail("Save refused: mixed line endings cannot be safely preserved. Discard changes or normalize the file externally");
         return false;
     }
     QString diskText = m_text;
@@ -548,16 +549,16 @@ bool GitWorkspace::save() {
         return false;
     };
     if (!validUnicode(diskText))
-        return reject("malformed Unicode text; unpaired surrogate found.");
+        return reject("malformed Unicode text; unpaired surrogate found");
     if (diskText.contains(QChar(0)))
-        return reject("decoded NUL character found; binary content cannot be saved.");
+        return reject("decoded NUL character found; binary content cannot be saved");
     QStringEncoder encoder(m_encoding, QStringConverter::Flag::Stateless);
     const QByteArray payload = encoder.encode(diskText);
     QStringDecoder decoder(m_encoding, QStringConverter::Flag::ConvertInitialBom
                                       | QStringConverter::Flag::Stateless);
     const QString roundTrip = decoder.decode(payload);
     if (encoder.hasError() || decoder.hasError() || roundTrip != diskText)
-        return reject("malformed Unicode text; lossless encoding failed.");
+        return reject("malformed Unicode text; lossless encoding failed");
     QByteArray bom;
     if (m_hasBom) {
         bom = QByteArray::fromHex(m_encoding == QStringConverter::Utf16LE ? "fffe"
@@ -565,18 +566,18 @@ bool GitWorkspace::save() {
     }
     const QByteArray bytes = bom + payload;
     if (bytes.size() > MaximumTextBytes)
-        return reject("encoded text exceeds the 2 MiB limit.");
+        return reject("encoded text exceeds the 2 MiB limit");
     QFile current(path);
     if (!current.open(QIODevice::ReadOnly) || current.size() > MaximumTextBytes
         || current.read(MaximumTextBytes + 1) != m_diskBytes
         || current.error() != QFileDevice::NoError) {
-        fail("File changed on disk or cannot be read; save refused to avoid overwriting external edits.");
+        fail("File changed on disk or cannot be read; save refused to avoid overwriting external edits");
         return false;
     }
     current.close();
     if (!dirty()) { m_error.clear(); emit changed(); return true; }
     // Recheck after reading; QSaveFile must never fall back to truncating the original.
-    if (confined(m_file) != path) { fail("File path changed during save."); return false; }
+    if (confined(m_file) != path) { fail("File path changed during save"); return false; }
     QSaveFile target(path);
     target.setDirectWriteFallback(false);
     if (!target.open(QIODevice::WriteOnly) || target.write(bytes) != bytes.size() || !target.commit()) {
@@ -615,8 +616,9 @@ void GitWorkspace::appendOutput(const QString &text) {
 }
 
 void GitWorkspace::startTerminal() {
+    if (m_writeValidator) { const auto error = m_writeValidator(); if (!error.isEmpty()) { fail(error); return; } }
     if (terminalRunning()) return;
-    if (m_root.isEmpty() || !QFileInfo(m_root).isDir()) { fail("Select a valid repository first."); return; }
+    if (m_root.isEmpty() || !QFileInfo(m_root).isDir()) { fail("Select a valid repository first"); return; }
     if (!m_terminal.start(m_root)) fail(m_terminal.error());
 }
 

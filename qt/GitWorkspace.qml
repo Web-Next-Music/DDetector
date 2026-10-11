@@ -59,8 +59,8 @@ Item {
         width: Math.max(0, parent.width - 48)
         visible: !root.available || !root.workspaceBackend.rootPath
         text: !root.available || !root.workspaceBackend.repositoryPath
-              ? "Set a Git repository path in Settings to open the workspace."
-              : "Repository unavailable. Check the path in Settings and ensure Git is installed."
+              ? "Set a Git repository path in Settings to open the workspace"
+              : "Repository unavailable. Check the path in Settings and ensure Git is installed"
         color: "#eeeeee"
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
@@ -185,7 +185,10 @@ Item {
                         RowLayout {
                             id: breadcrumbRow
                             Layout.fillWidth: true
-                            Layout.margins: 8
+                            Layout.leftMargin: 0
+                            Layout.rightMargin: 0
+                            Layout.topMargin: 0
+                            Layout.bottomMargin: 0
                             spacing: 8
                             // Path is a breadcrumb, not a destructive navigation operation.
                             Label {

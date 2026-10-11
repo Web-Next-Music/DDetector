@@ -19,6 +19,7 @@ Rectangle {
     property alias closeButtonObjectName: closeButton.objectName
     property string closeButtonAccessibleName: "Close"
     property alias closeEnabled: closeButton.enabled
+    property bool closeVisible: true
     signal closeRequested()
 
     implicitHeight: 64
@@ -59,6 +60,7 @@ Rectangle {
     }
     SiteButton {
         id: closeButton
+        visible: header.closeVisible
         anchors.right: parent.right
         anchors.rightMargin: 24
         anchors.verticalCenter: parent.verticalCenter

@@ -27,7 +27,7 @@ ApplicationWindow {
     onClosing: function(event) {
         if (typeof localUploader !== "undefined" && localUploader.busy) {
             event.accepted = false;
-            notify("Wait for Send to finish before closing.");
+            notify("Wait for Send to finish before closing");
             return;
         }
         if (workspaceCloseApproved || !workspaceLoader.item) return;
@@ -113,6 +113,8 @@ ApplicationWindow {
     }
     function notify(message) {
         if (!message || message === "Yandex Music token required") return;
+        const normalized = String(message).trim().toLowerCase();
+        if (normalized === "operation in progress" || normalized === "another operation is running") return;
         for (let i = 0; i < toastModel.count; ++i) {
             if (toastModel.get(i).message === message) return;
         }
@@ -621,7 +623,15 @@ ApplicationWindow {
                         implicitHeight: 36
                         leftPadding: 12
                         rightPadding: 12
-                        text: appConfig.repositoryPath || ""
+                        text: ""
+                        Component.onCompleted: text = appConfig.repositoryPath || ""
+                        Connections {
+                            target: appConfig
+                            function onRepositoryPathChanged() {
+                                if (!repositoryPathInput.activeFocus)
+                                    repositoryPathInput.text = appConfig.repositoryPath || "";
+                            }
+                        }
                         placeholderText: Qt.platform.os === "windows" ? "D:/FckCensorData" : "/run/media/admin/DATA/FckCensorData/"
                         color: appUi.ink
                         placeholderTextColor: appUi.muted
@@ -629,20 +639,35 @@ ApplicationWindow {
                         selectedTextColor: appUi.ink
                         selectByMouse: true
                         enabled: typeof localUploader === "undefined" || !localUploader.busy
-                        function applyPath() {
+                        objectName: "repositoryPathInput"
+                        function applyPath(automatic = false) {
                             const path = text.trim();
+                            if (typeof localUploader !== "undefined" && localUploader.busy) return;
+                            if (automatic && (!appConfig.repositoryDirectoryExists(path)
+                                || (typeof gitWorkspace !== "undefined" && (gitWorkspace.dirty || gitWorkspace.terminalRunning)))) return;
                             if (path === appConfig.repositoryPath || changeRepositoryDialog.visible) return;
                             if (typeof gitWorkspace !== "undefined" && gitWorkspace.dirty) {
-                                appUi.notify("Save or discard file changes before changing the repository.");
+                                appUi.notify("Save or discard file changes before changing the repository");
                                 return;
                             }
                             if (typeof gitWorkspace !== "undefined" && gitWorkspace.terminalRunning) {
                                 changeRepositoryDialog.pendingPath = path;
                                 changeRepositoryDialog.open();
-                            } else appConfig.repositoryPath = path;
+                            } else {
+                                appConfig.repositoryPath = path;
+                                if (appConfig.repositoryPath !== path)
+                                    text = appConfig.repositoryPath || "";
+                            }
                         }
-                        onEditingFinished: applyPath()
-                        onAccepted: applyPath()
+                        onTextEdited: repositoryApplyTimer.restart()
+                        onEditingFinished: { repositoryApplyTimer.stop(); applyPath(); }
+                        onAccepted: { repositoryApplyTimer.stop(); applyPath(); }
+                        Timer {
+                            id: repositoryApplyTimer
+                            interval: 500
+                            repeat: false
+                            onTriggered: repositoryPathInput.applyPath(true)
+                        }
 
                     }
                 }
@@ -785,7 +810,7 @@ ApplicationWindow {
         }
         onAccepted: {
             if (gitWorkspace.dirty || (typeof localUploader !== "undefined" && localUploader.busy)) {
-                appUi.notify("Save file changes and wait for Send before changing the repository.");
+                appUi.notify("Save file changes and wait for Send before changing the repository");
                 return;
             }
             gitWorkspace.stopTerminal();
@@ -793,27 +818,7 @@ ApplicationWindow {
         }
         onRejected: repositoryPathInput.text = appConfig.repositoryPath
     }
-    component ScrollEdgeShadow: Item {
-        z: 1
-        Rectangle {
-            anchors.top: parent.top
-            width: parent.width
-            height: 8
-            gradient: Gradient {
-                GradientStop { position: 0; color: "#ff000000" }
-                GradientStop { position: 1; color: "#00000000" }
-            }
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 8
-            gradient: Gradient {
-                GradientStop { position: 0; color: "#00000000" }
-                GradientStop { position: 1; color: "#ff000000" }
-            }
-        }
-    }
+
     Item {
         id: panels
         readonly property real leftPanelWidth: width * 0.40
@@ -854,6 +859,7 @@ ApplicationWindow {
         }
         ScrollEdgeShadow {
             anchors.fill: trackList
+            flickable: trackList
         }
         Rectangle {
             x: panels.leftPanelWidth
@@ -888,11 +894,11 @@ ApplicationWindow {
                 spacing: 0
 
                 Repeater {
-                    model: ["music", "git-branch"]
+                    model: ["music", "git-branch", "search"]
                     Button {
                         id: activityButton
                         SiteFocusRing { active: activityButton.visualFocus }
-                        objectName: index === 0 ? "lyricsPageButton" : "gitPageButton"
+                        objectName: index === 0 ? "lyricsPageButton" : index === 1 ? "gitPageButton" : "censorPageButton"
                         required property string modelData
                         required property int index
                         width: 48; height: 48
@@ -908,14 +914,26 @@ ApplicationWindow {
                                 layer.enabled: true
                                 layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.rightPage === activityButton.index ? appUi.accent : activityButton.hovered ? appUi.ink : appUi.muted }
                             }
+                            Label {
+                                objectName: "censorBetaLabel"
+                                visible: activityButton.index === 2
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.leftMargin: 3
+                                anchors.bottomMargin: 2
+                                text: "β"
+                                color: appUi.rightPage === activityButton.index ? appUi.accent : appUi.muted
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
+                            }
                         }
                         background: Rectangle {
                             color: activityButton.hovered || appUi.rightPage === activityButton.index ? appUi.surface2 : appUi.surface
                             Rectangle { width: 2; height: parent.height; anchors.right: parent.right; color: appUi.rightPage === activityButton.index ? appUi.accent : "transparent" }
                             Rectangle { width: 1; height: parent.height; anchors.left: parent.left; color: appUi.borderColor }
                         }
-                        SiteToolTip { text: activityButton.index === 0 ? "Lyrics" : "Git" }
-                        Accessible.name: index === 0 ? "Lyrics" : "Git"
+                        SiteToolTip { text: activityButton.index === 0 ? "Lyrics" : activityButton.index === 1 ? "Git" : "Censor Detector" }
+                        Accessible.name: index === 0 ? "Lyrics" : index === 1 ? "Git" : "Censor Detector"
                         onClicked: appUi.rightPage = index
                     }
                 }
@@ -935,6 +953,24 @@ ApplicationWindow {
                         objectName: "gitWorkspaceView"
                         workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
                         onNotify: function(message) { appUi.notify(message); }
+                    }
+                }
+            }
+            Loader {
+                objectName: "censorDetectorLoader"
+                property bool visited: false
+                onVisibleChanged: if (visible) visited = true
+                anchors.left: parent.left
+                anchors.right: activityBar.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                active: visited || visible
+                visible: appUi.showShell && appUi.rightPage === 2
+                sourceComponent: Component {
+                    CensorDetector {
+                        objectName: "censorDetectorView"
+                        bridge: backend
+                        uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
                     }
                 }
             }
@@ -1011,12 +1047,13 @@ ApplicationWindow {
                     horizontalAlignment: Text.AlignHCenter
                     color: appUi.muted
                     font.pixelSize: 13
-                    text: appUi.total ? "No drug references found" : "No tracks. Press Fetch to load."
+                    text: appUi.total ? "No drug references found" : "No tracks. Press Fetch to load"
                 }
             }
             ScrollEdgeShadow {
                 visible: appUi.rightPage === 0
                 anchors.fill: results
+                flickable: results
             }
         }
         SiteSpinner {

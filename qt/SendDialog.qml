@@ -12,19 +12,29 @@ SiteDialog {
     property string trackId: ""
     property string originalTitle: ""
     property url coverSource: ""
+    property bool showUrlFields: true
     property bool sending: false
     signal sent(string action)
 
-    function openTrack(id, title, artist, cover) {
+    function configureTrack(id, title, artist, cover, mp3Url, showUrl) {
         if (busy || sending)
             return
         trackId = id === null || id === undefined ? "" : String(id)
         originalTitle = title ? String(title) : ""
         titleInput.text = originalTitle
         artistInput.text = Array.isArray(artist) ? artist.join(", ") : (artist ? String(artist) : "")
-        urlInput.text = ""
+        urlInput.text = mp3Url ? String(mp3Url) : ""
+        showUrlFields = showUrl
         coverSource = cover || ""
         open()
+    }
+
+    function openTrack(id, title, artist, cover) {
+        configureTrack(id, title, artist, cover, "", true)
+    }
+
+    function openCandidate(id, title, artist, cover, mp3Url) {
+        configureTrack(id, title, artist, cover, mp3Url, false)
     }
 
 
@@ -135,16 +145,18 @@ SiteDialog {
                 Field { id: artistInput; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
                 Caption { text: "Title" }
                 Field { id: titleInput; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
-                Caption { text: "MP3 URL · optional" }
+                Caption { text: "MP3 URL · optional"; visible: dialog.showUrlFields }
                 Field {
                     id: urlInput
+                    visible: dialog.showUrlFields
                     placeholderText: "https://…"
                     Accessible.name: "MP3 URL"
                     inputMethodHints: Qt.ImhUrlCharactersOnly
                 }
                 Caption {
                     Layout.fillWidth: true
-                    text: "Leave the URL empty to add only the list entry."
+                    visible: dialog.showUrlFields
+                    text: "Leave the URL empty to add only the list entry"
                     color: "#97979f"
                     wrapMode: Text.WordWrap
                     font.pixelSize: 12
@@ -154,7 +166,7 @@ SiteDialog {
         Caption {
             Layout.fillWidth: true
             visible: text.length > 0
-            text: !dialog.uploadBackend ? "Upload backend is not configured." : dialog.uploadBackend.error
+            text: !dialog.uploadBackend ? "Upload backend is not configured" : dialog.uploadBackend.error
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
             color: "#ff9292"

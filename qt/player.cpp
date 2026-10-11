@@ -45,7 +45,7 @@ QUrl mediaUrl(const QByteArray &descriptor, QString *error = nullptr) {
     if (error) error->clear();
     const auto invalid = [error](const QString &reason) {
         // Report only the failing field, never signed URLs or descriptor values.
-        if (error) *error = QStringLiteral("Invalid download descriptor: %1.").arg(reason);
+        if (error) *error = QStringLiteral("Invalid download descriptor: %1").arg(reason);
         return QUrl();
     };
     QString host, path, ts, salt;
@@ -104,7 +104,7 @@ MusicPlayer::MusicPlayer(QObject *parent) : QObject(parent) {
     connect(&m_mediaTimeout, &QTimer::timeout, this, [this] {
         m_player.stop();
         m_player.setSource({});
-        fail(QStringLiteral("Media loading timed out."));
+        fail(QStringLiteral("Media loading timed out"));
     });
     connect(&m_player, &QMediaPlayer::playbackStateChanged, this, &MusicPlayer::stateChanged);
     connect(&m_player, &QMediaPlayer::positionChanged, this, &MusicPlayer::positionChanged);
@@ -114,7 +114,7 @@ MusicPlayer::MusicPlayer(QObject *parent) : QObject(parent) {
     connect(&m_player, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error error, const QString &) {
         if (error != QMediaPlayer::NoError && m_sourceGeneration == m_generation && !m_source.isEmpty()) {
             m_mediaTimeout.stop();
-            fail(QStringLiteral("Media playback failed."));
+            fail(QStringLiteral("Media playback failed"));
         }
     });
     connect(&m_player, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
@@ -229,7 +229,7 @@ void MusicPlayer::fail(const QString &message) {
 void MusicPlayer::get(const QUrl &url, bool oauth, quint64 generation,
                       std::function<void(const QByteArray &)> callback) {
     if (!trustedUrl(url) || (oauth && url.host() != "api.music.yandex.net")) {
-        fail(QStringLiteral("Untrusted download URL."));
+        fail(QStringLiteral("Untrusted download URL"));
         return;
     }
 #ifdef MUSIC_PLAYER_TEST
@@ -256,7 +256,7 @@ void MusicPlayer::get(const QUrl &url, bool oauth, quint64 generation,
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status != 200 || reply->bytesAvailable() > 2 * 1024 * 1024) {
             // Do not expose URLs, server response bodies, or credentials in errors.
-            fail(QStringLiteral("Yandex Music request failed (HTTP %1); check credentials, subscription, or network.").arg(status));
+            fail(QStringLiteral("Yandex Music request failed (HTTP %1); check credentials, subscription, or network").arg(status));
             return;
         }
         callback(reply->readAll());
@@ -278,7 +278,7 @@ void MusicPlayer::setToken(QString token) {
     if (token.isEmpty()) { emit stateChanged(); return; }
     // OAuth bearer tokens must not contain header delimiters or non-ASCII characters.
     if (token.size() > 4096 || !QRegularExpression(QStringLiteral("\\A[A-Za-z0-9._~+/=-]+\\z")).match(token).hasMatch()) {
-        fail(QStringLiteral("Invalid OAuth token format."));
+        fail(QStringLiteral("Invalid OAuth token format"));
         return;
     }
     m_token = token.toUtf8();
@@ -289,7 +289,7 @@ void MusicPlayer::setToken(QString token) {
         const auto account = root.value("result").toObject().value("account").toObject();
         if (root.contains("error") || account.value("uid").toVariant().toLongLong() <= 0) {
             m_token.clear();
-            fail(QStringLiteral("OAuth account validation failed."));
+            fail(QStringLiteral("OAuth account validation failed"));
             return;
         }
         m_enabled = true; m_busy = false;
@@ -298,8 +298,8 @@ void MusicPlayer::setToken(QString token) {
 }
 
 void MusicPlayer::playTrack(QString trackId) {
-    if (!validTrackId(trackId)) { fail(QStringLiteral("Track ID must contain 1–20 ASCII digits.")); return; }
-    if (!m_enabled) { fail(QStringLiteral("Set and validate an OAuth token before playing.")); return; }
+    if (!validTrackId(trackId)) { fail(QStringLiteral("Track ID must contain 1-20 ASCII digits")); return; }
+    if (!m_enabled) { fail(QStringLiteral("Set and validate an OAuth token before playing")); return; }
     if (m_historyIndex < 0 || m_history.value(m_historyIndex) != trackId) {
         m_history = m_history.mid(0, m_historyIndex + 1);
         m_history.append(trackId);
@@ -346,10 +346,10 @@ void MusicPlayer::loadTrack(const QString &id) {
     QUrlQuery query; query.addQueryItem("trackIds", id); url.setQuery(query);
     get(url, true, generation, [this, id, generation](const QByteArray &data) {
         const auto tracks = jsonObject(data).value("result").toArray();
-        if (tracks.isEmpty()) { fail(QStringLiteral("Track metadata is unavailable.")); return; }
+        if (tracks.isEmpty()) { fail(QStringLiteral("Track metadata is unavailable")); return; }
         const auto track = tracks.first().toObject();
         if (track.value("id").toVariant().toString() != id || track.value("available").toBool(true) == false) {
-            fail(QStringLiteral("Track is unavailable for this account.")); return;
+            fail(QStringLiteral("Track is unavailable for this account")); return;
         }
         m_title = track.value("title").toString();
         QStringList artists;
@@ -377,7 +377,7 @@ void MusicPlayer::loadTrack(const QString &id) {
                     download = candidate; bestBitrate = bitrate;
                 }
             }
-            if (download.isEmpty()) { fail(QStringLiteral("No full MP3 stream is available.")); return; }
+            if (download.isEmpty()) { fail(QStringLiteral("No full MP3 stream is available")); return; }
             get(download, false, generation, [this](const QByteArray &xml) {
                 QString descriptorError;
                 const auto media = mediaUrl(xml, &descriptorError);
@@ -393,6 +393,17 @@ void MusicPlayer::loadTrack(const QString &id) {
             });
         });
     });
+}
+
+QUrl MusicPlayer::streamUrl() const {
+    // Track changes invalidate the source and generation together in cancelRequests().
+    if (!m_enabled || m_trackId.isEmpty() || m_sourceGeneration != m_generation
+        || m_source.isEmpty() || !m_source.isValid()) return {};
+    return m_source;
+}
+
+void MusicPlayer::pause() {
+    if (playing()) m_player.pause();
 }
 
 void MusicPlayer::toggle() {
@@ -485,7 +496,7 @@ private slots:
             descriptor.insert(field, value);
             QString error;
             QVERIFY(mediaUrl(QJsonDocument(descriptor).toJson(), &error).isEmpty());
-            QCOMPARE(error, QStringLiteral("Invalid download descriptor: %1.").arg(reason));
+            QCOMPARE(error, QStringLiteral("Invalid download descriptor: %1").arg(reason));
         };
         for (const auto &host : {"", "evil.test", "yandex.net.evil.test", "user@storage.mds.yandex.net",
                                  "storage.mds.yandex.net:444", "storage.mds.yandex.net/path",
@@ -498,7 +509,7 @@ private slots:
         rejects("s", "", "missing s");
         QString error;
         QVERIFY(mediaUrl("<download-info><host>", &error).isEmpty());
-        QCOMPARE(error, QStringLiteral("Invalid download descriptor: malformed XML or JSON."));
+        QCOMPARE(error, QStringLiteral("Invalid download descriptor: malformed XML or JSON"));
         QVERIFY(!mediaUrl(QJsonDocument(valid).toJson(), &error).isEmpty());
         QVERIFY(error.isEmpty());
     }
@@ -551,7 +562,13 @@ private slots:
         const auto levelsBeforePause = player.spectrumLevels();
         const auto peaksBeforePause = player.spectrumPeaks();
         const auto epochBeforePause = player.m_spectrumEpoch;
-        player.m_player.pause();
+        const auto sourceBeforePause = player.streamUrl();
+        QVERIFY(!sourceBeforePause.isEmpty());
+        player.pause();
+        QCOMPARE(player.m_player.playbackState(), QMediaPlayer::PausedState);
+        player.pause();
+        QCOMPARE(player.m_player.playbackState(), QMediaPlayer::PausedState);
+        QCOMPARE(player.streamUrl(), sourceBeforePause);
         QVERIFY(!player.m_spectrumAnalyser.settled());
         QCOMPARE(player.spectrumLevels(), levelsBeforePause);
         QCOMPARE(player.spectrumPeaks(), peaksBeforePause);
@@ -675,6 +692,60 @@ private slots:
         player.setVisualizerEnabled(false);
         QVERIFY(!player.m_bufferOutput);
         QVERIFY(!player.m_spectrumTimer.isActive());
+    }
+    void streamUrlLifecycle() {
+        MusicPlayer player;
+        player.m_requestHook = [] {};
+        QVERIFY(player.streamUrl().isEmpty());
+        const auto property = player.metaObject()->property(player.metaObject()->indexOfProperty("streamUrl"));
+        QCOMPARE(property.metaType(), QMetaType::fromType<QUrl>());
+        QVERIFY(property.isReadable());
+        QVERIFY(!property.isWritable());
+        QCOMPARE(property.notifySignal().name(), QByteArray("stateChanged"));
+        QVERIFY(player.metaObject()->indexOfMethod("pause()") >= 0);
+        player.pause();
+        QCOMPARE(player.m_player.playbackState(), QMediaPlayer::StoppedState);
+
+        player.m_enabled = true;
+        player.playTrack("1");
+        QVERIFY(player.streamUrl().isEmpty());
+        const QUrl source("https://storage.mds.yandex.net/current.mp3");
+        player.m_source = source;
+        player.m_sourceGeneration = player.m_generation;
+        QVERIFY(player.streamUrl() == source);
+        --player.m_sourceGeneration;
+        QVERIFY(player.streamUrl().isEmpty());
+        player.m_sourceGeneration = player.m_generation;
+        player.m_source = QUrl("https://[");
+        QVERIFY(player.streamUrl().isEmpty());
+        player.m_source = source;
+        player.m_trackId.clear();
+        QVERIFY(player.streamUrl().isEmpty());
+        player.m_trackId = "1";
+
+        QSignalSpy changes(&player, &MusicPlayer::stateChanged);
+        player.playTrack("2");
+        QVERIFY(!changes.isEmpty());
+        QCOMPARE(player.trackId(), QString("2"));
+        QVERIFY(player.m_source.isEmpty());
+        QVERIFY(player.streamUrl().isEmpty());
+        player.m_source = source;
+        player.m_sourceGeneration = player.m_generation;
+        QVERIFY(player.streamUrl() == source);
+        changes.clear();
+        player.setToken({});
+        QVERIFY(!changes.isEmpty());
+        QVERIFY(player.m_source.isEmpty());
+        QVERIFY(player.streamUrl().isEmpty());
+        QVERIFY(player.trackId().isEmpty());
+
+        player.m_enabled = true;
+        player.playTrack("3");
+        player.m_source = source;
+        player.m_sourceGeneration = player.m_generation;
+        player.fail("test failure");
+        QVERIFY(player.m_source.isEmpty());
+        QVERIFY(player.streamUrl().isEmpty());
     }
     void publicState() {
         MusicPlayer player;

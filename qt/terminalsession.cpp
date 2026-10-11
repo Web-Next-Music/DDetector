@@ -43,20 +43,20 @@ bool TerminalSession::start(const QString &directory) {
     if (m_running) return true;
 #ifdef Q_OS_WIN
     Q_UNUSED(directory);
-    setError("Embedded terminal is Unix-only; a Windows ConPTY backend is not implemented.");
+    setError("Embedded terminal is Unix-only; a Windows ConPTY backend is not implemented");
     return false;
 #else
     if (!qobject_cast<QApplication *>(QCoreApplication::instance())) {
-        setError("Embedded terminal requires QApplication, not QGuiApplication.");
+        setError("Embedded terminal requires QApplication, not QGuiApplication");
         return false;
     }
     const QString root = QFileInfo(directory).canonicalFilePath();
     if (root.isEmpty() || !QFileInfo(root).isDir()) {
-        setError("Terminal working directory must be an existing directory.");
+        setError("Terminal working directory must be an existing directory");
         return false;
     }
     m_shell = defaultShell();
-    if (m_shell.isEmpty()) { setError("No executable system shell was found."); return false; }
+    if (m_shell.isEmpty()) { setError("No executable system shell was found"); return false; }
     // A completed session cannot be restarted. Keep its screen until this point.
     delete m_widget;
     m_widget = new QTermWidget(0);
@@ -101,9 +101,9 @@ bool TerminalSession::start(const QString &directory) {
 }
 
 bool TerminalSession::sendText(const QString &text) {
-    if (!m_running) { setError("Shell is not running."); return false; }
+    if (!m_running) { setError("Shell is not running"); return false; }
     if (text.toUtf8().size() > 64 * 1024) {
-        setError("Terminal input is limited to 64 KiB per call."); return false;
+        setError("Terminal input is limited to 64 KiB per call"); return false;
     }
 #ifndef Q_OS_WIN
     m_widget->sendText(text);

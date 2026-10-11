@@ -17,6 +17,8 @@
 #include <QAbstractItemModelTester>
 #include <QClipboard>
 #include <QFile>
+#include <QDataStream>
+#include <QMediaPlayer>
 #include <QSettings>
 #include <sys/stat.h>
 #include <QDirIterator>
@@ -27,6 +29,7 @@
 #include <QPersistentModelIndex>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlProperty>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QQuickItem>
@@ -150,6 +153,919 @@ public:
         return result == 0 && shutdown.wasRequested() && quitting && flushed ? 0 : 13;
     }
 private slots:
+    void censorBridgeAndView() {
+        MockBackend server;
+        QJsonObject censor{{"configured", true}, {"paused", false}, {"settings", QJsonObject{}},
+            {"jobs", QJsonArray{QJsonObject{{"id", "job-1"}, {"status", "running"}, {"stage", "analysis"},
+                {"request", QJsonObject{{"id", "request-1"}, {"track_id", 42}, {"title", "Track"}, {"artist", "Artist"}}},
+                {"result", QJsonObject{{"duration_seconds", 12}, {"waveform", QJsonArray{0.2, 0.8}}}},
+                {"candidates", QJsonArray{QJsonObject{{"id", "candidate-1"}, {"title", "Original"}}}}}}}};
+        QJsonObject command;
+        bool unavailable = false;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (!request.startsWith("GET /api/censor/state ") && !request.startsWith("POST /api/censor/control ")) return std::nullopt;
+            const bool get = request.startsWith("GET ");
+            if (!get) command = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+            const QByteArray data = QJsonDocument(censor).toJson(QJsonDocument::Compact);
+            return QByteArray(unavailable ? "HTTP/1.1 404 Not Found\r\n" : "HTTP/1.1 200 OK\r\n")
+                + "Connection: close\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(data.size()) + "\r\n\r\n" + data;
+        };
+        Bridge bridge(server.url(), "censor-test-key");
+        QTRY_VERIFY(bridge.censorState().value("configured").toBool());
+        QTRY_VERIFY(!bridge.state().isEmpty());
+        const auto normalState = bridge.state();
+        bridge.censorCommand("approve", {{"id", "job-1"}, {"candidate_id", "candidate-1"}, {"action", "stop"}});
+        QTRY_COMPARE(command.value("action").toString(), QString("approve"));
+        QCOMPARE(command.value("candidate_id").toString(), QString("candidate-1"));
+        QTRY_VERIFY(!bridge.censorBusy());
+        QCOMPARE(bridge.state(), normalState);
+        for (const QString &action : {"fetch", "start", "pause", "resume", "stop", "retry", "analyze", "search", "approve", "reject", "defer", "rollback", "settings"}) {
+            bridge.censorCommand(action, {{"id", "job-1"}});
+            QTRY_COMPARE(command.value("action").toString(), action);
+            QTRY_VERIFY(!bridge.censorBusy());
+        }
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/CensorDetector.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> view(component.createWithInitialProperties({
+            {"bridge", QVariant::fromValue(&bridge)}, {"width", 640}, {"height", 700}}));
+        QVERIFY2(view, qPrintable(component.errorString()));
+        QVERIFY(view->setProperty("selectedId", "job-1"));
+        QCOMPARE(view->property("job").toMap().value("id").toString(), QString("job-1"));
+        QVERIFY(view->setProperty("candidateId", "candidate-1"));
+        QCOMPARE(view->property("candidate").toMap().value("id").toString(), QString("candidate-1"));
+        auto progress = view->findChild<QQuickItem *>("censorAnalysisProgress");
+        auto settings = view->findChild<QQuickItem *>("censorSettingsPanel");
+        QVERIFY(progress && settings);
+        auto scrollViewport = view->findChild<QQuickItem *>("censorScrollViewport");
+        auto scrollShadow = view->findChild<QQuickItem *>("censorScrollEdgeShadow");
+        auto topShadow = scrollShadow ? scrollShadow->findChild<QQuickItem *>("scrollTopEdgeShadow") : nullptr;
+        auto bottomShadow = scrollShadow ? scrollShadow->findChild<QQuickItem *>("scrollBottomEdgeShadow") : nullptr;
+        QVERIFY(scrollViewport && scrollShadow && topShadow && bottomShadow);
+        QTRY_VERIFY(scrollShadow->isVisible());
+        auto viewItem = qobject_cast<QQuickItem *>(view.data());
+        QVERIFY(viewItem);
+        QCOMPARE(scrollViewport->mapToItem(viewItem, QPointF()), QPointF(16, 16));
+        QCOMPARE(scrollViewport->width(), viewItem->width() - 32);
+        QCOMPARE(scrollViewport->height(), viewItem->height() - 32);
+        QCOMPARE(scrollShadow->mapToItem(viewItem, QPointF()), QPointF(16, 16));
+        QCOMPARE(scrollShadow->width(), scrollViewport->width());
+        QCOMPARE(scrollShadow->height(), scrollViewport->height());
+        QVERIFY(!scrollShadow->isEnabled());
+        QCOMPARE(scrollShadow->property("shadowColor").value<QColor>(), QColor("#0c0c0e"));
+        QCOMPARE(topShadow->height(), 24.0);
+        QCOMPARE(bottomShadow->height(), 24.0);
+        QCOMPARE(topShadow->y(), 0.0);
+        QCOMPARE(bottomShadow->y() + bottomShadow->height(), scrollShadow->height());
+        QTRY_VERIFY(progress->isVisible());
+        QVERIFY(progress->mapToItem(qobject_cast<QQuickItem *>(view.data()), QPointF()).y()
+                < settings->mapToItem(qobject_cast<QQuickItem *>(view.data()), QPointF()).y());
+        unavailable = true;
+        bridge.censorRequest();
+        QTRY_VERIFY(bridge.censorState().value("error").toString().contains("unavailable"));
+        QCOMPARE(bridge.connectionError(), QString());
+        QCOMPARE(bridge.state(), normalState);
+        unavailable = false;
+        censor.insert("configured", false);
+        bridge.censorRequest();
+        QTRY_VERIFY(!bridge.censorState().value("configured").toBool());
+        QVERIFY(!view->property("configured").toBool());
+        QVERIFY(bridge.censorState().value("error").toString().isEmpty());
+    }
+    void repositoryDirectoryValidation() {
+        Config config(QString{});
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QVERIFY(config.repositoryDirectoryExists(directory.path()));
+        QVERIFY(config.repositoryDirectoryExists("  " + directory.path() + "  "));
+        QVERIFY(!config.repositoryDirectoryExists(directory.path() + "/missing"));
+        QVERIFY(!config.repositoryDirectoryExists(""));
+        QVERIFY(!config.repositoryDirectoryExists("relative/path"));
+    }
+    void nativeRepositoryConfiguration() {
+            MockBackend server;
+            Config config;
+            QTemporaryDir firstRoot, secondRoot;
+            QVERIFY(firstRoot.isValid()); QVERIFY(secondRoot.isValid());
+            for (const auto &path : {firstRoot.path(), secondRoot.path()}) {
+                QProcess git; git.start("git", {"init", "-q", path});
+                QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+            }
+            config.setRepositoryPath(firstRoot.path() + "/");
+            QStringList actions;
+            QString configuredPath;
+            bool repositoryReady = false;
+            QJsonObject lastCommand;
+            server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+                if (!request.startsWith("GET /api/censor/state ") && !request.startsWith("POST /api/censor/control ")) return std::nullopt;
+                if (request.startsWith("POST ")) {
+                    const auto command = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+                    lastCommand = command;
+                    actions.append(command.value("action").toString());
+                    if (actions.last() == "native_configure") {
+                        configuredPath = command.value("repository_path").toString();
+                        repositoryReady = true;
+                    }
+                }
+                const auto data = QJsonDocument(QJsonObject{{"native", true}, {"configured", true}, {"native_repository_ready", repositoryReady}, {"repo_path", configuredPath}, {"jobs", QJsonArray{}}}).toJson(QJsonDocument::Compact);
+                return "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(data.size()) + "\r\n\r\n" + data;
+            };
+            Bridge bridge(server.url(), "native-test-key", nullptr, &config);
+            QTRY_VERIFY(bridge.censorState().value("native").toBool());
+            bridge.censorRequest();
+            QTRY_VERIFY(!bridge.m_censorPolling);
+            QVERIFY(actions.isEmpty());
+            QVERIFY(configuredPath.isEmpty());
+            GitWorkspace workspace;
+            Uploader uploader;
+            RepositoryCoordinator repositories(config, workspace, uploader, &bridge);
+            bridge.setNativePublicationValidator([] { return QString("Terminal is running"); });
+            QTRY_VERIFY(!workspace.resolving());
+            QCOMPARE(workspace.rootPath(), QFileInfo(firstRoot.path()).canonicalFilePath());
+            bridge.configureNativeRepository();
+            QVERIFY(actions.isEmpty());
+            bridge.setNativePublicationValidator([] { return QString(); });
+            QTRY_COMPARE(configuredPath, QFileInfo(firstRoot.path()).canonicalFilePath());
+            QTRY_VERIFY(!bridge.censorBusy());
+            QCOMPARE(actions, QStringList{"native_configure"});
+            config.setRepositoryPath(secondRoot.path() + "/");
+            QTRY_COMPARE(configuredPath, QFileInfo(secondRoot.path()).canonicalFilePath());
+            QTRY_VERIFY(!bridge.censorBusy());
+            bridge.censorCommand("approve", {{"id", "review"}, {"candidate_id", "candidate"}});
+            QTRY_VERIFY(actions.contains("approve"));
+            QCOMPARE(actions, QStringList({"native_configure", "native_configure", "approve"}));
+                        QTRY_VERIFY(!bridge.censorBusy());
+                        const int beforeRecovery = actions.size();
+                        repositoryReady = false;
+                        QTRY_VERIFY(actions.size() > beforeRecovery);
+                        QTRY_VERIFY(!bridge.m_nativeConfiguredPath.isEmpty());
+                        QTRY_VERIFY(bridge.censorState().value("native_repository_ready").toBool());
+                        QTRY_VERIFY(!bridge.censorBusy());
+                        QCOMPARE(actions.last(), QString("native_configure"));
+                        bridge.m_nativeConfiguredPath.clear();
+                        const int beforeFallback = actions.size();
+                        bridge.censorCommand("approve", {{"id", "review"}, {"candidate_id", "candidate"}});
+                        QTRY_COMPARE(actions.size(), beforeFallback + 2);
+                        QCOMPARE(actions.at(beforeFallback), QString("native_configure"));
+                        QCOMPARE(actions.last(), QString("approve"));
+                        QCOMPARE(configuredPath, QFileInfo(secondRoot.path()).canonicalFilePath());
+                        QTRY_VERIFY(!bridge.censorBusy());
+                        bridge.censorCommand("check_track", {{"track_id", "9007199254740991"}});
+                        QTRY_COMPARE(actions.last(), QString("check_track"));
+                        QTRY_VERIFY(!bridge.censorBusy());
+                        QVERIFY(lastCommand.value("track_id").isDouble());
+                        QCOMPARE(lastCommand.value("track_id").toInteger(), qint64(9007199254740991LL));
+                        const int validCount = actions.size();
+                        QSignalSpy finished(&bridge, &Bridge::censorCommandFinished);
+                        for (const auto &id : QStringList{"0", "-1", "1.5", "9007199254740992", "9223372036854775807", "invalid"})
+                            bridge.censorCommand("check_track", {{"track_id", id}});
+                        QCOMPARE(finished.count(), 6);
+                        QCOMPARE(actions.size(), validCount);
+            QQmlEngine engine;
+            QQmlComponent playerComponent(&engine);
+            playerComponent.setData("import QtQml; QtObject { property string trackId: \"42\" }", QUrl());
+            QScopedPointer<QObject> player(playerComponent.create());
+            QVERIFY(player);
+            QQmlComponent component(&engine, QUrl("qrc:/CensorDetector.qml"));
+            QScopedPointer<QObject> view(component.createWithInitialProperties({{"bridge", QVariant::fromValue(&bridge)}, {"normalPlayer", QVariant::fromValue(player.data())}}));
+            QVERIFY2(view, qPrintable(component.errorString()));
+            bridge.m_censorState.insert("repository_error", "Repository root is unavailable");
+            bridge.m_censorState.insert("error", "Analysis failed");
+            emit bridge.censorStateChanged();
+            QVERIFY(!view->findChild<QObject *>("censorRepositoryError"));
+            QVERIFY(!view->findChild<QObject *>("censorOperationError"));
+            bridge.m_censorState.remove("repository_error");
+            emit bridge.censorStateChanged();
+            auto reason = [&] {
+                QVariant result;
+                QMetaObject::invokeMethod(view.data(), "disabledReason", Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, QString("check_track")));
+                return result.toString();
+            };
+            QVERIFY(view->property("jobs").toList().isEmpty());
+            QVERIFY(reason().isEmpty());
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "command", Q_ARG(QVariant, QString("check_track")), Q_ARG(QVariant, QVariantMap{})));
+            QTRY_COMPARE(lastCommand.value("track_id").toInteger(), qint64(42));
+            QTRY_VERIFY(!bridge.censorBusy());
+            player->setProperty("trackId", "9007199254740993");
+            QVERIFY(reason().contains("safe integer"));
+            player->setProperty("trackId", "");
+            QVERIFY(!reason().isEmpty());
+            bridge.m_censorState.insert("native", false);
+            emit bridge.censorStateChanged();
+            QVERIFY(!reason().isEmpty());
+            bridge.m_nativeConfiguredPath.clear();
+            bridge.m_nativeAttemptedPath.clear();
+            const int remoteCount = actions.size();
+            bridge.configureNativeRepository();
+            QCOMPARE(actions.size(), remoteCount);
+        }
+        void nativePublicationSafety() {
+            MockBackend server;
+            Bridge bridge(server.url(), "native-test-key");
+            bridge.m_nativeRecoveryPending = false;
+            bridge.m_censorState = {{"native", false}, {"busy", true}, {"running", true}};
+            QVERIFY(!bridge.nativePublicationBusy());
+            bridge.m_censorState.insert("native", true);
+            QVERIFY(bridge.nativePublicationBusy());
+            bridge.m_censorState.insert("busy", false);
+            bridge.m_censorState.insert("running", false);
+            bridge.m_censorState.insert("jobs", QJsonArray{QJsonObject{{"status", "local_saved"}}});
+            QVERIFY(!bridge.nativePublicationBusy());
+            bridge.m_censorState.insert("jobs", QJsonArray{QJsonObject{{"status", "publishing"}}});
+            QVERIFY(bridge.nativePublicationBusy());
+        }
+        void censorActualDtoAndCandidateSelection() {
+        MockBackend server;
+        const QJsonObject strongComparison{{"comparable", true}, {"offset_seconds", 7}, {"correlation", .9},
+            {"confidence", .95}, {"confidence_class", "strong_match"}, {"overlap_seconds", 12},
+            {"spectral_similarity", .98}, {"spectral_match_fraction", .95}};
+        const QJsonObject interval{{"start_seconds", 3}, {"end_seconds", 4}, {"reason", "restored vocal"},
+            {"status", "reference_restoration_candidate"}, {"restoration", QJsonObject{
+                {"confidence", .8}, {"reference_start_seconds", 1}, {"reference_end_seconds", 2}}}};
+        const QJsonObject best{{"duration_seconds", 12}, {"comparison", strongComparison},
+            {"waveform", QJsonObject{{"samples", QJsonArray{.25, .5}}}},
+            {"suspicious_intervals", QJsonArray{interval}}, {"intervals_truncated", false},
+            {"warnings", QJsonArray{"Candidate analysis completed"}}};
+        auto selectedComparison = strongComparison;
+        selectedComparison.insert("offset_seconds", -2);
+        selectedComparison.insert("confidence", .3);
+        QJsonObject selectedResult{{"duration_seconds", 12}, {"comparison", selectedComparison},
+            {"suspicious_intervals", QJsonArray{}}, {"intervals_truncated", false}};
+        QJsonObject review{{"id", "review"}, {"status", "review_required"}, {"stage", "review"},
+            {"metadata_warning", "MusicBrainz metadata unavailable; audio search continues. <literal>"},
+            {"request", QJsonObject{{"id", "request-review"}, {"track_id", 42}, {"title", "Review"}}},
+            {"result", best}, {"candidates", QJsonArray{
+                QJsonObject{{"id", "best"}, {"title", "Best"}, {"result", best}, {"full_audio", true}, {"downloadable", true}, {"url", "https://127.0.0.1:1/best.mp3"}},
+                QJsonObject{{"id", "selected"}, {"title", "Selected"}, {"result", selectedResult}, {"full_audio", true}, {"downloadable", true}, {"url", "https://127.0.0.1:1/selected.mp3"}},
+                QJsonObject{{"id", "unanalyzed"}, {"title", "Unanalyzed"}, {"error", "Comparison failed"}, {"full_audio", true}, {"downloadable", true}, {"url", "https://127.0.0.1:1/unanalyzed.mp3"}}}}};
+        QJsonObject failed1{{"id", "failed-1"}, {"status", "failed"}, {"error", "Audio unavailable"},
+            {"request", QJsonObject{{"id", "request-1"}, {"title", "Failed one"}}}};
+        auto failed2 = failed1; failed2.insert("id", "failed-2");
+        auto uncertain = review;
+        uncertain.insert("id", "uncertain"); uncertain.insert("error", "Publication not acknowledged");
+        uncertain.insert("publication_key", "saved-key"); uncertain.insert("selected_candidate", "best");
+        const QJsonObject stats{{"total", 91}, {"pending", 10}, {"running", 2}, {"censorship_found", 9}, {"suitable_mp3", 6}, {"review_required", 8},
+            {"succeeded", 20}, {"failed", 5}, {"rejected", 4}, {"deferred", 3}, {"stopped", 7}, {"rolled_back", 1}};
+        QJsonObject censor{{"configured", true}, {"running", false}, {"busy", false}, {"paused", false},
+            {"metadata_configured", false}, {"metadata_warning", "MusicBrainz metadata disabled: set FCKCENSOR_MUSICBRAINZ_USER_AGENT. <literal>"},
+            {"rollback_supported", false}, {"settings", QJsonObject{{"workers", 3}, {"auto_replace", false}}},
+            {"stats", stats}, {"jobs", QJsonArray{review, failed1, failed2, uncertain}}};
+        QList<QJsonObject> commands;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (!request.startsWith("GET /api/censor/state ") && !request.startsWith("POST /api/censor/control ")) return std::nullopt;
+            if (request.startsWith("POST ")) {
+                const auto command = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+                commands.append(command);
+                if (command.value("action") == "retry") {
+                    auto jobs = censor.value("jobs").toArray();
+                    for (int n = 0; n < jobs.size(); ++n) {
+                        auto j = jobs[n].toObject();
+                        if (j.value("id") == command.value("id")) { j.insert("status", "pending"); j.remove("error"); jobs[n] = j; }
+                    }
+                    censor.insert("jobs", jobs);
+                }
+            }
+            const auto data = QJsonDocument(censor).toJson(QJsonDocument::Compact);
+            return "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "
+                + QByteArray::number(data.size()) + "\r\n\r\n" + data;
+        };
+        Bridge bridge(server.url(), "censor-test-key");
+        QTRY_VERIFY(bridge.censorState().value("configured").toBool());
+        QQmlEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        QQmlComponent component(&engine, QUrl("qrc:/CensorDetector.qml"));
+        QScopedPointer<QObject> view(component.createWithInitialProperties({{"bridge", QVariant::fromValue(&bridge)}, {"width", 640}, {"height", 700}}));
+        QVERIFY2(view, qPrintable(component.errorString()));
+        auto reason = [&](const QString &action) {
+            QVariant value;
+            if (!QMetaObject::invokeMethod(view.data(), "disabledReason", Q_RETURN_ARG(QVariant, value), Q_ARG(QVariant, action))) return QString("invoke failed");
+            return value.toString();
+        };
+        auto publishState = [&] { bridge.m_censorState = censor; emit bridge.censorStateChanged(); };
+        const QStringList removedNames{"censorMetadataStatus", "censorMetadataWarning", "censorJobMetadataWarning",
+            "censorAnalysisWarnings", "censorExcerpt-0", "censorExcerpt-1", "censorCandidateDetails-page", "censorCandidateMetadata-page"};
+        for (const auto &name : removedNames)
+            QVERIFY2(!visualChild(qobject_cast<QQuickItem *>(view.data()), name), qPrintable(name));
+        for (auto it = stats.begin(); it != stats.end(); ++it)
+            QVERIFY(!visualChild(qobject_cast<QQuickItem *>(view.data()), "censorStat-" + it.key()));
+        int playToggles = 0;
+        for (auto item : view->findChildren<QQuickItem *>()) {
+            const auto glyph = item->property("glyph").toString();
+            if ((glyph == "play" || glyph == "pause")) ++playToggles;
+        }
+        QCOMPARE(playToggles, 1);
+        QVERIFY(view->setProperty("selectedId", "review"));
+        QVERIFY(!visualChild(qobject_cast<QQuickItem *>(view.data()), "censorJobMetadataWarning"));
+        QVERIFY(reason("analyze").isEmpty()); // Metadata warnings must not disable audio work.
+        QCOMPARE(view->property("offsetMs").toDouble(), 0.0); // No candidate selected: never borrow best alignment.
+        auto switchCandidate = [&](int step) {
+            return QMetaObject::invokeMethod(view.data(), "switchCandidate", Q_ARG(QVariant, step));
+        };
+        QVERIFY(switchCandidate(1));
+        QCOMPARE(view->property("candidateId").toString(), QString("best"));
+        QCOMPARE(view->property("candidateIndex").toInt(), 0);
+        QCOMPARE(view->property("comparison").toMap(), strongComparison.toVariantMap());
+        QCOMPARE(view->property("candidateAudioUrl").toUrl(), QUrl("https://127.0.0.1:1/best.mp3"));
+        QVERIFY(switchCandidate(-1)); // First previous selects the original.
+        QVERIFY(view->property("candidateId").toString().isEmpty());
+        QCOMPARE(view->property("candidateIndex").toInt(), -1);
+        QVERIFY(view->property("comparison").toMap().isEmpty());
+        QVERIFY(switchCandidate(-1)); // Original previous selects the last candidate.
+        QCOMPARE(view->property("candidateId").toString(), QString("unanalyzed"));
+        QCOMPARE(view->property("candidateIndex").toInt(), 2);
+        QVERIFY(view->property("comparison").toMap().isEmpty());
+        QCOMPARE(view->property("offsetMs").toDouble(), 0.0);
+        QCOMPARE(reason("approve"), QString("Comparison failed"));
+        QVERIFY(switchCandidate(1)); // Last next selects the original.
+        QVERIFY(view->property("candidateId").toString().isEmpty());
+        QCOMPARE(view->property("candidateIndex").toInt(), -1);
+        QVERIFY(switchCandidate(1)); // Original next selects the first.
+        QCOMPARE(view->property("candidateId").toString(), QString("best"));
+        QVERIFY(switchCandidate(1));
+        QCOMPARE(view->property("candidateId").toString(), QString("selected"));
+        QCOMPARE(view->property("candidateIndex").toInt(), 1);
+        QCOMPARE(view->property("comparison").toMap(), selectedComparison.toVariantMap());
+        QCOMPARE(view->property("candidateAudioUrl").toUrl(), QUrl("https://127.0.0.1:1/selected.mp3"));
+        QCOMPARE(view->property("offsetMs").toDouble(), -2000.0);
+        QCOMPARE(view->property("result").toMap().value("comparison").toMap().value("confidence").toDouble(), .3);
+        QVERIFY(!reason("approve").isEmpty()); // Strong best candidate cannot authorize the weaker selected one.
+        QVariant position;
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "candidatePosition", Q_RETURN_ARG(QVariant, position), Q_ARG(QVariant, 4000)));
+        QCOMPARE(position.toDouble(), 6000.0);
+        QCOMPARE(view->property("waveformData").toMap().value("samples").toList().size(), 2); // Real source waveform fallback.
+        const QJsonArray nativeWaveform{QJsonObject{{"start_seconds", 0}, {"end_seconds", 12}, {"min", -.1}, {"max", .6}, {"rms", .2}}};
+        selectedResult.insert("waveform", nativeWaveform);
+        selectedComparison.insert("confidence", .95);
+        selectedResult.insert("comparison", selectedComparison);
+        selectedResult.insert("suspicious_intervals", QJsonArray{interval});
+        auto candidates = review.value("candidates").toArray();
+        auto selected = candidates[1].toObject(); selected.insert("result", selectedResult); candidates[1] = selected;
+        review.insert("candidates", candidates);
+        auto jobs = censor.value("jobs").toArray(); jobs[0] = review; censor.insert("jobs", jobs); publishState();
+        QCOMPARE(view->property("offsetMs").toDouble(), -2000.0);
+        QCOMPARE(view->property("waveformData").toList().first().toMap().value("max").toDouble(), .6);
+        QCOMPARE(view->property("waveformDuration").toDouble(), 12.0);
+        QVERIFY(reason("approve").isEmpty());
+        auto canvas = visualChild(qobject_cast<QQuickItem *>(view.data()), "censorWaveform");
+        QVERIFY(canvas);
+        QCOMPARE(canvas->property("samples").toList().first().toMap().value("min").toDouble(), -.1);
+        QCOMPARE(canvas->property("intervals").toList().first().toMap().value("reason").toString(), QString("restored vocal"));
+        QVERIFY(view->setProperty("candidateId", "unanalyzed"));
+        QCOMPARE(view->property("offsetMs").toDouble(), 0.0);
+        QVERIFY(view->property("result").toMap().isEmpty());
+        QCOMPARE(reason("approve"), QString("Comparison failed"));
+        QVERIFY(switchCandidate(-1));
+        QCOMPARE(view->property("candidateId").toString(), QString("selected"));
+        QVERIFY(switchCandidate(-1));
+        QCOMPARE(view->property("candidateId").toString(), QString("best"));
+        QVERIFY(reason("approve").isEmpty());
+        QCOMPARE(view->property("offsetMs").toDouble(), 7000.0);
+        for (const auto &name : removedNames)
+            QVERIFY2(!visualChild(qobject_cast<QQuickItem *>(view.data()), name), qPrintable(name));
+        censor.insert("metadata_configured", true); censor.remove("metadata_warning"); publishState();
+        QVERIFY(!visualChild(qobject_cast<QQuickItem *>(view.data()), "censorMetadataStatus"));
+        QVERIFY(reason("approve").isEmpty());
+        QVERIFY(reason("rollback").contains("does not support"));
+        QVERIFY(!view->findChild<QObject *>("censorAutoReplace"));
+        censor.insert("running", true); publishState();
+        QVERIFY(reason("settings").contains("Pause or stop"));
+        QVERIFY(!view->findChild<QObject *>("censorWorkers")->property("enabled").toBool());
+        censor.insert("running", false); censor.insert("busy", true); publishState();
+        QVERIFY(!reason("analyze").isEmpty()); QVERIFY(reason("pause").isEmpty()); QVERIFY(reason("stop").isEmpty());
+        censor.insert("busy", false); publishState();
+        QVERIFY(view->setProperty("selectedId", "uncertain"));
+        QVERIFY(view->setProperty("candidateId", "selected"));
+        QVERIFY(reason("approve").contains("same previously selected"));
+        QVERIFY(!reason("retry").isEmpty());
+        QVERIFY(view->setProperty("candidateId", "best"));
+        QVERIFY(reason("approve").isEmpty());
+        QVERIFY(view->setProperty("selectedId", ""));
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "retryErrors"));
+        QTRY_COMPARE(commands.size(), 2);
+        QTRY_VERIFY(!bridge.censorBusy());
+        QCOMPARE(commands[0].value("action").toString(), QString("retry"));
+        QCOMPARE(commands[0].value("id").toString(), QString("failed-1"));
+        QCOMPARE(commands[1].value("id").toString(), QString("failed-2"));
+        QVERIFY(!commands[0].contains("candidate_id"));
+        const QJsonArray reviewOnly{
+            QJsonObject{{"id", "page"}, {"title", "Provider page"}, {"url", "https://provider.example/track/1"}, {"provider", "Page provider"}, {"duration_seconds", 42}, {"full_audio", false}, {"downloadable", false}, {"result", best}, {"metadata", QJsonObject{{"kind", "page"}, {"content_type", "text/html"}, {"note", "<b>literal</b>"}}}},
+            QJsonObject{{"id", "preview"}, {"url", "https://provider.example/preview.mp3"}, {"full_audio", false}, {"downloadable", true}, {"result", best}, {"metadata", QJsonObject{{"kind", "preview"}}}},
+            QJsonObject{{"id", "stream"}, {"url", "https://provider.example/stream"}, {"full_audio", true}, {"downloadable", false}, {"result", best}},
+            QJsonObject{{"id", "mislabelled"}, {"url", "https://provider.example/page"}, {"full_audio", true}, {"downloadable", true}, {"result", best}, {"metadata", QJsonObject{{"kind", " page "}}}},
+            QJsonObject{{"id", "html"}, {"url", "https://provider.example/html"}, {"full_audio", true}, {"downloadable", true}, {"result", best}, {"metadata", QJsonObject{{"content_type", " Text/HTML "}}}}};
+        candidates = review.value("candidates").toArray();
+        for (const auto &c : reviewOnly) candidates.append(c);
+        review.insert("candidates", candidates);
+        jobs = censor.value("jobs").toArray(); jobs[0] = review; censor.insert("jobs", jobs); publishState();
+        QVERIFY(view->setProperty("selectedId", "review"));
+        auto referencePlayer = view->findChild<QObject *>("censorCandidatePlayer");
+        QVERIFY(referencePlayer);
+        for (const auto &c : reviewOnly) {
+            view->setProperty("candidateId", c.toObject().value("id").toString());
+            QVERIFY(view->property("candidateAudioUrl").toUrl().isEmpty());
+            QVERIFY(referencePlayer->property("source").toUrl().isEmpty());
+            QVERIFY(reason("approve").contains("review-only"));
+        }
+        QVERIFY(view->setProperty("candidateId", "best"));
+        QVERIFY(switchCandidate(-1));
+        QVERIFY(view->property("candidateId").toString().isEmpty());
+        QCOMPARE(view->property("candidateIndex").toInt(), -1);
+        QVERIFY(switchCandidate(-1));
+        QCOMPARE(view->property("candidateId").toString(), QString("html"));
+        QCOMPARE(view->property("comparison").toMap(), strongComparison.toVariantMap());
+        QVERIFY(view->property("candidateAudioUrl").toUrl().isEmpty());
+        QVERIFY(referencePlayer->property("source").toUrl().isEmpty());
+        QVERIFY(!view->property("listenCandidate").toBool());
+        QVERIFY(reason("approve").contains("review-only"));
+        QVERIFY(switchCandidate(1));
+        QVERIFY(view->property("candidateId").toString().isEmpty());
+        QVERIFY(switchCandidate(1));
+        QCOMPARE(view->property("candidateId").toString(), QString("best"));
+        QCOMPARE(view->property("candidateAudioUrl").toUrl(), QUrl("https://127.0.0.1:1/best.mp3"));
+        QCOMPARE(referencePlayer->property("source").toUrl(), view->property("candidateAudioUrl").toUrl());
+        QVERIFY(view->property("listenCandidate").toBool());
+        QVERIFY(reason("approve").isEmpty());
+        QVERIFY(view->setProperty("candidateId", "page"));
+        QVariant details, metadata;
+        const QVariant page = reviewOnly.first().toObject().toVariantMap();
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "candidateDetails", Q_RETURN_ARG(QVariant, details), Q_ARG(QVariant, page)));
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "candidateMetadata", Q_RETURN_ARG(QVariant, metadata), Q_ARG(QVariant, page)));
+        QVERIFY(details.toString().contains("Web page"));
+        QVERIFY(details.toString().contains("Page provider"));
+        QVERIFY(details.toString().contains("42.00 s"));
+        QVERIFY(metadata.toString().contains("note: <b>literal</b>"));
+        view->setProperty("candidateId", "best");
+        auto settings = censor.value("settings").toObject(); settings.insert("min_confidence", .99); censor.insert("settings", settings); publishState();
+        QVERIFY(reason("approve").contains("configured minimum"));
+        settings.insert("min_confidence", .1); censor.insert("settings", settings); publishState();
+        QVERIFY(reason("approve").isEmpty());
+        QQmlComponent playerComponent(&engine);
+        playerComponent.setData("import QtQml; QtObject { property bool playing: true; property int toggles: 0; function toggle() { playing = false; toggles++; } }", QUrl());
+        QScopedPointer<QObject> normalPlayer(playerComponent.create());
+        QVERIFY(normalPlayer);
+        view->setProperty("normalPlayer", QVariant::fromValue(normalPlayer.data()));
+        view->setProperty("playing", true);
+        QCOMPARE(normalPlayer->property("playing").toBool(), true);
+        QCOMPARE(normalPlayer->property("toggles").toInt(), 0); // Intent alone must not pause the main player.
+        view->setProperty("playing", false);
+        auto waveformSeek = visualChild(qobject_cast<QQuickItem *>(view.data()), "censorWaveformSeek");
+        QVERIFY(waveformSeek);
+        QCOMPARE(view->property("waveformDuration").toDouble(), 12.0);
+        QVERIFY(!waveformSeek->property("enabled").toBool()); // Empty original URL cannot enable seeking.
+        for (double fraction : {-1.0, 0.5, 2.0}) {
+            QVariant target;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "waveformTarget", Q_RETURN_ARG(QVariant, target), Q_ARG(QVariant, fraction)));
+            QCOMPARE(target.toDouble(), fraction < 0 ? 0.0 : fraction > 1 ? 12000.0 : 6000.0);
+        }
+        for (double fraction : {qQNaN(), qInf(), -qInf()}) {
+            QVariant target;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "waveformTarget", Q_RETURN_ARG(QVariant, target), Q_ARG(QVariant, fraction)));
+            QCOMPARE(target.toDouble(), 0.0);
+        }
+
+        QVERIFY(view->setProperty("selectedId", "failed-1"));
+        QCOMPARE(view->property("waveformDuration").toDouble(), 0.0);
+        QVERIFY(!waveformSeek->property("enabled").toBool());
+        for (double fraction : {-1.0, 0.5, 2.0}) {
+            QVariant target;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "waveformTarget", Q_RETURN_ARG(QVariant, target), Q_ARG(QVariant, fraction)));
+            QCOMPARE(target.toDouble(), 0.0);
+        }
+        for (double fraction : {-0.5, 0.5, 1.5}) {
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "waveformSeek", Q_ARG(QVariant, fraction)));
+            QCOMPARE(referencePlayer->property("position").toLongLong(), 0LL);
+            QVERIFY(!view->property("playing").toBool());
+        }
+        for (int step : {1, -1}) {
+            QVERIFY(switchCandidate(step));
+            QCOMPARE(view->property("selectedId").toString(), QString("failed-1"));
+            QVERIFY(view->property("candidateId").toString().isEmpty());
+            QCOMPARE(view->property("candidateIndex").toInt(), -1);
+            QVERIFY(view->property("comparison").toMap().isEmpty());
+            QVERIFY(view->property("candidateAudioUrl").toUrl().isEmpty());
+            QVERIFY(referencePlayer->property("source").toUrl().isEmpty());
+            QVERIFY(!view->property("listenCandidate").toBool());
+            QVERIFY(!reason("approve").isEmpty());
+        }
+        QVERIFY(view->setProperty("selectedId", "review"));
+        QVERIFY(switchCandidate(-1)); // No selection: previous selects the last candidate.
+        QCOMPARE(view->property("candidateId").toString(), QString("html"));
+        QCOMPARE(view->property("selectedId").toString(), QString("review"));
+        QVERIFY(view->property("candidateAudioUrl").toUrl().isEmpty());
+        QVERIFY(reason("approve").contains("review-only"));
+        QCOMPARE(warnings.count(), 0);
+    }
+    void censorOriginalPlaybackSurvivesDetailRefresh() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile wav(directory.filePath("original.wav"));
+        QVERIFY(wav.open(QIODevice::WriteOnly));
+        QDataStream pcm(&wav);
+        pcm.setByteOrder(QDataStream::LittleEndian);
+        const quint32 sampleRate = 16000;
+        const quint32 dataSize = sampleRate * 30 * 2;
+        pcm.writeRawData("RIFF", 4); pcm << quint32(36 + dataSize);
+        pcm.writeRawData("WAVEfmt ", 8); pcm << quint32(16) << quint16(1) << quint16(1)
+            << sampleRate << quint32(sampleRate * 2) << quint16(2) << quint16(16);
+        pcm.writeRawData("data", 4); pcm << dataSize;
+        for (quint32 i = 0; i < dataSize / 2; ++i)
+            pcm << qint16((i % 80 < 40) ? 1000 : -1000);
+        QCOMPARE(pcm.status(), QDataStream::Ok);
+        wav.close();
+        const QUrl source = QUrl::fromLocalFile(wav.fileName());
+        QQmlEngine engine;
+        QQmlComponent playerComponent(&engine);
+        playerComponent.setData(R"(
+            import QtQml
+            QtObject {
+                property string trackId: "42"
+                property string title: "Synthetic original"
+                property string artist: "Fixture"
+                property url streamUrl
+                property var spectrumLevels: []
+                property var spectrumPeaks: []
+                property bool playing: true
+                property int pauses: 0
+                signal stateChanged()
+                function pause() { playing = false; pauses++; }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> mainPlayer(playerComponent.createWithInitialProperties({{"streamUrl", source}}));
+        QVERIFY2(mainPlayer, qPrintable(playerComponent.errorString()));
+        QQmlComponent component(&engine, QUrl("qrc:/CensorDetector.qml"));
+        const QVariantMap job{{"id", "detail"}, {"status", "review_required"},
+            {"request", QVariantMap{{"track_id", 42}, {"title", "Fixture"}, {"original_url", source}}},
+            {"candidates", QVariantList{}}};
+        QScopedPointer<QObject> view(component.createWithInitialProperties({
+            {"normalPlayer", QVariant::fromValue(mainPlayer.data())},
+            {"state", QVariantMap{{"configured", true}, {"jobs", QVariantList{job}}}},
+            {"width", 640}, {"height", 700}}));
+        QVERIFY2(view, qPrintable(component.errorString()));
+        QCOMPARE(view->property("selectedId").toString(), QString("detail"));
+        QVERIFY(view->property("candidateId").toString().isEmpty());
+        auto original = view->findChild<QMediaPlayer *>("censorOriginalPlayer");
+        QVERIFY(original);
+        QTRY_VERIFY(original->duration() > 0);
+        QCOMPARE(original->source(), source);
+        QVERIFY(view->setProperty("playing", true));
+        QCOMPARE(mainPlayer->property("pauses").toInt(), 0);
+        QVERIFY(view->setProperty("playing", false));
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "togglePlayback"));
+        QTRY_COMPARE(original->playbackState(), QMediaPlayer::PlayingState);
+        QTRY_COMPARE(mainPlayer->property("pauses").toInt(), 1);
+        QVERIFY(!mainPlayer->property("playing").toBool());
+        const auto initialPosition = original->position();
+        // A missing detail is not a new track, and an empty stream URL must not clear the source.
+        QVERIFY(mainPlayer->setProperty("streamUrl", QUrl()));
+        QVERIFY(view->setProperty("job", QVariant()));
+        QVERIFY(QMetaObject::invokeMethod(mainPlayer.data(), "stateChanged"));
+        QCOMPARE(view->property("selectedId").toString(), QString("detail"));
+        QCOMPARE(original->source(), source);
+        QCOMPARE(original->playbackState(), QMediaPlayer::PlayingState);
+        QVERIFY(view->property("playing").toBool());
+        QVERIFY(view->property("candidate").toMap().isEmpty());
+        QTRY_VERIFY(original->position() > initialPosition);
+        QVERIFY(view->setProperty("job", job));
+        QCOMPARE(original->source(), source);
+        QCOMPARE(original->playbackState(), QMediaPlayer::PlayingState);
+        QCOMPARE(mainPlayer->property("pauses").toInt(), 1);
+        QVERIFY(mainPlayer->setProperty("trackId", "43"));
+        QCOMPARE(original->playbackState(), QMediaPlayer::StoppedState);
+        QVERIFY(!view->property("playing").toBool());
+        QVERIFY(view->property("selectedId").toString().isEmpty());
+        QVERIFY(original->source().isEmpty());
+    }
+    void censorLastCandidateFreshPlayback_data() {
+        QTest::addColumn<bool>("refreshDetail");
+        QTest::addColumn<bool>("webAudio");
+        QTest::newRow("fresh-resolve") << false << false;
+        QTest::newRow("transient-detail-and-source-refresh") << true << false;
+        QTest::newRow("unverified-web-audio") << false << true;
+    }
+    void censorLastCandidateFreshPlayback() {
+        QFETCH(bool, refreshDetail);
+        QFETCH(bool, webAudio);
+        const QString lastId = webAudio ? "candidate:web:last" : "last";
+        QQmlEngine engine;
+        QQmlComponent bridgeComponent(&engine);
+        bridgeComponent.setData(R"(
+            import QtQml
+            QtObject {
+                property var censorState: ({ configured: true, native: true, native_repository_ready: true, jobs_total: 1,
+                    jobs: [{ id: "detail", request: { track_id: 42 } }] })
+                property var censorSelectedJob: ({})
+                property bool censorBusy: false
+                property bool busy: false
+                property var requests: []
+                signal censorPlaybackResolved(int requestId, string jobId, string candidateId, url url, string error)
+                function censorSelectJob(id) {}
+                function censorResolvePlayback(jobId, candidateId, requestId) {
+                    requests = requests.concat([{ jobId: jobId, candidateId: candidateId, requestId: requestId }]);
+                }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> bridge(bridgeComponent.create());
+        QVERIFY2(bridge, qPrintable(bridgeComponent.errorString()));
+        const auto candidate = [](const QString &id) {
+            return QVariantMap{{"id", id}, {"full_audio", true}, {"downloadable", true},
+                {"url", "https://stale.invalid/" + id + ".mp3"}};
+        };
+        auto lastCandidate = candidate(lastId);
+        if (webAudio) {
+            lastCandidate["full_audio"] = false;
+            lastCandidate["provider"] = "direct_web";
+            lastCandidate["metadata"] = QVariantMap{{"kind", "audio"}, {"content_type", "audio/mpeg"}};
+        }
+        QVariantMap detail{{"id", "detail"}, {"status", "review_required"},
+            {"request", QVariantMap{{"track_id", 42}, {"original_url", "file:///original-before.wav"}}},
+            {"candidates", QVariantList{candidate("first"), lastCandidate}}};
+        QVERIFY(bridge->setProperty("censorSelectedJob", detail));
+        QQmlComponent component(&engine, QUrl("qrc:/CensorDetector.qml"));
+        QScopedPointer<QObject> view(component.createWithInitialProperties({
+            {"bridge", QVariant::fromValue(bridge.data())}, {"uploadBackend", QVariant::fromValue(bridge.data())},
+            {"selectedId", "detail"}, {"width", 640}, {"height", 700}}));
+        QVERIFY2(view, qPrintable(component.errorString()));
+        auto original = view->findChild<QMediaPlayer *>("censorOriginalPlayer");
+        auto replacement = view->findChild<QMediaPlayer *>("censorCandidatePlayer");
+        QVERIFY(original);
+        QVERIFY(replacement);
+        // Backwards from the original selects the final candidate, including the wrap boundary.
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "switchCandidate", Q_ARG(QVariant, -1)));
+        QCOMPARE(view->property("candidateId").toString(), lastId);
+        if (refreshDetail) {
+            QVERIFY(bridge->setProperty("censorSelectedJob", QVariantMap{}));
+            detail["request"] = QVariantMap{{"track_id", 42}, {"original_url", "file:///original-after.wav"}};
+            QVERIFY(bridge->setProperty("censorSelectedJob", detail));
+            QCOMPARE(original->source(), QUrl("file:///original-after.wav"));
+        }
+        QCOMPARE(view->property("candidateId").toString(), lastId);
+        QVERIFY(view->property("playableSelection").toBool());
+        QVERIFY(view->property("listenCandidate").toBool());
+        if (webAudio) {
+            QVariant reason;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "disabledReason", Q_RETURN_ARG(QVariant, reason), Q_ARG(QVariant, "send_candidate")));
+            QVERIFY(reason.toString().isEmpty());
+            auto approval = view->findChild<QObject *>("censorReviewApproval");
+            QVERIFY(approval);
+            QVERIFY(approval->property("enabled").toBool());
+            QVariant eligible;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "audioCandidate", Q_RETURN_ARG(QVariant, eligible), Q_ARG(QVariant, lastCandidate)));
+            QVERIFY(!eligible.toBool());
+            for (const QString &kind : {"page", "preview"}) {
+                auto blocked = lastCandidate;
+                blocked["metadata"] = QVariantMap{{"kind", kind}, {"content_type", "audio/mpeg"}};
+                QVERIFY(QMetaObject::invokeMethod(view.data(), "playableCandidate", Q_RETURN_ARG(QVariant, eligible), Q_ARG(QVariant, blocked)));
+                QVERIFY(!eligible.toBool());
+            }
+            auto blocked = lastCandidate;
+            blocked["downloadable"] = false;
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "playableCandidate", Q_RETURN_ARG(QVariant, eligible), Q_ARG(QVariant, blocked)));
+            QVERIFY(!eligible.toBool());
+            blocked = lastCandidate;
+            blocked["metadata"] = QVariantMap{{"kind", "audio"}, {"content_type", "text/html"}};
+            QVERIFY(QMetaObject::invokeMethod(view.data(), "playableCandidate", Q_RETURN_ARG(QVariant, eligible), Q_ARG(QVariant, blocked)));
+            QVERIFY(!eligible.toBool());
+        }
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "togglePlayback"));
+        auto requests = bridge->property("requests").toList();
+        QCOMPARE(requests.size(), 1);
+        QCOMPARE(requests.last().toMap().value("candidateId").toString(), lastId);
+        QCOMPARE(requests.last().toMap().value("jobId").toString(), QString("detail"));
+        QVERIFY(original->playbackState() != QMediaPlayer::PlayingState);
+        // Native mode must not load the stale candidate URL while awaiting resolution.
+        QVERIFY(replacement->source().isEmpty());
+        const int firstRequest = requests.last().toMap().value("requestId").toInt();
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "togglePlayback"));
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "togglePlayback"));
+        requests = bridge->property("requests").toList();
+        QCOMPARE(requests.size(), 2);
+        const int currentRequest = requests.last().toMap().value("requestId").toInt();
+        QVERIFY(currentRequest > firstRequest);
+        const auto resolve = [&](int request, const QString &job, const QString &id, const QUrl &url, const QString &error) {
+            return QMetaObject::invokeMethod(bridge.data(), "censorPlaybackResolved",
+                Q_ARG(int, request), Q_ARG(QString, job), Q_ARG(QString, id),
+                Q_ARG(QUrl, url), Q_ARG(QString, error));
+        };
+        QVERIFY(resolve(firstRequest, "detail", lastId, QUrl("file:///obsolete.wav"), "obsolete failure"));
+        QVERIFY(resolve(currentRequest, "other-job", lastId, QUrl("file:///wrong-job.wav"), ""));
+        QVERIFY(resolve(currentRequest, "detail", "first", QUrl("file:///wrong-candidate.wav"), ""));
+        QVERIFY(view->property("resolvingPlayback").toBool());
+        QVERIFY(view->property("playing").toBool());
+        QVERIFY(view->property("playbackError").toString().isEmpty());
+        QVERIFY(replacement->source().isEmpty());
+        const QUrl fresh("file:///fresh-last.wav");
+        QVERIFY(resolve(currentRequest, "detail", lastId, fresh, ""));
+        QCOMPARE(replacement->source(), fresh);
+        QVERIFY(!view->property("resolvingPlayback").toBool());
+        QVERIFY(resolve(currentRequest, "detail", lastId, QUrl("file:///duplicate.wav"), "duplicate failure"));
+        QCOMPARE(replacement->source(), fresh);
+        QVERIFY(view->property("playbackError").toString().isEmpty());
+        QVERIFY(QMetaObject::invokeMethod(view.data(), "stopPlayers"));
+    }
+    void censorInlineSettings_data() {
+        QTest::addColumn<int>("panelWidth");
+        QTest::newRow("compact") << 280;
+        QTest::newRow("stacked") << 400;
+        QTest::newRow("two-columns") << 1000;
+    }
+    void censorInlineSettings() {
+        QFETCH(int, panelWidth);
+        Config config(QString{});
+        MockBackend server;
+        Bridge bridge(server.url(), "censor-test-key", nullptr, &config);
+        bridge.m_censorPoll.stop();
+        QTRY_VERIFY(!bridge.m_censorPolling);
+        QQmlEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        QQmlComponent component(&engine, QUrl("qrc:/CensorSettingsPanel.qml"));
+        QScopedPointer<QObject> panel(component.createWithInitialProperties({
+            {"bridge", QVariant::fromValue(&bridge)}, {"width", panelWidth}}));
+        QVERIFY2(panel, qPrintable(component.errorString()));
+        auto item = qobject_cast<QQuickItem *>(panel.data());
+        QVERIFY(item);
+        QTRY_VERIFY(item->implicitHeight() > 0);
+        QCOMPARE(panel->property("color").value<QColor>(), QColor(Qt::transparent));
+        QCOMPARE(panel->property("radius").toReal(), 0.0);
+        auto panelBorder = qvariant_cast<QObject *>(panel->property("border"));
+        QVERIFY(panelBorder);
+        QCOMPARE(panelBorder->property("width").toReal(), 0.0);
+        QCOMPARE(panelBorder->property("color").value<QColor>(), QColor(Qt::transparent));
+        for (const QString &name : {"censorMode", "censorWorkers", "censorCpuThreads",
+                                   "censorCandidateLimit"}) {
+            auto control = panel->findChild<QQuickItem *>(name);
+            QVERIFY2(control, qPrintable(name));
+            QTRY_VERIFY(control->width() > 0);
+            auto bounds = control->mapRectToItem(item, QRectF(0, 0, control->width(), control->height()));
+            QVERIFY2(bounds.left() >= 0 && bounds.right() <= panelWidth + 0.5, qPrintable(name));
+        }
+        QVERIFY(QMetaObject::invokeMethod(panel.data(), "setValue",
+            Q_ARG(QVariant, "workers"), Q_ARG(QVariant, 7)));
+        bridge.m_censorState.insert("settings", QJsonObject{{"workers", 2}});
+        emit bridge.censorStateChanged();
+        QCOMPARE(panel->property("draft").toMap().value("workers").toInt(), 7);
+        panel->setProperty("saving", true);
+        emit bridge.censorCommandFinished("settings", false, "Retained draft");
+        QCOMPARE(panel->property("saveError").toString(), QString("Retained draft"));
+        QCOMPARE(panel->property("draft").toMap().value("workers").toInt(), 7);
+        panel->setProperty("saving", true);
+        emit bridge.censorCommandFinished("settings", true, {});
+        QVERIFY(!panel->property("saving").toBool());
+        QCOMPARE(panel->property("saveFeedback").toString(), QString("Settings saved"));
+        emit bridge.censorStateChanged();
+        QCOMPARE(panel->property("saveFeedback").toString(), QString("Settings saved"));
+        QVERIFY(!panel->findChild<QObject *>("censorSettingsSaved"));
+        QVERIFY(!panel->findChild<QObject *>("censorSettingsError"));
+        QVERIFY(QMetaObject::invokeMethod(panel.data(), "loadSettings"));
+        QCOMPARE(panel->property("draft").toMap().value("workers").toInt(), 7);
+        QVERIFY(!panel->findChild<QObject *>("censorSettingsFooter"));
+        QVERIFY(!panel->findChild<QObject *>("censorSettingsHeader"));
+        const QStringList sectionNames = {"censorProcessingSection", "censorComparisonSection"};
+        QList<QQuickItem *> sectionCards;
+        for (const QString &name : sectionNames) {
+            auto section = panel->findChild<QQuickItem *>(name);
+            QVERIFY2(section, qPrintable(name));
+            sectionCards.append(section);
+            QCOMPARE(section->property("color").value<QColor>(), QColor("#0c0c0e"));
+            QCOMPARE(section->property("radius").toReal(), 16.0);
+            QVERIFY(!section->findChild<QObject *>("dialogCloseButton"));
+        }
+        const auto ancestorNamed = [](QQuickItem *child, const QString &name) {
+            while (child && child->objectName() != name) child = child->parentItem();
+            return child;
+        };
+        const QList<QPair<QString, QStringList>> sectionChildren = {
+            {"censorProcessingSection", {"censorProcessingHeader", "censorMode", "censorWorkers", "censorCpuThreads"}},
+            {"censorComparisonSection", {"censorComparisonHeader", "censorCandidateLimit"}}
+        };
+        const auto panelBounds = [item](QQuickItem *child) {
+            return child->mapRectToItem(item, QRectF(0, 0, child->width(), child->height()));
+        };
+        for (const auto &[sectionName, childNames] : sectionChildren) {
+            auto section = panel->findChild<QQuickItem *>(sectionName);
+            const QRectF sectionBounds = panelBounds(section);
+            for (const QString &childName : childNames) {
+                auto child = panel->findChild<QQuickItem *>(childName);
+                QVERIFY2(child, qPrintable(childName));
+                QCOMPARE(ancestorNamed(child, sectionName), section);
+                const QRectF childBounds = panelBounds(child);
+                const QString containmentMessage = QString("%1 section=(%2,%3 %4x%5) child=(%6,%7 %8x%9)")
+                    .arg(childName).arg(sectionBounds.x()).arg(sectionBounds.y())
+                    .arg(sectionBounds.width()).arg(sectionBounds.height()).arg(childBounds.x())
+                    .arg(childBounds.y()).arg(childBounds.width()).arg(childBounds.height());
+                QVERIFY2(sectionBounds.contains(childBounds), qPrintable(containmentMessage));
+            }
+        }
+        for (qsizetype index = 0; index < sectionCards.size(); ++index) {
+            const QRectF bounds = panelBounds(sectionCards.at(index));
+            QVERIFY(bounds.left() >= -0.5 && bounds.right() <= panelWidth + 0.5);
+            for (qsizetype other = index + 1; other < sectionCards.size(); ++other)
+                QVERIFY(!bounds.intersects(panelBounds(sectionCards.at(other))));
+        }
+
+        for (const QString &name : {"censorProcessingHeader", "censorComparisonHeader"}) {
+            auto header = panel->findChild<QQuickItem *>(name);
+            QVERIFY2(header, qPrintable(name));
+            QCOMPARE(header->property("color").value<QColor>(), QColor("#171719"));
+            QCOMPARE(header->property("radius").toReal(), 14.0);
+        }
+        const QMap<QString, QString> leadingGlyphs = {
+            {"censorModeCard", "sliders-horizontal"}, {"censorWorkersCard", "layers"},
+            {"censorCpuThreadsCard", "cpu"}, {"censorCandidateLimitCard", "list-filter"}
+        };
+        for (auto glyph = leadingGlyphs.cbegin(); glyph != leadingGlyphs.cend(); ++glyph) {
+            auto card = panel->findChild<QQuickItem *>(glyph.key());
+            QVERIFY2(card, qPrintable(glyph.key()));
+            QCOMPARE(card->property("leadingGlyph").toString(), glyph.value());
+            QCOMPARE(card->property("leadingGlyphColor").value<QColor>(), QColor("#999999"));
+            auto icon = card->findChild<QQuickItem *>(glyph.key() + "LeadingGlyph");
+            QVERIFY2(icon, qPrintable(glyph.key() + " icon"));
+            QCOMPARE(icon->property("source").toUrl(), QUrl("qrc:/assets/lucide-" + glyph.value() + ".svg"));
+        }
+
+        QVERIFY(!panel->findChild<QQuickItem *>("censorCleanTemp"));
+        QVERIFY(!panel->findChild<QQuickItem *>("censorAutoReplace"));
+        QVERIFY(!panel->findChild<QQuickItem *>("censorMinConfidence"));
+        QVERIFY(!panel->findChild<QQuickItem *>("censorMinConfidenceCard"));
+        auto mode = panel->findChild<QQuickItem *>("censorMode");
+        auto workers = panel->findChild<QQuickItem *>("censorWorkers");
+        QVERIFY(mode && workers);
+        QVERIFY(mode->property("glyph").toString().isEmpty());
+
+        QVERIFY(mode->parentItem()->parentItem() != workers->parentItem()->parentItem());
+        QCOMPARE(warnings.count(), 0);
+    }
+    void censorSettingsGeometry_data() {
+        QTest::addColumn<int>("dialogWidth");
+        QTest::newRow("520x500") << 520;
+        QTest::newRow("400x500") << 400;
+    }
+    void censorSettingsGeometry() {
+        QFETCH(int, dialogWidth);
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(640, 560);
+        window.show();
+        QQmlComponent component(&engine, QUrl("qrc:/CensorSettingsDialog.qml"));
+        QScopedPointer<QObject> dialog(component.createWithInitialProperties({
+            {"parent", QVariant::fromValue(window.contentItem())},
+            {"width", dialogWidth}, {"height", 500}}));
+        QVERIFY2(dialog, qPrintable(component.errorString()));
+        QVERIFY(QMetaObject::invokeMethod(dialog.data(), "open"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto content = qvariant_cast<QQuickItem *>(dialog->property("contentItem"));
+        QVERIFY(content);
+        QVERIFY(!dialog->findChild<QObject *>("censorSettingsFooter"));
+        QVERIFY(!dialog->findChild<QObject *>("censorSaveSettings"));
+        QCOMPARE(content->property("bottomPadding").toReal(), 0.0);
+        const auto bounds = [](QQuickItem *item) {
+            return item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+        };
+        QTRY_VERIFY(content->height() > 0);
+        QVERIFY(content->clip());
+
+        QQuickItem *first = nullptr;
+        for (const QString &name : {"censorMode", "censorWorkers", "censorCpuThreads",
+                                  "censorCandidateLimit"}) {
+            auto control = dialog->findChild<QQuickItem *>(name);
+            QVERIFY2(control, qPrintable(name));
+            QVERIFY(control->width() > 0);
+            if (!first) first = control;
+            QVERIFY2(qAbs(control->width() - first->width()) < 0.5, qPrintable(name + " width"));
+            QVERIFY2(qAbs(bounds(control).right() - bounds(first).right()) < 0.5,
+                     qPrintable(name + " right alignment"));
+            QVERIFY(bounds(control).left() >= bounds(content).left());
+            QVERIFY(bounds(control).right() <= bounds(content).right());
+            auto row = control->parentItem();
+            for (auto sibling : row->childItems()) {
+                if (sibling == control || !sibling->isVisible() || !sibling->property("text").isValid()) continue;
+                QVERIFY2(bounds(sibling).right() <= bounds(control).left() + 0.5,
+                         qPrintable(name + " label overlaps control"));
+            }
+        }
+        QQuickItem *flickable = nullptr;
+        const auto findFlickable = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->property("contentY").isValid() && item->property("contentHeight").isValid())
+                flickable = item;
+            for (auto child : item->childItems()) self(self, child);
+        };
+        findFlickable(findFlickable, content);
+        QVERIFY(flickable);
+        QVERIFY(flickable->property("contentHeight").toReal() > 0);
+        QVERIFY(QMetaObject::invokeMethod(flickable, "cancelFlick"));
+        const qreal end = flickable->property("contentHeight").toReal() - flickable->height()
+            + flickable->property("bottomMargin").toReal();
+        QVERIFY(flickable->setProperty("contentY", end));
+        auto last = dialog->findChild<QQuickItem *>("censorCandidateLimit");
+        QVERIFY(last);
+        auto lastCard = last->parentItem();
+        // The toggle is in the card's content layout; its parent is the card control.
+        while (lastCard && !lastCard->property("compact").isValid()) lastCard = lastCard->parentItem();
+        QVERIFY(lastCard);
+        QTRY_VERIFY(bounds(lastCard).bottom() <= bounds(flickable).bottom() + 0.5);
+        QVERIFY(bounds(lastCard).top() >= bounds(flickable).top() - 0.5);
+
+    }
+
     void configSignalShutdown_data() {
 #ifdef Q_OS_UNIX
         QTest::addColumn<int>("signalNumber");
@@ -229,6 +1145,107 @@ private slots:
         while (fonts.hasNext()) QFontDatabase::addApplicationFont(fonts.next());
         QFont font("DDetector Nunito"); font.setWeight(QFont::Bold); font.setPixelSize(13);
         QGuiApplication::setFont(font);
+    }
+    void siteComboBoxClickSelection() {
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(360, 300);
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/"
+            SiteComboBox {
+                x: 30; y: 20; width: 220
+                model: ["First", "Blocked", "Last"]
+                currentIndex: 0
+                optionReason: value => value === "Blocked" ? "Unavailable" : null
+                readonly property var popupObject: popup
+                function optionAt(index) { return popup.contentItem.itemAtIndex(index); }
+            }
+        )", QUrl("qrc:/SiteComboBoxClickTest.qml"));
+        QScopedPointer<QObject> object(component.createWithInitialProperties({{"parent", QVariant::fromValue(window.contentItem())}}));
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto combo = qobject_cast<QQuickItem *>(object.data());
+        QVERIFY(combo);
+        auto popup = combo->property("popupObject").value<QObject *>();
+        QVERIFY(popup);
+        QSignalSpy activated(combo, SIGNAL(activated(int)));
+        QVERIFY(activated.isValid());
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto click = [&](QQuickItem *item) {
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
+        };
+        const auto optionAt = [&](int index) {
+            QVariant result;
+            QMetaObject::invokeMethod(combo, "optionAt", Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, index));
+            return qobject_cast<QQuickItem *>(result.value<QObject *>());
+        };
+        click(combo);
+        QTRY_VERIFY(popup->property("opened").toBool());
+        QTRY_VERIFY(optionAt(1));
+        auto blocked = optionAt(1);
+        QVERIFY(!blocked->isEnabled());
+        click(blocked);
+        QCOMPARE(combo->property("currentIndex").toInt(), 0);
+        QCOMPARE(combo->property("currentText").toString(), QString("First"));
+        QCOMPARE(activated.count(), 0);
+        QVERIFY(popup->property("opened").toBool());
+        QTRY_VERIFY(optionAt(2));
+        click(optionAt(2));
+        QTRY_COMPARE(combo->property("currentIndex").toInt(), 2);
+        QCOMPARE(combo->property("currentText").toString(), QString("Last"));
+        QCOMPARE(activated.count(), 1);
+        QCOMPARE(activated.first().first().toInt(), 2);
+        QTRY_VERIFY(!popup->property("visible").toBool());
+    }
+    void siteSpinBoxStepButtons() {
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(300, 160);
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/"
+            SiteSpinBox {
+                x: 30; y: 30
+                from: 0; to: 10; value: 4; stepSize: 2
+                readonly property Item increaseButton: up.indicator
+                readonly property Item decreaseButton: down.indicator
+            }
+        )", QUrl("qrc:/SiteSpinBoxClickTest.qml"));
+        QScopedPointer<QObject> object(component.createWithInitialProperties({{"parent", QVariant::fromValue(window.contentItem())}}));
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto spin = qobject_cast<QQuickItem *>(object.data());
+        QVERIFY(spin);
+        auto increase = spin->property("increaseButton").value<QQuickItem *>();
+        auto decrease = spin->property("decreaseButton").value<QQuickItem *>();
+        QVERIFY(increase);
+        QVERIFY(decrease);
+        QSignalSpy modified(spin, SIGNAL(valueModified()));
+        QVERIFY(modified.isValid());
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto click = [&](QQuickItem *item) {
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
+        };
+        QCOMPARE(modified.count(), 0);
+        click(increase);
+        QTRY_COMPARE(spin->property("value").toInt(), 6);
+        QCOMPARE(modified.count(), 1);
+        modified.clear();
+        click(decrease);
+        QTRY_COMPARE(spin->property("value").toInt(), 4);
+        QCOMPARE(modified.count(), 1);
+        modified.clear();
+        QVERIFY(spin->setProperty("value", 10));
+        QCOMPARE(modified.count(), 0);
+        QVERIFY(!increase->isEnabled());
+        click(increase);
+        QCOMPARE(spin->property("value").toInt(), 10);
+        QCOMPARE(modified.count(), 0);
     }
     void localYandexTokenLifecycle() {
         MockBackend server;
@@ -847,6 +1864,23 @@ private slots:
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         QVERIFY(window);
+        QQuickItem *sidebarSearchIcon = nullptr;
+        const auto findSearchIcon = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->property("source").toUrl() == QUrl("qrc:/assets/lucide-search.svg"))
+                sidebarSearchIcon = item;
+            for (auto child : item->childItems()) self(self, child);
+        };
+        findSearchIcon(findSearchIcon, window->contentItem());
+        QVERIFY(sidebarSearchIcon);
+        // Item.layer owns the effect component, not the Image's QObject child tree.
+        // Instantiate that same component in its creation context to inspect its bindings.
+        const QVariant effect = QQmlProperty::read(sidebarSearchIcon, "layer.effect");
+        auto tintComponent = qobject_cast<QQmlComponent *>(effect.value<QObject *>());
+        QVERIFY(tintComponent);
+        QScopedPointer<QObject> searchTint(tintComponent->create(tintComponent->creationContext()));
+        QVERIFY2(searchTint, qPrintable(tintComponent->errorString()));
+        QCOMPARE(searchTint->property("brightness").toReal(), 1.0);
+        QCOMPARE(searchTint->property("colorization").toReal(), 1.0);
         QCOMPARE(window->minimumWidth(), 1200);
         QCOMPARE(window->minimumHeight(), 750);
         window->resize(1200, 800);
@@ -1277,7 +2311,8 @@ private slots:
         QVERIFY(discord); QVERIFY(QMetaObject::invokeMethod(discord, "clicked"));
         bridge.login("spotify");
         QCOMPARE(bridge.pendingProvider(), QString("discord"));
-        QTRY_VERIFY(server.requests.size() >= 2);
+        QTRY_VERIFY(std::any_of(server.requests.cbegin(), server.requests.cend(),
+            [](const QByteArray &req) { return req.startsWith("POST /api/login "); }));
         int logins = 0;
         for (const auto &req : server.requests) if (req.startsWith("POST /api/login ")) {
             ++logins; QVERIFY(req.contains("\"provider\":\"discord\""));

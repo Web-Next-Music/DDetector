@@ -79,12 +79,16 @@ def main():
         def do_GET(self):
             nonlocal request_count
             with lock:
-                if self.path != "/api/state" or self.headers.get("Authorization") != "Bearer " + key:
+                if self.path not in ("/api/state", "/api/censor/state") or self.headers.get("Authorization") != "Bearer " + key:
                     failures.append("Unexpected path or missing/invalid bearer")
                     self.send_error(403)
                     return
-                request_count += 1
-                payload = json.dumps(state).encode()
+                if self.path == "/api/state":
+                    request_count += 1
+                    payload = json.dumps(state).encode()
+                else:
+                    payload = json.dumps({"jobs": [], "settings": {}, "paused": False,
+                                          "configured": False, "error": ""}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

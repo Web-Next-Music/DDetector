@@ -14,6 +14,7 @@
 #include <QTcpSocket>
 #include <QPointer>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 
 class CoverImageProviderTests : public QObject {
     Q_OBJECT
@@ -21,7 +22,16 @@ private slots:
     void cachedYandexContentCover() {
         QStandardPaths::setTestModeEnabled(true);
         const QUrl url("https://avatars.yandex.net/get-music-content/123/cover/200x200");
-        const auto directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/track-covers";
+#ifdef Q_OS_WIN
+        QTemporaryDir configRoot;
+        QVERIFY(configRoot.isValid());
+        const auto originalAppData = qgetenv("APPDATA");
+        qputenv("APPDATA", configRoot.path().toUtf8());
+        const auto restoreAppData = qScopeGuard([originalAppData] { qputenv("APPDATA", originalAppData); });
+        const auto directory = configRoot.path() + "/DDetector/cache/track-covers";
+#else
+        const auto directory = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/DDetector/cache/track-covers";
+#endif
         QVERIFY(QDir().mkpath(directory));
         const auto path = directory + "/" + QString::fromLatin1(QCryptographicHash::hash(url.toEncoded(), QCryptographicHash::Sha256).toHex()) + ".cover";
         QImage image(40, 40, QImage::Format_ARGB32);

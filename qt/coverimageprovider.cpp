@@ -37,8 +37,12 @@ public:
 };
 
 QString cacheDirectory() {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    return base.isEmpty() ? QString() : base + "/track-covers";
+#ifdef Q_OS_WIN
+    const QString base = qEnvironmentVariable("APPDATA");
+#else
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+#endif
+    return base.isEmpty() ? QString() : base + "/DDetector/cache/track-covers";
 }
 QByteArray cached(const QString &path) {
     if (path.isEmpty()) return {};

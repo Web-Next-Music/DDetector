@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     app.setWindowIcon(QIcon(":/assets/app-icon.png"));
     QQuickStyle::setStyle("Basic");
     QCommandLineParser parser;
-    parser.setApplicationDescription("Native Qt Quick DDetector client; launch through the Go backend.");
+    parser.setApplicationDescription("Native Qt Quick DDetector client; launch through the Go backend");
     parser.addHelpOption();
     parser.addOptions({{"backend-url", "Loopback backend URL", "url"},
                        {"bridge-key", "Private backend bearer key (C++ only)", "key"},
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     if (base.scheme() != "http" || base.host() != "127.0.0.1" || base.port() <= 0
                   || !base.userInfo().isEmpty() || base.hasQuery() || base.hasFragment()
                   || (!base.path().isEmpty() && base.path() != "/") || parser.value("bridge-key").isEmpty()) {
-        qCritical("Launch via the Go backend with --backend-url http://127.0.0.1:PORT --bridge-key KEY.");
+        qCritical("Launch via the Go backend with --backend-url http://127.0.0.1:PORT --bridge-key KEY");
         return 2;
     }
     QDirIterator fonts(":/assets", {"*.ttf", "*.otf"}, QDir::Files);
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     Bridge bridge(base, parser.value("bridge-key").toUtf8(), nullptr, &config);
     GitWorkspace workspace;
     Uploader uploader;
-    RepositoryCoordinator repositories(config, workspace, uploader);
+    RepositoryCoordinator repositories(config, workspace, uploader, &bridge);
     MusicPlayer musicPlayer;
     musicPlayer.setVolume(config.volume());
 

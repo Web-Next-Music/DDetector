@@ -80,8 +80,8 @@ SiteDialog {
             Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: site.ui.state.isBanned ? "This account is not allowed to use DDetector."
-                      : site.denied ? "You do not have permission to use DDetector. Please sign in with an account that has access."
+                text: site.ui.state.isBanned ? "This account is not allowed to use DDetector"
+                      : site.denied ? "You do not have permission to use DDetector. Please sign in with an account that has access"
                       : site.error
                 color: site.ui.muted
                 font.pixelSize: 14
