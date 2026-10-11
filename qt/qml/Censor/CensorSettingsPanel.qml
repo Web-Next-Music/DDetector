@@ -131,12 +131,8 @@ Rectangle {
             columns: dialog.width >= 800 ? 2 : 1
             columnSpacing: 10
             rowSpacing: 20
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.minimumWidth: 0
-                Layout.alignment: Qt.AlignTop
-                spacing: 20
             SiteSectionCard {
+                Layout.alignment: Qt.AlignTop
                 id: censorProcessingSection
                 objectName: "censorProcessingSection"
                 compact: true
@@ -193,6 +189,7 @@ Rectangle {
             SiteSectionCard {
                 id: censorComparisonSection
                 objectName: "censorComparisonSection"
+                Layout.alignment: Qt.AlignTop
                 compact: true
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
@@ -213,7 +210,6 @@ Rectangle {
                     }
                 }
 
-            }
             }
         }
 

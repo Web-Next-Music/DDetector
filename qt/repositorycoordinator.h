@@ -78,7 +78,7 @@ public:
 private:
     QString nativeWriteError() const {
             return m_bridge && m_bridge->nativePublicationBusy()
-                ? QString("Wait for native review/publication or recovery before writing to the repository or starting a terminal") : QString();
+                ? QString("Wait for the current review, publication, or recovery operation to finish before modifying the repository or opening a terminal") : QString();
         }
         void applyRepository() {
         if (m_workspace && m_config) m_workspace->setRepositoryPath(m_config->repositoryPath());
