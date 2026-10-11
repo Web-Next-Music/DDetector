@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "CompileFlags": {
+      "type": "object",
+      "properties": {
+        "CompilationDatabase": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -2,9 +2,9 @@
 """Compile/run detail regressions using an already-built native-ui target."""
 import argparse
 import os
-from pathlib import Path
 import shlex
 import subprocess
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--build-dir", type=Path, required=True)

@@ -1,2 +1,3 @@
+# yaml-language-server: $schema=./.clangd.schema.json
 CompileFlags:
   CompilationDatabase: qt/build

@@ -12,7 +12,7 @@ import (
 
 func TestNativeSourceAnonCredentials(t *testing.T) {
 	jwt := func(role string) string {
-		return "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"role":%q}`, role))) + ".signature"
+		return "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"role":%q}`, role)) + ".signature"
 	}
 	for _, key := range []string{"", "sb_secret_sensitive", jwt("service_role"), jwt("authenticated")} {
 		if nativeAnonKey(key) {

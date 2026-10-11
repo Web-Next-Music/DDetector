@@ -1,7 +1,7 @@
 """Regenerate the Go launcher's Windows icon resources using LLVM tools."""
-from pathlib import Path
 import subprocess
 import tempfile
+from pathlib import Path
 
 
 def main():
