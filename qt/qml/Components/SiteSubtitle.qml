@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 
 Rectangle {
     id: subtitle
@@ -25,20 +24,14 @@ Rectangle {
         anchors.margins: subtitle.contentPadding
         spacing: 8
 
-        Image {
+        SiteIcon {
             objectName: subtitle.objectName ? subtitle.objectName + "Glyph" : ""
             visible: !!subtitle.glyph
             Layout.preferredWidth: 16
             Layout.preferredHeight: 16
-            source: subtitle.glyph ? "qrc:/assets/lucide-" + subtitle.glyph + ".svg" : ""
+            glyph: subtitle.glyph
             sourceSize: Qt.size(16, 16)
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                brightness: 1
-                colorization: 1
-                colorizationColor: subtitle.glyphColor
-            }
-            Accessible.ignored: true
+            tintColor: subtitle.glyphColor
         }
         Label {
             Layout.fillWidth: true

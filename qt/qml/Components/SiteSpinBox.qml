@@ -33,51 +33,41 @@ SpinBox {
         color: "#0c0c0e"
         border.color: control.activeFocus ? "#332bfef5" : "#3397979f"
     }
-    up.indicator: SiteButton {
+    component StepButton: SiteButton {
+        required property bool increaseStep
         x: control.width - width - 4
-        y: 3
         width: 28
         height: (control.height - 6) / 2
         implicitWidth: 28
         implicitHeight: 15
-        glyph: "chevron-up"
+        glyph: increaseStep ? "chevron-up" : "chevron-down"
         iconOnly: true
         cornerRadius: 4
         leftPadding: 0
         rightPadding: 0
-        enabled: control.enabled && (control.wrap || (control.from <= control.to ? control.value < control.to : control.value > control.to))
+        enabled: control.enabled && (control.wrap || (control.from <= control.to
+            ? (increaseStep ? control.value < control.to : control.value > control.from)
+            : (increaseStep ? control.value > control.to : control.value < control.from)))
         focusPolicy: Qt.NoFocus
         autoRepeat: true
-        Accessible.name: qsTr("Increase value")
+        Accessible.name: increaseStep ? qsTr("Increase value") : qsTr("Decrease value")
         onClicked: {
             const previous = control.value;
-            control.increase();
+            if (increaseStep)
+                control.increase();
+            else
+                control.decrease();
             if (control.value !== previous)
                 control.valueModified();
         }
     }
-    down.indicator: SiteButton {
-        x: control.width - width - 4
+    up.indicator: StepButton {
+        y: 3
+        increaseStep: true
+    }
+    down.indicator: StepButton {
         y: control.height / 2
-        width: 28
-        height: (control.height - 6) / 2
-        implicitWidth: 28
-        implicitHeight: 15
-        glyph: "chevron-down"
-        iconOnly: true
-        cornerRadius: 4
-        leftPadding: 0
-        rightPadding: 0
-        enabled: control.enabled && (control.wrap || (control.from <= control.to ? control.value > control.from : control.value < control.from))
-        focusPolicy: Qt.NoFocus
-        autoRepeat: true
-        Accessible.name: qsTr("Decrease value")
-        onClicked: {
-            const previous = control.value;
-            control.decrease();
-            if (control.value !== previous)
-                control.valueModified();
-        }
+        increaseStep: false
     }
     SiteFocusRing { active: control.activeFocus }
 }

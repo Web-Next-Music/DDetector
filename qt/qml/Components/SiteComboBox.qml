@@ -3,7 +3,6 @@ import QtQuick
 import QtQuick.Controls
 
 import QtQuick.Layouts
-import QtQuick.Effects
 
 ComboBox {
     id: control
@@ -23,18 +22,12 @@ ComboBox {
     indicator: null
     contentItem: RowLayout {
         spacing: 6
-        Image {
+        SiteIcon {
             visible: !!control.glyph
             Layout.preferredWidth: 14
             Layout.preferredHeight: 14
-            source: control.glyph ? "qrc:/assets/lucide-" + control.glyph + ".svg" : ""
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                brightness: 1
-                colorization: 1
-                colorizationColor: control.hovered || control.popup.visible ? "#2bfef5" : "#999999"
-            }
-            Accessible.ignored: true
+            glyph: control.glyph
+            tintColor: control.hovered || control.popup.visible ? "#2bfef5" : "#999999"
         }
         Text {
             Layout.fillWidth: true
@@ -45,18 +38,12 @@ ComboBox {
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
-        Image {
+        SiteIcon {
             Layout.preferredWidth: 14
             Layout.preferredHeight: 14
-            source: "qrc:/assets/lucide-chevron-down.svg"
+            glyph: "chevron-down"
             rotation: control.popup.visible ? 180 : 0
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                brightness: 1
-                colorization: 1
-                colorizationColor: control.hovered || control.popup.visible ? "#2bfef5" : "#999999"
-            }
-            Accessible.ignored: true
+            tintColor: control.hovered || control.popup.visible ? "#2bfef5" : "#999999"
         }
     }
     background: Rectangle {

@@ -24,18 +24,34 @@ endif()
 file(GLOB APP_ASSETS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" assets/*)
 # Preserve qrc:/Main.qml and runtime native registrations until they can be
 # migrated together. A QML module must not silently change the engine entry URL.
-set(SHARED_QML SiteFocusRing.qml SiteButton.qml SiteTextField.qml SiteComboBox.qml SiteSpinBox.qml SiteSettingsCard.qml SiteToggleRow.qml
-    SiteSpinner.qml FileIcon.qml SiteMenu.qml SiteMenuItem.qml SiteMenuSeparator.qml SiteEditMenu.qml
-    SiteDialog.qml SiteToolTip.qml DialogHeader.qml WindowButton.qml SiteQuote.qml SiteSectionCard.qml SiteSubtitle.qml ScrollEdgeShadow.qml)
-set(APP_QML ${SHARED_QML} terminal.qml GitWorkspace.qml CensorDetector.qml CensorSettingsDialog.qml CensorSettingsPanel.qml SendDialog.qml Main.qml
-    TrackRow.qml ResultCard.qml SiteView.qml NotificationStack.qml SpectrumVisualizer.qml)
+set(SHARED_QML
+    qml/Components/SiteFocusRing.qml qml/Components/SiteIcon.qml qml/Components/SiteButton.qml
+    qml/Components/SiteTextField.qml qml/Components/SiteComboBox.qml qml/Components/SiteSpinBox.qml
+    qml/Components/SiteSettingsCard.qml qml/Components/SiteToggleRow.qml qml/Components/SiteSpinner.qml
+    qml/Components/FileIcon.qml qml/Components/SiteMenu.qml qml/Components/SiteMenuItem.qml
+    qml/Components/SiteMenuSeparator.qml qml/Components/SiteEditMenu.qml qml/Components/SiteDialog.qml
+    qml/Components/SiteToolTip.qml qml/Components/DialogHeader.qml qml/Components/WindowButton.qml
+    qml/Components/SiteQuote.qml qml/Components/SiteSectionCard.qml qml/Components/SiteSubtitle.qml
+    qml/Components/ScrollEdgeShadow.qml qml/Components/NotificationStack.qml)
+set(APP_QML
+    ${SHARED_QML}
+    qml/App/Main.qml
+    qml/Censor/CensorDetector.qml qml/Censor/CensorSettingsDialog.qml qml/Censor/CensorSettingsPanel.qml
+    qml/Git/GitWorkspace.qml qml/Git/terminal.qml
+    qml/Library/ResultCard.qml qml/Library/SendDialog.qml qml/Library/SiteView.qml
+    qml/Library/SpectrumVisualizer.qml qml/Library/TrackRow.qml)
+foreach(qml_file IN LISTS APP_QML)
+    get_filename_component(qml_alias "${qml_file}" NAME)
+    set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_alias}")
+endforeach()
 qt_add_resources(ddetector-qt ui PREFIX "/" FILES ${APP_QML} ${APP_ASSETS})
 get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
 get_filename_component(QT_TOOL_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
 find_program(QT_QMLLINT NAMES qmllint HINTS "${QT_TOOL_DIR}" NO_DEFAULT_PATH REQUIRED)
+set(QML_LINT_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/ui.qrc")
 add_custom_target(qml-lint
-    COMMAND "${QT_QMLLINT}" -W 0 SiteButton.qml SiteFocusRing.qml SiteTextField.qml SiteToggleRow.qml WindowButton.qml
-    COMMAND "${QT_QMLLINT}" ${APP_QML}
+    COMMAND "${QT_QMLLINT}" --resource "${QML_LINT_RESOURCE}" -W 0 qml/Components/SiteButton.qml qml/Components/SiteFocusRing.qml qml/Components/SiteTextField.qml qml/Components/SiteToggleRow.qml qml/Components/WindowButton.qml
+    COMMAND "${QT_QMLLINT}" --resource "${QML_LINT_RESOURCE}" ${APP_QML}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Lint all QML (runtime context/native types may produce warnings)")
 install(TARGETS ddetector-qt RUNTIME DESTINATION bin)
@@ -61,7 +77,7 @@ if(BUILD_TESTING)
     qt_add_executable(ddetector-workspace-tests workspace.cpp workspace.h)
     target_compile_definitions(ddetector-workspace-tests PRIVATE GIT_WORKSPACE_TEST GIT_WORKSPACE_QML_TEST)
     target_link_libraries(ddetector-workspace-tests PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Test)
-    qt_add_resources(ddetector-workspace-tests workspace_assets PREFIX "/" FILES ${SHARED_QML} ${APP_ASSETS})
+    qt_add_resources(ddetector-workspace-tests workspace_assets PREFIX "/" FILES ${SHARED_QML} qml/Git/GitWorkspace.qml qml/Git/terminal.qml ${APP_ASSETS})
     add_test(NAME git-workspace COMMAND ddetector-workspace-tests)
     set_tests_properties(git-workspace PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
     qt_add_executable(ddetector-avatar-tests avatarimage_tests.cpp avatarimage.cpp avatarimage.h)
@@ -100,13 +116,14 @@ if(BUILD_TESTING)
     if(UNIX)
         target_link_libraries(ddetector-terminal-tests PRIVATE qtermwidget6)
     endif()
-    qt_add_resources(ddetector-terminal-tests terminal_assets PREFIX "/" FILES ${SHARED_QML} ${APP_ASSETS})
+    qt_add_resources(ddetector-terminal-tests terminal_assets PREFIX "/" FILES ${SHARED_QML} qml/Git/terminal.qml ${APP_ASSETS})
     qt_add_executable(ddetector-syntax-tests syntaxhighlighter_tests.cpp syntaxhighlighter.cpp syntaxhighlighter.h)
     target_link_libraries(ddetector-syntax-tests PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Test)
     add_test(NAME syntax-highlighter COMMAND ddetector-syntax-tests)
     set_tests_properties(syntax-highlighter PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
     qt_add_executable(ddetector-lyrics-tests lyricslayout_tests.cpp lyricslayout.cpp lyricslayout.h)
     target_link_libraries(ddetector-lyrics-tests PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::QuickTest)
+    qt_add_resources(ddetector-lyrics-tests lyrics_ui PREFIX "/" FILES ${APP_QML} ${APP_ASSETS})
     add_test(NAME native-lyrics COMMAND ddetector-lyrics-tests -input "${CMAKE_CURRENT_SOURCE_DIR}/ui-tests" -import "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(native-lyrics PROPERTIES TIMEOUT 45
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")

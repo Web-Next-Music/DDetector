@@ -213,7 +213,7 @@ func (b *CensorRemoteBackend) Rollback(ctx context.Context, i CensorIdentity, s 
 }
 func (b *CensorRemoteBackend) mutate(ctx context.Context, i CensorIdentity, path string, s CensorSelection) (CensorReplacement, error) {
 	var out CensorReplacement
-	if !censorID(s.IdempotencyKey) || !censorID(s.RequestID) || !censorID(s.CandidateID) || s.TrackID <= 0 {
+	if !validCensorReceiptSelection(s) {
 		return out, errors.New("valid selection and idempotency key required")
 	}
 	e := b.call(ctx, i, "POST", path, s, &out, s.IdempotencyKey)
@@ -231,13 +231,29 @@ func (b *CensorRemoteBackend) SaveResults(ctx context.Context, i CensorIdentity,
 	}
 	return b.call(ctx, i, "POST", "/state", map[string]any{"job": j}, nil, "")
 }
+
+const (
+	maxCensorRequests    = 1000
+	maxCensorRequestText = 1024
+)
+
+func validCensorRequestSource(v CensorRequest, requireOriginal bool) bool {
+	if !censorID(v.ID) || v.TrackID <= 0 || len(v.Title) > maxCensorRequestText || len(v.Artist) > maxCensorRequestText {
+		return false
+	}
+	if v.OriginalURL == "" {
+		return !requireOriginal
+	}
+	return censorHTTPS(v.OriginalURL)
+}
+
 func validateCensorRequests(items []CensorRequest) error {
-	if len(items) > 1000 {
+	if len(items) > maxCensorRequests {
 		return errors.New("too many censor requests")
 	}
 	seen := map[string]bool{}
 	for _, v := range items {
-		if !censorID(v.ID) || v.TrackID <= 0 || !censorHTTPS(v.OriginalURL) || len(v.Title) > 1024 || len(v.Artist) > 1024 || seen[v.ID] {
+		if !validCensorRequestSource(v, true) || seen[v.ID] {
 			return errors.New("invalid censor request source")
 		}
 		seen[v.ID] = true

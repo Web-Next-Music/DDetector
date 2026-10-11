@@ -1059,8 +1059,7 @@ private slots:
         });
         QQmlEngine engine;
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(
-            QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("GitWorkspace.qml")));
+        QQmlComponent component(&engine, QUrl("qrc:/GitWorkspace.qml"));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> object(component.createWithInitialProperties(
             {{"workspaceBackend", QVariant::fromValue<QObject *>(&backend)}}));
@@ -1130,8 +1129,7 @@ private slots:
     void qmlComponent() {
         QQmlEngine engine;
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(
-            QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("GitWorkspace.qml")));
+        QQmlComponent component(&engine, QUrl("qrc:/GitWorkspace.qml"));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> object(component.create());
         QVERIFY2(object, qPrintable(component.errorString()));

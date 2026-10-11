@@ -124,8 +124,8 @@ Terminal commands are unrestricted local commands, not sandboxed. Stop the shell
 and save edits before changing the checkout. Windows ConPTY is not implemented;
 Windows shows an explicit unsupported-platform error rather than a pipe fallback.
 
-Settings and Send share `DialogHeader.qml`. The player's music-note button opens
-Send; see `UPLOADER.md` for the local file-update and commit rules.
+Settings and Send share `qml/Components/DialogHeader.qml`. The player's music-note
+button opens Send; see `UPLOADER.md` for the local file-update and commit rules.
 
 ## Standalone Yandex Music player
 

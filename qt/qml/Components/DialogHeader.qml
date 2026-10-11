@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
 
 Rectangle {
     id: header
@@ -32,17 +31,16 @@ Rectangle {
         radius: 12
         border.color: header.borderColor
     }
-    Image {
+    SiteIcon {
         id: headerIcon
         anchors.left: parent.left
         anchors.leftMargin: 24
         anchors.verticalCenter: parent.verticalCenter
         width: 18
         height: 18
-        source: header.icon
-                visible: header.icon.toString().length > 0
-        layer.enabled: true
-        layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: header.muted }
+        iconSource: header.icon
+        visible: header.icon.toString().length > 0
+        tintColor: header.muted
     }
     Text {
         textFormat: Text.PlainText

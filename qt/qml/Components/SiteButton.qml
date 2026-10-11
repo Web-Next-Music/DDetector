@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
 
 Button {
     id: control
@@ -51,19 +50,14 @@ Button {
             visible: !control.loading
             anchors.centerIn: parent
             spacing: control.glyph && !control.iconOnly ? 6 : 0
-            Image {
+            SiteIcon {
                 visible: !!control.glyph
                 width: visible ? control.glyphSize : 0
                 height: control.glyphSize
                 anchors.verticalCenter: parent.verticalCenter
-                source: control.glyph ? control.assetRoot + "lucide-" + control.glyph + ".svg" : ""
-                layer.enabled: true
-                layer.effect: MultiEffect {
-                    brightness: 1
-                    colorization: 1
-                    colorizationColor: control.accented ? control.accentColor : control.hovered ? control.hoverTextColor : control.textColor
-                }
-                Accessible.ignored: true
+                glyph: control.glyph
+                assetRoot: control.assetRoot
+                tintColor: control.accented ? control.accentColor : control.hovered ? control.hoverTextColor : control.textColor
             }
             Text {
                 objectName: "buttonLabel"

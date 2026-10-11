@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 
 MenuItem {
     id: control
@@ -28,17 +27,12 @@ MenuItem {
     height: visible ? implicitHeight : 0
     contentItem: RowLayout {
         spacing: 8
-        Image {
+        SiteIcon {
             visible: control.glyph !== ""
             Layout.preferredWidth: 16
             Layout.preferredHeight: 16
-            source: control.glyph ? "qrc:/assets/lucide-" + control.glyph + ".svg" : ""
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                brightness: 1
-                colorization: 1
-                colorizationColor: control.green ? control.greenColor : control.danger ? control.dangerColor : control.highlighted ? control.accentColor : control.mutedColor
-            }
+            glyph: control.glyph
+            tintColor: control.green ? control.greenColor : control.danger ? control.dangerColor : control.highlighted ? control.accentColor : control.mutedColor
         }
         Text {
             textFormat: Text.PlainText

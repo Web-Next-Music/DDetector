@@ -34,7 +34,7 @@ func validateBackendRequests(b CensorBackend, items []CensorRequest) error {
 	if !lazyCensorBackend(b) {
 		return validateCensorRequests(items)
 	}
-	if len(items) > 1000 {
+	if len(items) > maxCensorRequests {
 		return ErrCensorInvalid
 	}
 	seen := map[string]bool{}
@@ -50,7 +50,7 @@ func validateBackendRequests(b CensorBackend, items []CensorRequest) error {
 		} else if strings.HasPrefix(r.ID, "manual:") {
 			return ErrCensorInvalid
 		}
-		if !censorID(r.ID) || r.TrackID <= 0 || seen[r.ID] || len(r.Title) > 1024 || len(r.Artist) > 1024 || r.OriginalURL != "" && !censorHTTPS(r.OriginalURL) {
+		if !validCensorRequestSource(r, false) || seen[r.ID] {
 			return ErrCensorInvalid
 		}
 		seen[r.ID] = true

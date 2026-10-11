@@ -82,12 +82,12 @@ class SmokeTests(unittest.TestCase):
             source = (ROOT / "assets" / filename).read_text()
             self.assertIn("lucide-react 1.52.0", source, name)
             self.assertIn('stroke="#000000"', source, name)
-        card = (ROOT / "SiteSettingsCard.qml").read_text()
+        card = (ROOT / "qml" / "Components" / "SiteSettingsCard.qml").read_text()
         self.assertIn('readonly property color leadingGlyphColor: "#999999"', card)
         self.assertIn("colorizationColor: card.leadingGlyphColor", card)
 
     def test_censor_scroll_and_subtitle_structure(self):
-        detector = (ROOT / "CensorDetector.qml").read_text()
+        detector = (ROOT / "qml" / "Censor" / "CensorDetector.qml").read_text()
         viewport = detector[detector.index("id: detectorScroll"):detector.index("contentWidth: availableWidth")]
         self.assertIn("anchors.fill: parent", viewport)
         self.assertIn("anchors.margins: 16", viewport)
@@ -95,13 +95,13 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('shadowColor: "#0c0c0e"', detector)
         self.assertIn('ctx.fillStyle = "#D50811"', detector)
 
-        subtitle = (ROOT / "SiteSubtitle.qml").read_text()
+        subtitle = (ROOT / "qml" / "Components" / "SiteSubtitle.qml").read_text()
         self.assertIn('color: "transparent"', subtitle)
         self.assertIn("border.width: 0", subtitle)
         self.assertIn("radius: 0", subtitle)
         self.assertIn('readonly property color glyphColor: "#999999"', subtitle)
 
-        panel = (ROOT / "CensorSettingsPanel.qml").read_text()
+        panel = (ROOT / "qml" / "Censor" / "CensorSettingsPanel.qml").read_text()
         self.assertEqual(panel.count("SiteSubtitle {"), 0)
         for title in ["Processing resources", "Candidate search"]:
             before_title = panel[:panel.index(f'title: "{title}"')]
@@ -112,9 +112,9 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("Hardware acceleration", panel)
 
     def test_no_manual_window_canvas_or_dead_titlebar(self):
-        source = (ROOT / "Main.qml").read_text()
+        source = (ROOT / "qml" / "App" / "Main.qml").read_text()
         self.assertNotIn("id: titleBar", source)
-        self.assertNotIn("Canvas {", (ROOT / "WindowButton.qml").read_text())
+        self.assertNotIn("Canvas {", (ROOT / "qml" / "Components" / "WindowButton.qml").read_text())
         self.assertIn('model: ["music", "git-branch", "search"]', source)
 
     def test_bearded_provenance(self):

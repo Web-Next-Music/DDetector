@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 
 CheckBox {
     id: control
@@ -42,20 +41,16 @@ CheckBox {
     }
     contentItem: RowLayout {
         spacing: 12
-        Image {
+        SiteIcon {
             visible: control.hasIconSource || !!control.glyph
             Layout.preferredWidth: visible ? control.iconWidth : 0
             Layout.preferredHeight: 18
-            source: control.hasIconSource ? control.iconSource : (control.glyph ? "qrc:/assets/lucide-" + control.glyph + ".svg" : "")
+            glyph: control.glyph
+            iconSource: control.iconSource
             sourceClipRect: control.hasIconSource ? control.iconSourceClipRect : Qt.rect(0, 0, 0, 0)
             fillMode: Image.PreserveAspectFit
-            layer.enabled: !control.hasIconSource || control.iconColor.a > 0
-            layer.effect: MultiEffect {
-                brightness: 1
-                colorization: 1
-                colorizationColor: control.hasIconSource ? control.iconColor : (control.enabled ? "#999999" : "#666666")
-            }
-            Accessible.ignored: true
+            tinted: !control.hasIconSource || control.iconColor.a > 0
+            tintColor: control.hasIconSource ? control.iconColor : (control.enabled ? "#999999" : "#666666")
         }
         Text {
             Layout.fillWidth: true

@@ -130,37 +130,27 @@ SiteDialog {
             }
         }
 
-        Rectangle {
+        SiteSettingsCard {
             Layout.fillWidth: true
-            implicitHeight: fieldsContent.implicitHeight + 32
-            radius: 14
-            color: "#171719"
-            border.color: "#3397979f"
-            ColumnLayout {
-                id: fieldsContent
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 12
-                Caption { text: "Artist" }
-                Field { id: artistInput; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
-                Caption { text: "Title" }
-                Field { id: titleInput; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
-                Caption { text: "MP3 URL · optional"; visible: dialog.showUrlFields }
-                Field {
-                    id: urlInput
-                    visible: dialog.showUrlFields
-                    placeholderText: "https://…"
-                    Accessible.name: "MP3 URL"
-                    inputMethodHints: Qt.ImhUrlCharactersOnly
-                }
-                Caption {
-                    Layout.fillWidth: true
-                    visible: dialog.showUrlFields
-                    text: "Leave the URL empty to add only the list entry"
-                    color: "#97979f"
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 12
-                }
+            Caption { text: "Artist" }
+            Field { id: artistInput; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
+            Caption { text: "Title" }
+            Field { id: titleInput; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
+            Caption { text: "MP3 URL · optional"; visible: dialog.showUrlFields }
+            Field {
+                id: urlInput
+                visible: dialog.showUrlFields
+                placeholderText: "https://…"
+                Accessible.name: "MP3 URL"
+                inputMethodHints: Qt.ImhUrlCharactersOnly
+            }
+            Caption {
+                Layout.fillWidth: true
+                visible: dialog.showUrlFields
+                text: "Leave the URL empty to add only the list entry"
+                color: "#97979f"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
             }
         }
         Caption {

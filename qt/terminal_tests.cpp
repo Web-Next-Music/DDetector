@@ -160,8 +160,7 @@ private slots:
         QTRY_VERIFY(!workspace.resolving());
         QQmlEngine engine;
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(
-            QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("terminal.qml")));
+        QQmlComponent component(&engine, QUrl("qrc:/terminal.qml"));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> object(component.createWithInitialProperties(
             {{"workspaceBackend", QVariant::fromValue(&workspace)}, {"visible", false}}));

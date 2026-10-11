@@ -1,6 +1,6 @@
 # Local Send backend
 
-`uploader.h/.cpp` are integrated into the native application through `main.cpp` and `SendDialog.qml`. Reference directories were inspected read-only and were not modified. The backend needs Qt Core/Network, Git, a writable local FckCensorData checkout with an existing HEAD, and a configured Git author identity. It needs neither FCDServer nor a Yandex token. It never pushes or fetches.
+`uploader.h/.cpp` are integrated into the native application through `main.cpp` and `qml/Library/SendDialog.qml`. Reference directories were inspected read-only and were not modified. The backend needs Qt Core/Network, Git, a writable local FckCensorData checkout with an existing HEAD, and a configured Git author identity. It needs neither FCDServer nor a Yandex token. It never pushes or fetches.
 
 ## Git library boundary
 
@@ -54,7 +54,7 @@ QML entry point: `send(id, title, artist, mp3Url = "")`. `busy`, `status`, `erro
 
 ## Integration reference
 
-The application already exposes `localUploader`, persists `Config.repositoryPath`, resolves its Git root using `GitWorkspace`, and opens `SendDialog.qml` from the player Send button. The following notes describe the underlying integration API, not outstanding setup steps.
+The application already exposes `localUploader`, persists `Config.repositoryPath`, resolves its Git root using `GitWorkspace`, and opens `qml/Library/SendDialog.qml` from the player Send button. The following notes describe the underlying integration API, not outstanding setup steps.
 
 1. The application target already includes uploader sources and Qt Network.
 2. The runtime context object is **`localUploader`**, passed into `SendDialog.uploadBackend`.

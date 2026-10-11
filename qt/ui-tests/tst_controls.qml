@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".." as UI
+import "qrc:/" as UI
 
 Item {
     id: scene

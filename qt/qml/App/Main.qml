@@ -592,30 +592,11 @@ ApplicationWindow {
         closeButtonAccessibleName: "Close settings"
         contentItem: ColumnLayout {
             spacing: 8
-            Rectangle {
+            SiteSettingsCard {
                 Layout.fillWidth: true
-                implicitHeight: repositoryCardContent.implicitHeight + 32
-                radius: 14
-                color: appUi.surface2
-                border.color: appUi.borderColor
-                ColumnLayout {
-                    id: repositoryCardContent
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 12
-                    RowLayout {
-                        spacing: 8
-                        Image {
-                            Layout.preferredWidth: 16
-                            Layout.preferredHeight: 16
-                            source: "qrc:/assets/lucide-git-branch.svg"
-                            sourceSize: Qt.size(16, 16)
-                            layer.enabled: true
-                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-                        }
-                        Label { textFormat: Text.PlainText; text: "Git repository"; color: appUi.ink; font.pixelSize: 13 }
-                    }
-                    SiteTextField {
+                title: "Git repository"
+                glyph: "git-branch"
+                SiteTextField {
                         id: repositoryPathInput
                         font.pixelSize: appUi.font.pixelSize
                         Accessible.name: "Git repository path"
@@ -669,39 +650,14 @@ ApplicationWindow {
                             onTriggered: repositoryPathInput.applyPath(true)
                         }
 
-                    }
                 }
             }
-            Rectangle {
+            SiteSettingsCard {
                 objectName: "musicTokenCard"
                 Layout.fillWidth: true
-                implicitHeight: tokenCardContent.implicitHeight + 32
-                radius: 14
-                color: appUi.surface2
-                border.color: appUi.borderColor
-                ColumnLayout {
-                    id: tokenCardContent
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 12
-                    RowLayout {
-                        spacing: 8
-                        Image {
-                            Layout.preferredWidth: 16
-                            Layout.preferredHeight: 16
-                            source: "qrc:/assets/lucide-music-standard.svg"
-                            sourceSize: Qt.size(16, 16)
-                            layer.enabled: true
-                            layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.muted }
-                        }
-                        Label {
-                            textFormat: Text.PlainText
-                            text: "Yandex Music"
-                            color: appUi.ink
-                            font.pixelSize: 13
-                        }
-                    }
-                    SiteTextField {
+                title: "Yandex Music"
+                glyph: "music-standard"
+                SiteTextField {
                         id: musicToken
                         font.pixelSize: appUi.font.pixelSize
                         Accessible.name: "Yandex Music OAuth token"
@@ -727,7 +683,6 @@ ApplicationWindow {
                             interval: 800
                             onTriggered: appConfig.musicToken = musicToken.text.trim()
                         }
-                    }
                 }
             }
             Rectangle {
@@ -1342,7 +1297,6 @@ ApplicationWindow {
                     ]
                     SmallButton {
                         id: providerButton
-                        SiteFocusRing { active: providerButton.visualFocus }
                         required property var modelData
                         objectName: "login-" + modelData.provider
                         width: parent.width
