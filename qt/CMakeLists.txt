@@ -1,5 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 project(DDetectorQt VERSION 1.0 LANGUAGES CXX)
+set(DDETECTOR_GIT_TAG "" CACHE STRING "Git tag embedded in the application")
+if(NOT DDETECTOR_GIT_TAG)
+    execute_process(
+        COMMAND git describe --tags --exact-match
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE DDETECTOR_GIT_TAG_RESULT
+        OUTPUT_VARIABLE DDETECTOR_GIT_TAG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT DDETECTOR_GIT_TAG_RESULT EQUAL 0)
+        set(DDETECTOR_GIT_TAG "dev")
+    endif()
+endif()
+configure_file(version.h.in generated/version.h @ONLY)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -14,6 +28,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.5)
 qt_standard_project_setup()
 qt_add_executable(ddetector-qt workspace.cpp workspace.h uploader.cpp uploader.h main.cpp config.cpp config.h bridge.cpp bridge.h player.cpp player.h coverimageprovider.cpp coverimageprovider.h avatarimage.cpp avatarimage.h)
+target_include_directories(ddetector-qt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(ddetector-qt PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Multimedia)
 if(WIN32)
     enable_language(RC)

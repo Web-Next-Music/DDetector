@@ -6,6 +6,7 @@
 #include "workspace.h"
 #include "uploader.h"
 #include "repositorycoordinator.h"
+#include "version.h"
 #include <QCommandLineParser>
 #include <QDirIterator>
 #include <QFontDatabase>
@@ -33,6 +34,7 @@ int main(int argc, char **argv) {
     qmlRegisterType<EmbeddedTerminal>("DDetector.Terminal", 1, 0, "EmbeddedTerminal");
     qmlRegisterUncreatableType<TerminalSession>("DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
     app.setApplicationName("DDetector");
+    app.setApplicationVersion(DDETECTOR_GIT_TAG);
     app.setOrganizationName("DDetector");
     app.setDesktopFileName("ddetector-qt");
     app.setWindowIcon(QIcon(":/assets/app-icon.png"));
@@ -89,6 +91,7 @@ int main(int argc, char **argv) {
     QQmlApplicationEngine engine;
     engine.addImageProvider("trackcovers", new CoverImageProvider);
     engine.rootContext()->setContextProperty("appConfig", &config);
+    engine.rootContext()->setContextProperty("appGitTag", QStringLiteral(DDETECTOR_GIT_TAG));
     engine.rootContext()->setContextProperty("backend", &bridge);
     engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
     engine.rootContext()->setContextProperty("gitWorkspace", &workspace);

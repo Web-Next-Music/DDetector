@@ -95,6 +95,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ github.ref_name }}
+          GIT_TAG: ${{ github.ref_name }}
           QTERMWIDGET_DATA_DIR: ${{ github.workspace }}/.native-deps/share/qtermwidget6
           SYNTAX_HIGHLIGHTING_DATA_DIR: ${{ github.workspace }}/.native-deps/share/org.kde.syntax-highlighting
         run: |
@@ -177,6 +178,7 @@ jobs:
           $numeric = (($version -split '-')[0] -split '\.')
           while ($numeric.Count -lt 3) { $numeric += '0' }
           "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "GIT_TAG=${{ github.ref_name }}" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VERSION_NUM=$($numeric[0]).$($numeric[1]).$($numeric[2])" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build Qt frontend
@@ -186,7 +188,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DDDETECTOR_GIT_TAG="$GIT_TAG"
           cmake --build qt/build-release --parallel
 
       - name: Build Go backend

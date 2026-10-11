@@ -360,7 +360,7 @@ ApplicationWindow {
             spacing: 10
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "D<span style='color:" + appUi.accent + "'>Detector</span>"
+                text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appGitTag + "</span>"
                 textFormat: Text.RichText
                 color: appUi.ink
                 font.family: "DDetector Quicksand"
@@ -368,6 +368,7 @@ ApplicationWindow {
                 font.weight: Font.Bold
 
             }
+
             Text {
                 textFormat: Text.PlainText
                 visible: appUi.showShell

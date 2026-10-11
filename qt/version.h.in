@@ -1,0 +1,3 @@
+#pragma once
+
+#define DDETECTOR_GIT_TAG "@DDETECTOR_GIT_TAG@"

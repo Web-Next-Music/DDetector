@@ -6,10 +6,11 @@ readonly SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly DIST_DIR="$SOURCE_DIR/dist"
 readonly BUILD_DIR="$SOURCE_DIR/build/native"
 readonly VERSION="${VERSION:-$(git -C "$SOURCE_DIR" describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || printf '0.0.0')}"
+readonly GIT_TAG="${GIT_TAG:-$(git -C "$SOURCE_DIR" describe --tags --exact-match 2>/dev/null || printf 'dev')}"
 readonly VERSION_NUM="$(printf '%s' "$VERSION" | sed -E 's/-.*//; s/[^0-9.].*$//' | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 }')"
 readonly ARCH_VERSION="${VERSION//-/_}"
 readonly JOBS="${JOBS:-$(nproc)}"
-readonly MSYS2_DIR="${MSYS2_DIR:-/opt/msys64}"
+readonly LINSYS2_BIN="${LINSYS2_BIN:-$HOME/.local/share/linsys2/ucrt64/ucrt64/bin}"
 APPDIR_READY=0
 
 case "$TARGET" in
@@ -30,6 +31,7 @@ build_linux() {
     local cmake_args=(
         -S "$SOURCE_DIR/qt" -B "$BUILD_DIR/linux" -G Ninja
         -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+        "-DDDETECTOR_GIT_TAG=$GIT_TAG"
     )
     if command -v ccache >/dev/null; then
         cmake_args+=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
@@ -145,11 +147,21 @@ EOF
 }
 
 build_windows() {
-    command -v wine >/dev/null || { echo 'wine is required for the local Windows build' >&2; exit 1; }
-    [[ -x "$MSYS2_DIR/usr/bin/bash.exe" ]] || {
-        echo "MSYS2 bash not found at $MSYS2_DIR/usr/bin/bash.exe; set MSYS2_DIR" >&2
+    command -v linsys2 >/dev/null || {
+        echo 'linsys2 is required: install it with yay -S linsys2' >&2
         exit 1
     }
+    [[ -d "$LINSYS2_BIN" ]] || {
+        echo "LinSYS2 UCRT64 environment not found at $LINSYS2_BIN; run: linsys2-pacman init" >&2
+        exit 1
+    }
+    for tool in cmake.exe windeployqt6.exe makensis.exe ntldd.exe; do
+        [[ -f "$LINSYS2_BIN/$tool" ]] || {
+            echo "Missing LinSYS2 tool: $tool" >&2
+            echo 'Install the Windows build dependencies listed in qt/README.md.' >&2
+            exit 1
+        }
+    done
 
     local winbuild="$BUILD_DIR/windows"
     local windist="$winbuild/dist"
@@ -157,50 +169,44 @@ build_windows() {
     local source_win="Z:$SOURCE_DIR"
     local build_win="Z:$winbuild"
     local dist_win="Z:$DIST_DIR"
+    local linsys2_prefix_win="Z:${LINSYS2_BIN%/bin}"
     rm -rf "$winbuild" "$output"
     mkdir -p "$windist"
+
     GOOS=windows GOARCH=amd64 go build -C "$SOURCE_DIR" -trimpath -ldflags='-s -w' \
         -o "$windist/ddetector.exe" ./cmd/ddetector
 
-    cat > /tmp/ddetector-windows-build.sh <<'MSYS'
-set -Eeuo pipefail
-SOURCE_DIR="$1"
-BUILD_DIR="$2"
-DIST_DIR="$3"
-VERSION_NUM="$4"
-VERSION="$5"
-export PATH=/ucrt64/bin:/usr/bin
-cmake -S "$SOURCE_DIR/qt" -B "$BUILD_DIR/qt" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_PREFIX_PATH=/ucrt64
-cmake --build "$BUILD_DIR/qt" --parallel
-cp "$BUILD_DIR/qt/ddetector-qt.exe" "$BUILD_DIR/dist/"
-windeployqt6.exe --release --qmldir "$SOURCE_DIR/qt/qml" --compiler-runtime \
-    "$BUILD_DIR/dist/ddetector-qt.exe"
-for pass in 1 2 3 4 5 6; do
-    copied=0
-    while IFS= read -r dependency; do
-        name=$(basename "$dependency")
-        if [[ ! -e "$BUILD_DIR/dist/$name" ]]; then
-            cp "$dependency" "$BUILD_DIR/dist/"
-            copied=1
+    linsys2 run -- cmake.exe -S "$source_win/qt" -B "$build_win/qt" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+        "-DCMAKE_PREFIX_PATH=$linsys2_prefix_win" \
+        "-DDDETECTOR_GIT_TAG=$GIT_TAG"
+    linsys2 run -- cmake.exe --build "$build_win/qt" --parallel "$JOBS"
+    cp "$winbuild/qt/ddetector-qt.exe" "$windist/"
+
+    linsys2 run -- windeployqt6.exe --release --qmldir "$source_win/qt/qml" \
+        --compiler-runtime "$build_win/dist/ddetector-qt.exe"
+
+    local dependency report executable
+    for executable in "$windist/ddetector.exe" "$windist/ddetector-qt.exe"; do
+        report="$(linsys2 run -- ntldd.exe -R "Z:$executable" 2>/dev/null)"
+        if grep -q 'not found' <<<"$report"; then
+            printf '%s\n' "$report" >&2
+            echo "Unresolved Windows runtime dependency in $executable" >&2
+            exit 1
         fi
-    done < <(find "$BUILD_DIR/dist" -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
-        | xargs -0 -r ldd 2>/dev/null | awk '/=> \/ucrt64\/bin\// {print $3}' | sort -u)
-    [[ $copied -eq 0 ]] && break
-done
-if find "$BUILD_DIR/dist" -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
-    | xargs -0 -r ldd 2>/dev/null | grep -q 'not found'; then
-    echo 'Unresolved Windows runtime dependency' >&2
-    exit 1
-fi
-makensis \
-    -DVERSION="$VERSION_NUM" \
-    -DDIST_DIR="$BUILD_DIR/dist" \
-    -DOUTPUT_FILE="$DIST_DIR/DDetector-$VERSION-Setup.exe" \
-    "$SOURCE_DIR/packaging/windows/installer.nsi"
-MSYS
-    wine "$MSYS2_DIR/usr/bin/bash.exe" -lc \
-        "bash Z:/tmp/ddetector-windows-build.sh '$source_win' '$build_win' '$dist_win' '$VERSION_NUM' '$VERSION'"
+        while IFS= read -r dependency; do
+            [[ -n "$dependency" ]] || continue
+            if [[ ! -f "$windist/$dependency" ]]; then
+                cp "$LINSYS2_BIN/$dependency" "$windist/"
+            fi
+        done < <(awk '/=> Z:/ {print $1}' <<<"$report" | sort -u)
+    done
+
+    linsys2 run -- makensis.exe \
+        "-DVERSION=$VERSION_NUM" \
+        "-DDIST_DIR=$build_win/dist" \
+        "-DOUTPUT_FILE=$dist_win/DDetector-$VERSION-Setup.exe" \
+        "$source_win/packaging/windows/installer.nsi"
     test -s "$output"
     file "$output"
 }
