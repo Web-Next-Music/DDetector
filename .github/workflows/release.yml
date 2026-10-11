@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: write
-  packages: read
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,13 +16,42 @@ concurrency:
 
 env:
   APP_NAME: DDetector
+  LINUX_IMAGE: ghcr.io/web-next-music/ddetector-build-arch
 
 jobs:
+  linux-image:
+    name: Build Linux CI image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/ci/archlinux.Dockerfile
+          push: true
+          tags: |
+            ${{ env.LINUX_IMAGE }}:${{ github.sha }}
+            ${{ env.LINUX_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   linux:
     name: Linux packages
+    needs: linux-image
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/web-next-music/ddetector-build-arch:latest
+      image: ghcr.io/web-next-music/ddetector-build-arch:${{ github.sha }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
