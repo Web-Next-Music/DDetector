@@ -346,6 +346,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: "{linux-packages,windows-installer}"
           path: release-assets
           merge-multiple: true
 
