@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,11 +24,30 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		s.state.Processing = false
 		s.mu.Unlock()
 	}()
-	persisted := cache.Tracks
 	// Clone provenance: checkpoints must not mutate the caller's cache snapshot.
 	sources := make(map[int64]string, len(cache.LyricsSources))
 	for id, version := range cache.LyricsSources {
 		sources[id] = version
+	}
+	persisted := make(map[int64]Result, len(cache.Tracks))
+	persistedPosition := make(map[int64]int, len(cache.Tracks))
+	for i, r := range cache.Tracks {
+		persisted[r.ID] = r
+		persistedPosition[r.ID] = i
+	}
+	dirty := make(map[int]bool)
+	removed := make(map[int64]bool, len(persisted))
+	for id := range persisted {
+		removed[id] = true
+	}
+	for i, r := range results {
+		if r.Status == "pending" || r.Status == "error" {
+			continue
+		}
+		delete(removed, r.ID)
+		if old, ok := persisted[r.ID]; !ok || persistedPosition[r.ID] != i || !reflect.DeepEqual(old, r) {
+			dirty[i] = true
+		}
 	}
 	provenanceChanged := false
 	var checkpointErr error
@@ -35,27 +55,34 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		if checkpointErr != nil {
 			return checkpointErr
 		}
-		complete := make([]Result, 0, len(results))
-		for _, r := range results {
-			if r.Status != "pending" && r.Status != "error" {
-				complete = append(complete, r)
-			}
-		}
-		if !cache.Dirty && !provenanceChanged && reflect.DeepEqual(persisted, complete) {
+		if !cache.Dirty && !provenanceChanged && len(dirty) == 0 && len(removed) == 0 {
 			return nil
 		}
-		cache.Tracks = complete
-		cache.LyricsSources = make(map[int64]string, len(complete))
-		for _, r := range complete {
-			if version := sources[r.ID]; version != "" {
-				cache.LyricsSources[r.ID] = version
+		if strings.HasSuffix(path, ".sqlite") && !cache.Dirty && !cache.Rebuild {
+			if saveSQLiteCacheDelta(context.Background(), path, cache, results, dirty, removed, sources) != nil {
+				checkpointErr = errors.New("unable to persist Yandex cache")
+				return checkpointErr
+			}
+		} else {
+			complete := make([]Result, 0, len(results))
+			cache.LyricsSources = make(map[int64]string, len(results))
+			for _, r := range results {
+				if r.Status == "pending" || r.Status == "error" {
+					continue
+				}
+				complete = append(complete, r)
+				if version := sources[r.ID]; version != "" {
+					cache.LyricsSources[r.ID] = version
+				}
+			}
+			cache.Tracks = complete
+			if saveTracksCache(path, cache) != nil {
+				checkpointErr = errors.New("unable to persist Yandex cache")
+				return checkpointErr
 			}
 		}
-		if saveTracksCache(path, cache) != nil {
-			checkpointErr = errors.New("unable to persist Yandex cache")
-			return checkpointErr
-		}
-		persisted = complete
+		clear(dirty)
+		clear(removed)
 		cache.Dirty = false
 		cache.Rebuild = false
 		provenanceChanged = false
@@ -77,6 +104,7 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 		for v := range done {
 			if v.err == nil {
 				results[v.index] = v.result
+				dirty[v.index] = true
 				sources[v.result.ID] = lyricsSourceVersion
 				provenanceChanged = true
 				stats.LyricsFetched++
@@ -160,16 +188,13 @@ func (s *Server) processLyrics(ctx context.Context, c *yandexClient, path string
 				}
 			} else {
 				results[v.index] = v.result
+				dirty[v.index] = true
 				sources[v.result.ID] = lyricsSourceVersion
 				provenanceChanged = true
 				stats.LyricsFetched++
 				unsaved++
 			}
 			unpublished++
-			if unpublished >= 16 {
-				s.publishResults(results)
-				unpublished = 0
-			}
 			if unsaved >= saveBatch {
 				if e := checkpoint(); e != nil {
 					return e

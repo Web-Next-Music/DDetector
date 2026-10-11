@@ -280,6 +280,11 @@ private slots:
             Uploader uploader;
             RepositoryCoordinator repositories(config, workspace, uploader, &bridge);
             bridge.setNativePublicationValidator([] { return QString("Terminal is running"); });
+            QVERIFY(!workspace.resolving());
+            QVERIFY(workspace.repositoryPath().isEmpty());
+            QVERIFY(workspace.rootPath().isEmpty());
+            QVERIFY(uploader.directory().isEmpty());
+            workspace.activate();
             QTRY_VERIFY(!workspace.resolving());
             QCOMPARE(workspace.rootPath(), QFileInfo(firstRoot.path()).canonicalFilePath());
             bridge.configureNativeRepository();
@@ -448,12 +453,9 @@ private slots:
             QVERIFY2(!visualChild(qobject_cast<QQuickItem *>(view.data()), name), qPrintable(name));
         for (auto it = stats.begin(); it != stats.end(); ++it)
             QVERIFY(!visualChild(qobject_cast<QQuickItem *>(view.data()), "censorStat-" + it.key()));
-        int playToggles = 0;
-        for (auto item : view->findChildren<QQuickItem *>()) {
-            const auto glyph = item->property("glyph").toString();
-            if ((glyph == "play" || glyph == "pause")) ++playToggles;
-        }
-        QCOMPARE(playToggles, 1);
+        auto playbackButton = view->findChild<QQuickItem *>("censorPlaybackButton");
+        QVERIFY(playbackButton);
+        QCOMPARE(playbackButton->property("glyph").toString(), QString("play"));
         QVERIFY(view->setProperty("selectedId", "review"));
         QVERIFY(!visualChild(qobject_cast<QQuickItem *>(view.data()), "censorJobMetadataWarning"));
         QVERIFY(reason("analyze").isEmpty()); // Metadata warnings must not disable audio work.
@@ -1690,7 +1692,11 @@ private slots:
         }
         Config config{QString()}; config.setRepositoryPath(a.path());
         LocalContexts local(config);
-        QVERIFY(local.workspace.resolving()); QVERIFY(local.uploader.directory().isEmpty());
+        QVERIFY(!local.workspace.resolving());
+        QVERIFY(local.workspace.repositoryPath().isEmpty());
+        QVERIFY(local.uploader.directory().isEmpty());
+        local.workspace.activate();
+        QVERIFY(local.workspace.resolving());
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         QTRY_VERIFY(!local.workspace.resolving()); QCOMPARE(local.uploader.directory(), a.path());
         local.workspace.openFile("README.md"); local.workspace.setText("dirty");
@@ -2012,6 +2018,7 @@ private slots:
         }
         window->setWidth(1200);
         QCoreApplication::processEvents();
+        QVERIFY(local.workspace.repositoryPath().isEmpty());
         QVERIFY(!workspaceView->property("item").value<QObject *>());
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QVERIFY(!workspaceView->isVisible());
@@ -2022,10 +2029,15 @@ private slots:
         auto loadedWorkspace = workspaceView->property("item").value<QObject *>();
         QCOMPARE(loadedWorkspace->property("workspaceBackend").value<QObject *>(),
                  static_cast<QObject *>(&local.workspace));
+        QTRY_COMPARE(local.workspace.repositoryPath(), config.repositoryPath());
+        auto terminalLoader = loadedWorkspace->findChild<QObject *>("gitTerminalLoader");
+        QVERIFY(terminalLoader);
+        QTRY_VERIFY(terminalLoader->property("item").value<QObject *>());
         QVERIFY(QMetaObject::invokeMethod(lyricsButton, "clicked"));
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QTRY_VERIFY(!workspaceView->isVisible());
         QCOMPARE(workspaceView->property("item").value<QObject *>(), loadedWorkspace);
+        QTRY_VERIFY(!terminalLoader->property("item").value<QObject *>());
 
         QVERIFY(sendDialog);
         QCOMPARE(sendDialog->property("uploadBackend").value<QObject *>(),

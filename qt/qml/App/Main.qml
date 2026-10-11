@@ -906,6 +906,7 @@ ApplicationWindow {
                 sourceComponent: Component {
                     GitWorkspace {
                         objectName: "gitWorkspaceView"
+                        pageActive: workspaceLoader.visible
                         workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
                         onNotify: function(message) { appUi.notify(message); }
                     }
@@ -924,6 +925,7 @@ ApplicationWindow {
                 sourceComponent: Component {
                     CensorDetector {
                         objectName: "censorDetectorView"
+                        pageActive: parent && parent.visible
                         bridge: backend
                         uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
                     }

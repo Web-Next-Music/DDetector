@@ -15,7 +15,13 @@ Item {
     id: root
     property var workspaceBackend: null
     property var closeCallback: null
-    onWorkspaceBackendChanged: editor.syncDocument()
+    property bool pageActive: true
+    onWorkspaceBackendChanged: {
+        editor.syncDocument()
+        if (workspaceBackend) workspaceBackend.activate()
+    }
+    onPageActiveChanged: if (!pageActive && available && workspaceBackend.terminalRunning) workspaceBackend.stopTerminal()
+    Component.onCompleted: if (workspaceBackend) workspaceBackend.activate()
     readonly property bool available: workspaceBackend !== null && workspaceBackend !== undefined
     readonly property color surface: "#0c0c0e"
     readonly property color raised: "#171719"
@@ -332,8 +338,10 @@ Item {
             }
             Loader {
                 id: terminalLoader
+                objectName: "gitTerminalLoader"
                 SplitView.preferredHeight: 230
                 SplitView.minimumHeight: 120
+                active: root.pageActive
                 source: "terminal.qml"
                 onLoaded: item.workspaceBackend = Qt.binding(function() { return root.workspaceBackend })
             }

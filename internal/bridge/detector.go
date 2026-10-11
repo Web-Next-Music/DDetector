@@ -67,118 +67,96 @@ func runeMatch(text, keyword []rune) bool {
 	}
 	return true
 }
-func (d *Detector) spansContext(ctx context.Context, text string, expand bool) ([][2]int, error) {
+func (d *Detector) scanContext(ctx context.Context, text string) ([]rune, [][2]int, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 	r := []rune(text)
-	low := append([]rune(nil), r...)
-	for i, c := range low {
-		if c >= 'A' && c <= 'Z' || c >= 'А' && c <= 'Я' {
+	low := make([]rune, len(r))
+	for i, c := range r {
+		switch {
+		case c >= 'A' && c <= 'Z' || c >= 'А' && c <= 'Я':
 			low[i] = c + 32
-		} else if c == 'Ё' {
+		case c == 'Ё':
 			low[i] = 'ё'
+		default:
+			low[i] = c
 		}
-	}
-	out := [][2]int{}
-	if expand {
-		for start := 0; start < len(r); {
-			if start%256 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-			}
-			if start > 0 && word(r[start-1]) {
-				start++
-				continue
-			}
-			prefix := start
-			for prefix < len(r) && word(r[prefix]) {
-				prefix++
-			}
-			end := -1
-			for at := prefix; at >= start && end < 0; at-- {
-				if at%256 == 0 {
-					if err := ctx.Err(); err != nil {
-						return nil, err
-					}
-				}
-				if at >= len(low) {
-					continue
-				}
-				for _, k := range d.keywords[low[at]] {
-					n := len(k)
-					if runeMatch(low[at:], k) {
-						end = at + n
-						for end < len(r) && word(r[end]) {
-							end++
-						}
-						break
-					}
-				}
-			}
-			if end < 0 {
-				start++
-				continue
-			}
-			out = append(out, [2]int{start, end})
-			start = end
-		}
-		return out, nil
 	}
 
-	for i := 0; i < len(r); {
-		if i%256 == 0 {
+	var spans [][2]int
+	matched := false
+	for start := 0; start < len(r); {
+		if start%256 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, nil, false, err
 			}
 		}
-		end := -1
-		for _, k := range d.keywords[low[i]] {
-			n := len(k)
-			if i+n > len(r) {
-				continue
+
+		// A skipped position has a word rune on its left, so it cannot be the
+		// beginning of a standalone keyword under the JavaScript word rules.
+		if start == 0 || !word(r[start-1]) {
+			for _, k := range d.keywords[low[start]] {
+				n := len(k)
+				if runeMatch(low[start:], k) && (start+n == len(r) || !word(r[start+n])) {
+					matched = true
+					break
+				}
 			}
-			if !runeMatch(low[i:], k) {
-				continue
-			}
-			if !expand && (i > 0 && word(r[i-1]) || i+n < len(r) && word(r[i+n])) {
-				continue
-			}
-			end = i + n
-			break
-		}
-		if end < 0 {
-			i++
+		} else {
+			start++
 			continue
 		}
-		start := i
-		out = append(out, [2]int{start, end})
-		i = end
+
+		prefix := start
+		for prefix < len(r) && word(r[prefix]) {
+			prefix++
+		}
+		end := -1
+		for at := prefix; at >= start && end < 0; at-- {
+			if at%256 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, false, err
+				}
+			}
+			if at >= len(low) {
+				continue
+			}
+			for _, k := range d.keywords[low[at]] {
+				if runeMatch(low[at:], k) {
+					end = at + len(k)
+					for end < len(r) && word(r[end]) {
+						end++
+					}
+					break
+				}
+			}
+		}
+		if end < 0 {
+			start++
+			continue
+		}
+		spans = append(spans, [2]int{start, end})
+		start = end
 	}
-	return out, nil
+	return r, spans, matched, nil
 }
 func (d *Detector) Annotate(text string) Line {
 	line, _ := d.annotateContext(context.Background(), text)
 	return line
 }
 func (d *Detector) annotateContext(ctx context.Context, text string) (Line, error) {
-	spans, err := d.spansContext(ctx, text, false)
+	r, spans, matched, err := d.scanContext(ctx, text)
 	if err != nil {
 		return Line{}, err
 	}
-	l := Line{IsDrug: len(spans) > 0, Parts: []Part{{Text: text}}}
-	if !l.IsDrug {
+	l := Line{IsDrug: matched, Parts: []Part{{Text: text}}}
+	if !matched {
 		return l, nil
 	}
-	r := []rune(text)
 	l.Parts = []Part{}
 	offset := 0
-	expanded, err := d.spansContext(ctx, text, true)
-	if err != nil {
-		return Line{}, err
-	}
-	for _, s := range expanded {
+	for _, s := range spans {
 		if s[0] > offset {
 			l.Parts = append(l.Parts, Part{Text: string(r[offset:s[0]])})
 		}

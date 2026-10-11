@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-const censorStateLimit int64 = 64 << 20
+const (
+	censorStateLimit       int64 = 64 << 20
+	censorProgressDebounce       = 250 * time.Millisecond
+)
 
 var ErrCensorInvalid = errors.New("invalid censor control parameters")
 
@@ -92,6 +95,9 @@ type censorRuntime struct {
 	stateVersion          [32]byte
 	metadataProvider      censorsearch.Provider
 	metadataConfigWarning string
+	progressTimer         *time.Timer
+	progressDirty         bool
+	progressGeneration    uint64
 }
 
 func openCensorRuntime(s *Server, uid string, b CensorBackend) (*censorRuntime, error) {
@@ -151,6 +157,15 @@ func openCensorRuntime(s *Server, uid string, b CensorBackend) (*censorRuntime, 
 	return rt, nil
 }
 func (rt *censorRuntime) persistLocked() error {
+	// Every durable write subsumes pending progress. Stopping the timer and
+	// advancing the generation makes receipt, terminal-state, and shutdown writes
+	// the synchronization barrier, even if an old callback is already runnable.
+	rt.progressGeneration++
+	if rt.progressTimer != nil {
+		rt.progressTimer.Stop()
+		rt.progressTimer = nil
+	}
+	rt.progressDirty = false
 	if e := rt.lockStorageLocked(); e != nil {
 		rt.failure = "Censor storage is unavailable or owned by another process"
 		if rt.cancel != nil {
@@ -237,6 +252,68 @@ func (rt *censorRuntime) jobLocked(id string) (*CensorJob, error) {
 	}
 	return nil, ErrCensorNotFound
 }
+func cloneCensorResult(result *censor.Result) *censor.Result {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	cloned.Waveform = append([]censor.WaveformPoint(nil), result.Waveform...)
+	cloned.SuspiciousIntervals = append([]censor.SuspiciousInterval(nil), result.SuspiciousIntervals...)
+	for n := range cloned.SuspiciousIntervals {
+		if restoration := result.SuspiciousIntervals[n].Restoration; restoration != nil {
+			copy := *restoration
+			cloned.SuspiciousIntervals[n].Restoration = &copy
+		}
+	}
+	cloned.ExcerptTranscripts = append([]censor.ExcerptTranscript(nil), result.ExcerptTranscripts...)
+	cloned.Warnings = append([]string(nil), result.Warnings...)
+	if result.Fingerprint != nil {
+		fingerprint := *result.Fingerprint
+		fingerprint.Values = append([]uint32(nil), result.Fingerprint.Values...)
+		cloned.Fingerprint = &fingerprint
+	}
+	if result.Comparison != nil {
+		comparison := *result.Comparison
+		if result.Comparison.FingerprintSimilarity != nil {
+			similarity := *result.Comparison.FingerprintSimilarity
+			comparison.FingerprintSimilarity = &similarity
+		}
+		cloned.Comparison = &comparison
+	}
+	return &cloned
+}
+
+func cloneCensorCandidate(candidate CensorCandidate) CensorCandidate {
+	cloned := candidate
+	if candidate.Metadata != nil {
+		cloned.Metadata = make(map[string]string, len(candidate.Metadata))
+		for key, value := range candidate.Metadata {
+			cloned.Metadata[key] = value
+		}
+	}
+	cloned.Result = cloneCensorResult(candidate.Result)
+	return cloned
+}
+
+// cloneCensorJob is the ownership boundary between callers and runtime state.
+// Keep this explicit so adding a mutable field cannot silently depend on a JSON
+// round trip for correctness or alter persisted compatibility semantics.
+func cloneCensorJob(job CensorJob) CensorJob {
+	cloned := job
+	cloned.StageProgress = cloneStageProgress(job.StageProgress)
+	cloned.Queries = append([]string(nil), job.Queries...)
+	cloned.Result = cloneCensorResult(job.Result)
+	cloned.Candidates = make([]CensorCandidate, len(job.Candidates))
+	for n := range job.Candidates {
+		cloned.Candidates[n] = cloneCensorCandidate(job.Candidates[n])
+	}
+	if job.Replacement != nil {
+		replacement := *job.Replacement
+		cloned.Replacement = &replacement
+	}
+	return cloned
+}
+
 func (rt *censorRuntime) job(id string) (CensorJob, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -244,10 +321,7 @@ func (rt *censorRuntime) job(id string) (CensorJob, error) {
 	if e != nil {
 		return CensorJob{}, e
 	}
-	data, _ := json.Marshal(j)
-	var copy CensorJob
-	_ = json.Unmarshal(data, &copy)
-	return copy, nil
+	return cloneCensorJob(*j), nil
 }
 func (rt *censorRuntime) update(j CensorJob) error {
 	rt.mu.Lock()
@@ -257,12 +331,9 @@ func (rt *censorRuntime) update(j CensorJob) error {
 		return e
 	}
 	j.UpdatedAt = time.Now().UTC()
-	data, e := json.Marshal(j)
+	copy := cloneCensorJob(j)
+	data, e := json.Marshal(copy)
 	if e != nil {
-		return e
-	}
-	var copy CensorJob
-	if e = json.Unmarshal(data, &copy); e != nil {
 		return e
 	}
 	jobLimit := censorJobLimit
@@ -542,8 +613,7 @@ func (rt *censorRuntime) worker(ctx context.Context, q *censor.Queue) {
 				j.Stage = "analysis"
 				j.StageProgress = newStageProgress()
 				j.Error = ""
-				data, _ := json.Marshal(j)
-				_ = json.Unmarshal(data, &chosen)
+				chosen = cloneCensorJob(*j)
 				break
 			}
 		}
@@ -831,7 +901,9 @@ func (rt *censorRuntime) compareCandidates(ctx context.Context, q *censor.Queue,
 			return e
 		}
 	}
-	return nil
+	// Direct comparison commands have no following terminal update; make the
+	// completed stage durable while intermediate units remain debounced.
+	return rt.flushProgress()
 }
 func comparisonScore(r *censor.Result) float64 {
 	if r == nil || r.Comparison == nil {

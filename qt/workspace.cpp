@@ -57,6 +57,12 @@ GitWorkspace::~GitWorkspace() {
         if (process->state() != QProcess::NotRunning) { process->kill(); process->waitForFinished(1000); }
     }
 }
+void GitWorkspace::activate() {
+    if (m_activationRequested) return;
+    m_activationRequested = true;
+    emit activationRequested();
+}
+
 QString GitWorkspace::error() const {
     QStringList errors;
     for (const auto &error : {m_error, m_gitError, m_watchError})

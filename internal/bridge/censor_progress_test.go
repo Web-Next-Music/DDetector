@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type progressSearchBackend struct {
@@ -113,6 +114,83 @@ func TestCensorStageProgressPersistence(t *testing.T) {
 	snapshot.Jobs[0].StageProgress["comparison"] = 0
 	if rt.snapshot().Jobs[0].StageProgress["comparison"] != 1 {
 		t.Fatal("snapshot aliases progress")
+	}
+}
+
+func TestCensorProgressDebounceAndTerminalFlush(t *testing.T) {
+	s, _, _ := integrationCensor(t)
+	controlAPI(t, s, map[string]any{"action": "fetch"}, 200)
+	rt := s.censorRuntime
+	j := rt.snapshot().Jobs[0]
+	j.Status = "running"
+	j.StageProgress = newStageProgress()
+	if err := rt.update(j); err != nil {
+		t.Fatal(err)
+	}
+	before := rt.stateVersion
+	if err := rt.stageProgress(&j, "search", 1, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.stageProgress(&j, "search", 2, 3); err != nil {
+		t.Fatal(err)
+	}
+	if rt.stateVersion != before {
+		t.Fatal("progress bypassed debounce")
+	}
+	j.Status = "failed"
+	j.Error = "terminal"
+	if err := rt.update(j); err != nil {
+		t.Fatal(err)
+	}
+	if rt.progressDirty || rt.progressTimer != nil || rt.stateVersion == before {
+		t.Fatal("terminal update did not synchronously flush progress")
+	}
+	data, err := os.ReadFile(filepath.Join(rt.dir, "runtime.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk censorDiskState
+	if err = json.Unmarshal(data, &disk); err != nil {
+		t.Fatal(err)
+	}
+	if disk.Jobs[0].Status != "failed" || disk.Jobs[0].StageProgress["search"] != float64(2)/3 {
+		t.Fatal("terminal state or latest progress not durable", disk.Jobs[0])
+	}
+	// A stopped timer must not issue a later stale write.
+	time.Sleep(censorProgressDebounce + 50*time.Millisecond)
+	if rt.progressDirty || rt.progressTimer != nil {
+		t.Fatal("debounce remained active after terminal flush")
+	}
+}
+
+func TestCloneCensorJobDoesNotAliasMutableData(t *testing.T) {
+	similarity := .75
+	original := CensorJob{
+		StageProgress: map[string]float64{"search": .5},
+		Queries:       []string{"query"},
+		Result: &censor.Result{
+			Warnings:    []string{"warning"},
+			Fingerprint: &censor.Fingerprint{Values: []uint32{1}},
+			Comparison:  &censor.Comparison{FingerprintSimilarity: &similarity},
+			SuspiciousIntervals: []censor.SuspiciousInterval{{
+				Restoration: &censor.RestorationEvidence{Reason: "evidence"},
+			}},
+		},
+		Candidates:  []CensorCandidate{{Metadata: map[string]string{"key": "value"}, Result: &censor.Result{Waveform: []censor.WaveformPoint{{Max: 1}}}}},
+		Replacement: &CensorReplacement{URL: "https://example.com/replacement.mp3"},
+	}
+	cloned := cloneCensorJob(original)
+	cloned.StageProgress["search"] = 1
+	cloned.Queries[0] = "changed"
+	cloned.Result.Warnings[0] = "changed"
+	cloned.Result.Fingerprint.Values[0] = 2
+	*cloned.Result.Comparison.FingerprintSimilarity = .25
+	cloned.Result.SuspiciousIntervals[0].Restoration.Reason = "changed"
+	cloned.Candidates[0].Metadata["key"] = "changed"
+	cloned.Candidates[0].Result.Waveform[0].Max = 2
+	cloned.Replacement.URL = "changed"
+	if original.StageProgress["search"] != .5 || original.Queries[0] != "query" || original.Result.Warnings[0] != "warning" || original.Result.Fingerprint.Values[0] != 1 || *original.Result.Comparison.FingerprintSimilarity != .75 || original.Result.SuspiciousIntervals[0].Restoration.Reason != "evidence" || original.Candidates[0].Metadata["key"] != "value" || original.Candidates[0].Result.Waveform[0].Max != 1 || original.Replacement.URL != "https://example.com/replacement.mp3" {
+		t.Fatal("clone aliases mutable job data")
 	}
 }
 

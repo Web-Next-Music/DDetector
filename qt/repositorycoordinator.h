@@ -53,11 +53,17 @@ public:
                 return QString("Save or discard edits to the upload target before sending");
             return QString();
         });
-        connect(&config, &Config::repositoryPathChanged, this, [this] { applyRepository(); });
+        connect(&config, &Config::repositoryPathChanged, this, [this] {
+            if (m_active) applyRepository();
+        });
+        connect(&workspace, &GitWorkspace::activationRequested, this, [this] {
+            if (m_active) return;
+            m_active = true;
+            applyRepository();
+        });
         connect(&workspace, &GitWorkspace::changed, this, [this] { syncUploader(); });
         connect(&uploader, &Uploader::stateChanged, this, [this] { syncUploader(); });
         connect(&uploader, &Uploader::completed, &workspace, [&workspace](const QString &) { workspace.refreshTree(); });
-        applyRepository();
     }
     ~RepositoryCoordinator() override {
         if (m_bridge) {
@@ -79,7 +85,7 @@ private:
         syncUploader();
     }
     void syncUploader() {
-        if (m_applying || !m_workspace || !m_uploader || m_uploader->busy()) return;
+        if (!m_active || m_applying || !m_workspace || !m_uploader || m_uploader->busy()) return;
         m_applying = true;
         m_uploader->setDirectory(m_workspace->resolving() ? QString() : m_workspace->rootPath());
         m_applying = false;
@@ -90,4 +96,5 @@ private:
     QPointer<GitWorkspace> m_workspace;
     QPointer<Uploader> m_uploader;
     bool m_applying = false;
+    bool m_active = false;
 };

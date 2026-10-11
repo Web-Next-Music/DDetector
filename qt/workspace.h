@@ -47,6 +47,7 @@ public:
     TerminalSession *terminalSession() { return &m_terminal; }
     void setRepositoryPath(const QString &path);
     void setText(const QString &text);
+    Q_INVOKABLE void activate();
     Q_INVOKABLE bool editDocument(int revision, const QString &text);
     Q_INVOKABLE void refreshTree();
     Q_INVOKABLE void toggleDirectory(const QString &relativePath);
@@ -63,6 +64,7 @@ public:
     Q_INVOKABLE void clearTerminal();
     static constexpr qint64 MaximumTextBytes = 2 * 1024 * 1024;
 signals:
+    void activationRequested();
     void changed();
     void documentAboutToChange();
     void documentChanged();
@@ -99,6 +101,7 @@ private:
     QProcess *m_git = nullptr;
     quint64 m_gitGeneration = 0;
     bool m_resolving = false, m_refreshActive = false, m_refreshAgain = false;
+    bool m_activationRequested = false;
     QString m_gitError, m_watchError;
     int m_maximumWatches = 4096;
     int m_gitDeadlineMs = 5000;

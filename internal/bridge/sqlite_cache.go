@@ -144,6 +144,7 @@ func saveSQLiteCacheExisting(ctx context.Context, path string, cache tracksCache
 	}
 	meta := cache
 	meta.Tracks = nil
+	meta.LyricsSources = nil
 	meta.LyricsSourceVersion = lyricsSourceVersion
 	header, err := json.Marshal(meta)
 	if err != nil {
@@ -163,7 +164,7 @@ func saveSQLiteCacheExisting(ctx context.Context, path string, cache tracksCache
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cache_meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS cache_tracks (id INTEGER PRIMARY KEY, position INTEGER NOT NULL, payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS cache_tracks_position ON cache_tracks(position);`); err != nil {
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cache_meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS cache_tracks (id INTEGER PRIMARY KEY, position INTEGER NOT NULL, payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS cache_tracks_position ON cache_tracks(position); CREATE TABLE IF NOT EXISTS cache_lyrics_sources (id INTEGER PRIMARY KEY, version TEXT NOT NULL);`); err != nil {
 		return err
 	}
 	var version int
@@ -214,6 +215,148 @@ func saveSQLiteCacheExisting(ctx context.Context, path string, cache tracksCache
 	if _, err = tx.ExecContext(ctx, `DELETE FROM cache_tracks WHERE id NOT IN (SELECT id FROM keep_tracks)`); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM cache_lyrics_sources`); err != nil {
+		return err
+	}
+	source, err := tx.PrepareContext(ctx, `INSERT INTO cache_lyrics_sources VALUES(?,?)`)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	for id, version := range cache.LyricsSources {
+		if _, ok := seen[id]; ok && version != "" {
+			size += int64(len(version))
+			if size > maxTracksCacheBytes {
+				return fmt.Errorf("tracks cache too large")
+			}
+			if _, err = source.ExecContext(ctx, id, version); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// saveSQLiteCacheDelta applies a processLyrics checkpoint without encoding or
+// issuing UPSERTs for unchanged tracks. Track positions are their indices in the
+// reconciled result list; gaps are harmless and preserve the same read order.
+func saveSQLiteCacheDelta(ctx context.Context, path string, cache tracksCache, results []Result, dirty map[int]bool, removed map[int64]bool, sources map[int64]string) error {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		initial := cache
+		initial.Tracks = make([]Result, 0, len(results))
+		initial.LyricsSources = make(map[int64]string, len(sources))
+		for _, r := range results {
+			if r.Status == "pending" || r.Status == "error" {
+				continue
+			}
+			initial.Tracks = append(initial.Tracks, r)
+			if version := sources[r.ID]; version != "" {
+				initial.LyricsSources[r.ID] = version
+			}
+		}
+		return saveSQLiteCache(ctx, path, initial)
+	} else if err != nil {
+		return err
+	}
+	meta := cache
+	meta.Tracks = nil
+	meta.LyricsSources = nil
+	meta.LyricsSourceVersion = lyricsSourceVersion
+	header, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	db, err := openSQLiteCache(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cache_lyrics_sources (id INTEGER PRIMARY KEY, version TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	var version int
+	if err = tx.QueryRowContext(ctx, `SELECT version FROM cache_meta WHERE id=1`).Scan(&version); err != nil {
+		return err
+	}
+	if version != 1 {
+		return errSQLiteCacheVersion
+	}
+	// Migrate provenance embedded by older version-1 databases before replacing
+	// the metadata payload with its compact form.
+	var oldHeader []byte
+	if err = tx.QueryRowContext(ctx, `SELECT payload FROM cache_meta WHERE id=1`).Scan(&oldHeader); err != nil {
+		return err
+	}
+	var oldMeta tracksCache
+	if err = json.Unmarshal(oldHeader, &oldMeta); err != nil {
+		return fmt.Errorf("invalid SQLite cache metadata")
+	}
+	for id, sourceVersion := range oldMeta.LyricsSources {
+		if sourceVersion != "" {
+			if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO cache_lyrics_sources VALUES(?,?)`, id, sourceVersion); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE cache_meta SET payload=? WHERE id=1 AND payload!=?`, header, header); err != nil {
+		return err
+	}
+	upsert, err := tx.PrepareContext(ctx, `INSERT INTO cache_tracks VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET position=excluded.position,payload=excluded.payload WHERE position!=excluded.position OR payload!=excluded.payload`)
+	if err != nil {
+		return err
+	}
+	defer upsert.Close()
+	setSource, err := tx.PrepareContext(ctx, `INSERT INTO cache_lyrics_sources VALUES(?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version WHERE version!=excluded.version`)
+	if err != nil {
+		return err
+	}
+	defer setSource.Close()
+	for i := range dirty {
+		if i < 0 || i >= len(results) {
+			return fmt.Errorf("invalid cache delta")
+		}
+		r := results[i]
+		if r.ID <= 0 || r.Status == "pending" || r.Status == "error" {
+			return fmt.Errorf("invalid cached result")
+		}
+		if err = validateLyrics(r.Lyrics); err != nil {
+			return err
+		}
+		payload, marshalErr := json.Marshal(r)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err = upsert.ExecContext(ctx, r.ID, i, payload); err != nil {
+			return err
+		}
+		if sourceVersion := sources[r.ID]; sourceVersion != "" {
+			if _, err = setSource.ExecContext(ctx, r.ID, sourceVersion); err != nil {
+				return err
+			}
+		} else if _, err = tx.ExecContext(ctx, `DELETE FROM cache_lyrics_sources WHERE id=?`, r.ID); err != nil {
+			return err
+		}
+	}
+	for id := range removed {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM cache_tracks WHERE id=?`, id); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM cache_lyrics_sources WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
+	var payloadSize int64
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(length(payload)),0) + (SELECT length(payload) FROM cache_meta WHERE id=1) + (SELECT COALESCE(SUM(length(version)),0) FROM cache_lyrics_sources) FROM cache_tracks`).Scan(&payloadSize); err != nil {
+		return err
+	}
+	if payloadSize > maxTracksCacheBytes {
+		return fmt.Errorf("tracks cache too large")
+	}
 	return tx.Commit()
 }
 
@@ -253,9 +396,20 @@ func readSQLiteCache(ctx context.Context, path, uid, base string) (tracksCache, 
 	if version != 1 {
 		return empty, errSQLiteCacheVersion
 	}
+	var hasSources bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_lyrics_sources')`).Scan(&hasSources); err != nil {
+		return empty, err
+	}
 	var payloadSize int64
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(length(payload)),0) + (SELECT length(payload) FROM cache_meta WHERE id=1) FROM cache_tracks`).Scan(&payloadSize); err != nil {
 		return empty, err
+	}
+	if hasSources {
+		var sourcesSize int64
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(length(version)),0) FROM cache_lyrics_sources`).Scan(&sourcesSize); err != nil {
+			return empty, err
+		}
+		payloadSize += sourcesSize
 	}
 	if payloadSize > maxTracksCacheBytes {
 		return empty, fmt.Errorf("tracks cache too large")
@@ -267,6 +421,31 @@ func readSQLiteCache(ctx context.Context, path, uid, base string) (tracksCache, 
 	var cache tracksCache
 	if err = json.Unmarshal(header, &cache); err != nil {
 		return empty, fmt.Errorf("invalid SQLite cache metadata")
+	}
+	if hasSources {
+		sourceRows, queryErr := tx.QueryContext(ctx, `SELECT id,version FROM cache_lyrics_sources`)
+		if queryErr != nil {
+			return empty, queryErr
+		}
+		if cache.LyricsSources == nil {
+			cache.LyricsSources = map[int64]string{}
+		}
+		for sourceRows.Next() {
+			var id int64
+			var version string
+			if err = sourceRows.Scan(&id, &version); err != nil {
+				sourceRows.Close()
+				return empty, err
+			}
+			cache.LyricsSources[id] = version
+		}
+		if err = sourceRows.Err(); err != nil {
+			sourceRows.Close()
+			return empty, err
+		}
+		if err = sourceRows.Close(); err != nil {
+			return empty, err
+		}
 	}
 	cache.Tracks = []Result{}
 	rows, err := tx.QueryContext(ctx, `SELECT id,payload FROM cache_tracks ORDER BY position`)

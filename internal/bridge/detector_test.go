@@ -32,6 +32,9 @@ func TestAnnotations(t *testing.T) {
 		{"weed weedless xre-upz", true, []string{"weed", "weedless", "xre-upz"}},
 		{"re-up", true, []string{"re-up"}}, {"weed weedre-up", true, []string{"weed", "weedre-up"}}, {"xre-up", false, nil}, {"<weed> &", true, []string{"weed"}},
 		{"KETAMINE", false, nil}, {"İNEEDLE", true, []string{"NEEDLE"}},
+		{"weedless / КОЛЁСА", true, []string{"weedless", "КОЛЁСА"}},
+		{"колёсаx / КОЛЁСА", true, []string{"колёсаx", "КОЛЁСА"}},
+		{"яweed ёweed weedя weedё", false, nil}, {"界weed界", true, []string{"weed"}},
 	} {
 		t.Run(tc.text, func(t *testing.T) {
 			l := d.Annotate(tc.text)
@@ -52,6 +55,16 @@ func TestAnnotations(t *testing.T) {
 		})
 	}
 }
+func BenchmarkAnnotateMatchedLyricsLine(b *testing.B) {
+	d := NewDetector()
+	text := "Куплет: weedless и ещё немного текста / КОЛЁСА!"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d.Annotate(text)
+	}
+}
+
 func TestStatuses(t *testing.T) {
 	d := NewDetector()
 	ts := "00:01"

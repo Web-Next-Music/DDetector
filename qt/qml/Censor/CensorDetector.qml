@@ -9,6 +9,7 @@ Rectangle {
     id: root
     property var bridge: null
     property var uploadBackend: null
+    property bool pageActive: true
     property var state: bridge ? bridge.censorState : ({})
     property var jobs: state.jobs || []
     property string selectedId: ""
@@ -150,6 +151,7 @@ Rectangle {
     onCandidateChanged: if (!candidate) { replacement.stop(); approveDialog.close(); }
     onConfiguredChanged: if (!configured) { retryIds = []; stopPlayers(); }
     onVisibleChanged: if (!visible) stopPlayers()
+    onPageActiveChanged: if (!pageActive) stopPlayers()
     function stopPlayers() { playing = false; resolvingPlayback = false; ++playbackRequestId; original.stop(); replacement.stop(); }
     function audioCandidate(c) {
         if (!c || c.full_audio !== true || c.downloadable !== true || !/^https:\/\/[^/?#@\s]+(?:[/?][^#\s]*)?$/.test(c.url || "")) return false;
@@ -302,7 +304,8 @@ Rectangle {
             return labels[key] || key;
         }
     Timer {
-        interval: 150; repeat: true; running: root.retryIds.length > 0
+        objectName: "censorRetryTimer"
+        interval: 150; repeat: true; running: root.pageActive && root.retryIds.length > 0
         onTriggered: {
             if (root.busy || root.backendBusy || !root.configured) return;
             const id = root.retryIds[0];
@@ -363,56 +366,59 @@ Rectangle {
                             onClicked: root.switchCandidate(1)
                         }
                     }
-                    Canvas {
-                        id: waveform
+                    Item {
                         Layout.fillWidth: true; Layout.preferredHeight: visible ? 120 : 0
-                        visible: samples.length > 0
-                        objectName: "censorWaveform"
-                        property var samples: root.waveformData.samples || root.waveformData.points || root.waveformData
-                        property real duration: root.waveformDuration
-                        property real playhead: root.timelinePosition / 1000
-                        property var intervals: root.result.suspicious_intervals || root.sourceResult.suspicious_intervals || []
-                        onDurationChanged: requestPaint()
-                        onSamplesChanged: requestPaint()
-                        onIntervalsChanged: requestPaint()
-                        onPlayheadChanged: requestPaint()
-                        onWidthChanged: requestPaint()
-                        onHeightChanged: requestPaint()
-                        onPaint: {
-                            const ctx = getContext("2d"); ctx.clearRect(0, 0, width, height);
-                            ctx.fillStyle = "#0c0c0e"; ctx.fillRect(0, 0, width, height);
-                            ctx.strokeStyle = "#242428"; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
-                            if (duration > 0) {
-                                for (const region of intervals) {
-                                    const start = Math.max(0, Number(region.start_seconds));
-                                    const end = Math.min(duration, Number(region.end_seconds));
-                                    if (!isFinite(start) || !isFinite(end) || end <= start) continue;
-                                    const x = start / duration * width;
-                                    const w = Math.max(4, (end - start) / duration * width);
-                                    ctx.fillStyle = "#40D50811"; ctx.fillRect(x, 0, w, height);
-                                    ctx.fillStyle = "#D50811";
-                                    ctx.fillRect(x, 0, 2, height);
-                                    ctx.fillRect(Math.max(x, x + w - 2), 0, 2, height);
-                                    ctx.fillRect(x, 0, w, 3);
+                        visible: waveform.samples.length > 0
+                        Canvas {
+                            id: waveform
+                            anchors.fill: parent
+                            objectName: "censorWaveform"
+                            property var samples: root.waveformData.samples || root.waveformData.points || root.waveformData
+                            property real duration: root.waveformDuration
+                            property real playhead: root.timelinePosition / 1000
+                            property var intervals: root.result.suspicious_intervals || root.sourceResult.suspicious_intervals || []
+                            onDurationChanged: requestPaint()
+                            onSamplesChanged: requestPaint()
+                            onIntervalsChanged: requestPaint()
+                            onWidthChanged: requestPaint()
+                            onHeightChanged: requestPaint()
+                            onPaint: {
+                                const ctx = getContext("2d"); ctx.clearRect(0, 0, width, height);
+                                ctx.fillStyle = "#0c0c0e"; ctx.fillRect(0, 0, width, height);
+                                ctx.strokeStyle = "#242428"; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
+                                if (duration > 0) {
+                                    for (const region of intervals) {
+                                        const start = Math.max(0, Number(region.start_seconds));
+                                        const end = Math.min(duration, Number(region.end_seconds));
+                                        if (!isFinite(start) || !isFinite(end) || end <= start) continue;
+                                        const x = start / duration * width;
+                                        const w = Math.max(4, (end - start) / duration * width);
+                                        ctx.fillStyle = "#40D50811"; ctx.fillRect(x, 0, w, height);
+                                        ctx.fillStyle = "#D50811";
+                                        ctx.fillRect(x, 0, 2, height);
+                                        ctx.fillRect(Math.max(x, x + w - 2), 0, 2, height);
+                                        ctx.fillRect(x, 0, w, 3);
+                                    }
+                                }
+                                ctx.lineWidth = 1;
+                                for (let i = 0; i < samples.length; ++i) {
+                                    const point = samples[i];
+                                    const nativePoint = typeof point === "object" && point !== null;
+                                    const low = nativePoint ? Math.max(-1, Number(point.min)) : -Math.min(1, Math.abs(Number(point)));
+                                    const high = nativePoint ? Math.min(1, Number(point.max)) : -low;
+                                    if (!isFinite(low) || !isFinite(high)) continue;
+                                    const time = nativePoint ? (Number(point.start_seconds) + Number(point.end_seconds)) / 2 : i / samples.length * duration;
+                                    const x = nativePoint && duration > 0 ? time / duration * width : i * width / samples.length;
+                                    const suspicious = intervals.some(r => time >= Number(r.start_seconds) && time <= Number(r.end_seconds));
+                                    ctx.strokeStyle = suspicious ? "#ff5a60" : "#2bfef5";
+                                    ctx.beginPath(); ctx.moveTo(x, height * (1 - high) / 2); ctx.lineTo(x, height * (1 - low) / 2); ctx.stroke();
                                 }
                             }
-                            ctx.lineWidth = 1;
-                            for (let i = 0; i < samples.length; ++i) {
-                                const point = samples[i];
-                                const nativePoint = typeof point === "object" && point !== null;
-                                const low = nativePoint ? Math.max(-1, Number(point.min)) : -Math.min(1, Math.abs(Number(point)));
-                                const high = nativePoint ? Math.min(1, Number(point.max)) : -low;
-                                if (!isFinite(low) || !isFinite(high)) continue;
-                                const time = nativePoint ? (Number(point.start_seconds) + Number(point.end_seconds)) / 2 : i / samples.length * duration;
-                                const x = nativePoint && duration > 0 ? time / duration * width : i * width / samples.length;
-                                const suspicious = intervals.some(r => time >= Number(r.start_seconds) && time <= Number(r.end_seconds));
-                                ctx.strokeStyle = suspicious ? "#ff5a60" : "#2bfef5";
-                                ctx.beginPath(); ctx.moveTo(x, height * (1 - high) / 2); ctx.lineTo(x, height * (1 - low) / 2); ctx.stroke();
-                            }
-                            if (duration > 0) {
-                                const x = Math.max(0, Math.min(width, playhead / duration * width));
-                                ctx.fillStyle = "#D50811"; ctx.fillRect(x, 0, 2, height);
-                            }
+                        }
+                        Rectangle {
+                            width: 2; height: parent.height; color: "#D50811"
+                            visible: waveform.duration > 0
+                            x: Math.max(0, Math.min(parent.width - width, waveform.playhead / waveform.duration * parent.width))
                         }
                         MouseArea {
                             objectName: "censorWaveformSeek"
@@ -443,6 +449,7 @@ Rectangle {
                         implicitHeight: Math.max(playbackButton.implicitHeight, playbackMessage.implicitHeight, playbackTime.implicitHeight)
                         SiteButton {
                             id: playbackButton
+                            objectName: "censorPlaybackButton"
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
                             glyph: root.playing ? "pause" : "play"

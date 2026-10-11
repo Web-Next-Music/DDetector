@@ -58,6 +58,18 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 	buf := make([]byte, n*2)
 	x := make([]float64, n)
 	spec := make([]complex128, n)
+	powers := make([]float64, n/2)
+	var window [n]float64
+	var bandForBin [n / 2]int
+	bandScale := math.Log2(float64(rate) / 2 / 60)
+	for i := range window {
+		window[i] = .5 - .5*math.Cos(2*math.Pi*float64(i)/float64(n-1))
+	}
+	for k := 1; k < n/2; k++ {
+		hz := float64(k*rate) / n
+		bin := int(math.Log2(math.Max(60, hz)/60) / bandScale * spectralBands)
+		bandForBin[k] = max(0, min(spectralBands-1, bin))
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -104,32 +116,22 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 
 		energy /= float64(count / 2)
 		for i, v := range x {
-			spec[i] = complex(v*(.5-.5*math.Cos(2*math.Pi*float64(i)/float64(n-1))), 0)
+			spec[i] = complex(v*window[i], 0)
 		}
 		fft(spec)
 		total := 0.0
-		powers := make([]float64, n/2)
 		peak, peakBin := 0.0, 0
 		var bands [spectralBands]float64
 		for k := 1; k < n/2; k++ {
 			p := cmplx.Abs(spec[k])
 			p *= p
-			hz := float64(k*rate) / n
 			total += p
 			powers[k] = p
 			if p > peak {
 				peak, peakBin = p, k
 			}
 			// Log-frequency bands distinguish recordings even with identical envelopes.
-			bin := int(math.Log2(math.Max(60, hz)/60) / math.Log2(float64(rate)/2/60) * spectralBands)
-			if bin < 0 {
-				bin = 0
-			}
-			if bin >= spectralBands {
-				bin = spectralBands - 1
-			}
-			bands[bin] += p
-
+			bands[bandForBin[k]] += p
 		}
 		fr.energy = energy
 		if total > 1e-12 {
