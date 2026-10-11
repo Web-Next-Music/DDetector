@@ -212,8 +212,8 @@ source versions. To force another full rebuild, remove that account's cache whil
   with the bearer key. Polls are serialized at 750ms; changed tracks are reconciled
   by ID using insert/move/remove/dataChanged, never whole-model resets. Unchanged
   state/model data does not emit change notifications.
-- Settings use `appConfig`, a shared QObject storing `musicToken`, `hideIgnored`, `hideWindowControls`, and
-  `volume` in `QStandardPaths::GenericConfigLocation/DDetector/Config.json` (normally
+- Settings use `appConfig`, a shared QObject storing `musicToken`, `hideIgnored`, `hideWindowControls`,
+  `approveSoundEnabled`, and `volume` in `QStandardPaths::GenericConfigLocation/DDetector/Config.json` (normally
   `~/.config/DDetector/Config.json` on Linux). Existing nested Config.json is moved automatically. The Yandex token is
   plaintext, not encrypted: the directory is owner-only (0700), and atomic
   QSaveFile writes create an owner-readable/writable file (0600). Keep backups

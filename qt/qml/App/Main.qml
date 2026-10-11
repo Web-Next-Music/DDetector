@@ -733,6 +733,21 @@ ApplicationWindow {
                     onToggled: appConfig.visualizerEnabled = checked
                 }
             }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 56
+                radius: 14
+                color: appUi.surface2
+                border.color: appUi.borderColor
+                SiteToggleRow {
+                    objectName: "approveSoundSetting"
+                    anchors.fill: parent
+                    text: "Approve sound"
+                    glyph: "volume-2"
+                    checked: appConfig.approveSoundEnabled
+                    onToggled: appConfig.approveSoundEnabled = checked
+                }
+            }
         }
     }
     SiteDialog {
@@ -928,6 +943,7 @@ ApplicationWindow {
                         pageActive: parent && parent.visible
                         bridge: backend
                         uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
+                        approveSoundEnabled: appConfig.approveSoundEnabled
                     }
                 }
             }
@@ -1208,6 +1224,7 @@ ApplicationWindow {
     SendDialog {
         id: sendDialog
         uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
+        approveSoundEnabled: appConfig.approveSoundEnabled
         onSent: function(action) { appUi.notify("Send: " + action); }
     }
     SiteView {

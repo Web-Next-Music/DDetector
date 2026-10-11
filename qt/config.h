@@ -11,7 +11,8 @@ class Config final : public QObject {
     Q_PROPERTY(bool hideIgnored READ hideIgnored WRITE setHideIgnored NOTIFY settingsChanged)
     Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY settingsChanged)
     Q_PROPERTY(bool visualizerEnabled READ visualizerEnabled WRITE setVisualizerEnabled NOTIFY settingsChanged)
-        Q_PROPERTY(bool hideWindowControls READ hideWindowControls WRITE setHideWindowControls NOTIFY settingsChanged)
+    Q_PROPERTY(bool approveSoundEnabled READ approveSoundEnabled WRITE setApproveSoundEnabled NOTIFY settingsChanged)
+    Q_PROPERTY(bool hideWindowControls READ hideWindowControls WRITE setHideWindowControls NOTIFY settingsChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
 public:
     explicit Config(QObject *parent = nullptr);
@@ -33,6 +34,8 @@ public:
         void setHideWindowControls(bool value);
     bool visualizerEnabled() const { return m_visualizerEnabled; }
     void setVisualizerEnabled(bool value);
+    bool approveSoundEnabled() const { return m_approveSoundEnabled; }
+    void setApproveSoundEnabled(bool value);
     double volume() const { return m_volume; }
     QString error() const { return m_error; }
     void setMusicToken(const QString &value);
@@ -59,7 +62,7 @@ private:
     QString m_storedToken;
     QString m_path, m_token, m_error, m_repositoryPath;
     bool m_hideIgnored = false, m_hideWindowControls = false, m_blocked = false;
-    bool m_visualizerEnabled = false;
+    bool m_visualizerEnabled = false, m_approveSoundEnabled = false;
     double m_volume = 0.5;
         QTimer m_saveDebounce;
         bool m_savePending = false;

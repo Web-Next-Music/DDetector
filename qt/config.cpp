@@ -85,12 +85,14 @@ void Config::load() {
         const auto windowControls = object.value("hideWindowControls");
     const auto volume = object.value("volume");
     const auto visualizer = object.value("visualizerEnabled");
+    const auto approveSound = object.value("approveSoundEnabled");
     if (file.error() != QFileDevice::NoError || parse.error != QJsonParseError::NoError || !document.isObject()
         || (!token.isUndefined() && !token.isString())
         || (!repository.isUndefined() && !repository.isString())
         || (!hidden.isUndefined() && !hidden.isBool())
         || (!visualizer.isUndefined() && !visualizer.isBool())
-                || (!windowControls.isUndefined() && !windowControls.isBool())
+        || (!approveSound.isUndefined() && !approveSound.isBool())
+        || (!windowControls.isUndefined() && !windowControls.isBool())
         || (!volume.isUndefined() && (!volume.isDouble() || !std::isfinite(volume.toDouble())
                                      || volume.toDouble() < 0 || volume.toDouble() > 1))) {
         m_blocked = true; fail("Invalid configuration; original file has been preserved"); return;
@@ -105,6 +107,7 @@ void Config::load() {
         m_hideWindowControls = windowControls.toBool(false);
     m_volume = volume.toDouble(0.5);
     m_visualizerEnabled = visualizer.toBool(false);
+    m_approveSoundEnabled = approveSound.toBool(false);
 }
 void Config::save() {
     if (m_path.isEmpty() || m_blocked) return;
@@ -117,7 +120,7 @@ void Config::save() {
     if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(filePermissions)) {
         fail("Unable to open secure configuration file"); return;
     }
-    QJsonObject settings{{"repositoryPath", m_repositoryPath}, {"hideIgnored", m_hideIgnored}, {"hideWindowControls", m_hideWindowControls}, {"volume", m_volume}, {"visualizerEnabled", m_visualizerEnabled}};
+    QJsonObject settings{{"repositoryPath", m_repositoryPath}, {"hideIgnored", m_hideIgnored}, {"hideWindowControls", m_hideWindowControls}, {"volume", m_volume}, {"visualizerEnabled", m_visualizerEnabled}, {"approveSoundEnabled", m_approveSoundEnabled}};
     // Pending/failed writes remain recoverable across shutdown. Never remove the
     // plaintext copy until the OS backend confirms the exact current value.
     if ((m_credentialEdited || !m_token.isEmpty())
@@ -244,6 +247,10 @@ void Config::setHideWindowControls(bool value) {
 void Config::setVisualizerEnabled(bool value) {
     if (m_visualizerEnabled == value) { if (m_savePending) scheduleSave(); return; }
     m_visualizerEnabled = value; scheduleSave(); emit settingsChanged();
+}
+void Config::setApproveSoundEnabled(bool value) {
+    if (m_approveSoundEnabled == value) { if (m_savePending) scheduleSave(); return; }
+    m_approveSoundEnabled = value; scheduleSave(); emit settingsChanged();
 }
 void Config::setVolume(double value) {
     if (!std::isfinite(value)) return;

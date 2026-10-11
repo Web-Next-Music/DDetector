@@ -1323,15 +1323,18 @@ private slots:
         config.setHideIgnored(true);
         QVERIFY(!config.hideWindowControls());
         config.setHideWindowControls(true);
+        QVERIFY(!config.approveSoundEnabled());
+        config.setApproveSoundEnabled(true);
         config.setVolume(0.75);
         QVERIFY(config.error().isEmpty());
-        QCOMPARE(changed.count(), 5);
+        QCOMPARE(changed.count(), 6);
         QVERIFY(config.flush());
         Config restored(path);
         QCOMPARE(restored.repositoryPath(), repositoryPath);
         QCOMPARE(restored.musicToken(), QString("test-private-token"));
         QVERIFY(restored.hideIgnored());
         QVERIFY(restored.hideWindowControls());
+        QVERIFY(restored.approveSoundEnabled());
         QCOMPARE(restored.volume(), 0.75);
         struct stat info {};
         QVERIFY(::stat(QFile::encodeName(path).constData(), &info) == 0);
@@ -1346,7 +1349,7 @@ private slots:
         QVERIFY(config.flush());
         Config cleared(path);
         QVERIFY(cleared.repositoryPath().isEmpty());
-        QCOMPARE(changed.count(), 6);
+        QCOMPARE(changed.count(), 7);
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
         const QByteArray invalid = "{\"musicToken\":\"test-private-token\",\"volume\":\"bad\"}";
         QCOMPARE(file.write(invalid), invalid.size()); file.close();
@@ -1955,6 +1958,11 @@ private slots:
                     QTRY_VERIFY(!button->property("visible").toBool());
                 }
                 config.setHideWindowControls(false);
+                auto approveSound = window->findChild<QObject *>("approveSoundSetting");
+                QVERIFY(approveSound);
+                approveSound->setProperty("checked", true);
+                QVERIFY(QMetaObject::invokeMethod(approveSound, "toggled"));
+                QVERIFY(config.approveSoundEnabled());
                 QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
         auto track = bridge.tracks()->data(bridge.tracks()->index(1), Qt::UserRole);
         QVERIFY(QMetaObject::invokeMethod(window, "choose", Q_ARG(QVariant, track)));

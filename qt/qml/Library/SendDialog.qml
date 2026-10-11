@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
+import QtMultimedia
 
 SiteDialog {
     id: dialog
@@ -14,6 +15,7 @@ SiteDialog {
     property url coverSource: ""
     property bool showUrlFields: true
     property bool sending: false
+    property bool approveSoundEnabled: false
     signal sent(string action)
 
     function configureTrack(id, title, artist, cover, mp3Url, showUrl) {
@@ -46,7 +48,11 @@ SiteDialog {
 
     onOpened: artistInput.forceActiveFocus()
 
-
+    MediaPlayer {
+        id: approveSound
+        objectName: "approveSoundPlayer"
+        audioOutput: AudioOutput {}
+    }
 
     component Field: SiteTextField {
         Layout.fillWidth: true
@@ -192,6 +198,11 @@ SiteDialog {
                 return
             dialog.sending = false
             dialog.close()
+            if (dialog.approveSoundEnabled) {
+                approveSound.source = "qrc:/assets/approved.mp3"
+                approveSound.position = 0
+                approveSound.play()
+            }
             dialog.sent(action)
         }
         function onStateChanged() {

@@ -9,6 +9,7 @@ Rectangle {
     id: root
     property var bridge: null
     property var uploadBackend: null
+    property bool approveSoundEnabled: false
     property bool pageActive: true
     property var state: bridge ? bridge.censorState : ({})
     property var jobs: state.jobs || []
@@ -658,6 +659,7 @@ Rectangle {
     SendDialog {
         id: approveDialog
         uploadBackend: root.uploadBackend
+        approveSoundEnabled: root.approveSoundEnabled
     }
 
 }
