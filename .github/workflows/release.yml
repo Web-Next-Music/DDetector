@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,182 +15,105 @@ concurrency:
 
 env:
   APP_NAME: DDetector
-  LINUX_IMAGE: ghcr.io/web-next-music/ddetector-build-arch
 
 jobs:
-  linux-image:
-    name: Build Linux CI image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build and publish image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packaging/ci/archlinux.Dockerfile
-          push: true
-          tags: |
-            ${{ env.LINUX_IMAGE }}:${{ github.sha }}
-            ${{ env.LINUX_IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   linux:
     name: Linux packages
-    needs: linux-image
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/web-next-music/ddetector-build-arch:${{ github.sha }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      CCACHE_DIR: /root/.cache/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Trust checkout directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-      - name: Cache Go dependencies and build output
+      - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
-          path: |
-            /root/go/pkg/mod
-            /root/.cache/go-build
-          key: linux-go-${{ hashFiles('go.sum') }}
-          restore-keys: linux-go-
+          path: ~/.cache/Homebrew
+          key: linux-homebrew-${{ runner.os }}-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: linux-homebrew-${{ runner.os }}-
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install cmake ninja ccache qt qtkeychain libgit2 pkgconf libarchive dpkg desktop-file-utils extra-cmake-modules
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "QMAKE=$(brew --prefix qt)/bin/qmake" >> "$GITHUB_ENV"
+          echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/.native-deps;$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Cache native Qt dependencies
+        id: native-deps
+        uses: actions/cache@v4
+        with:
+          path: .native-deps
+          key: linux-native-deps-qt-${{ hashFiles('.github/workflows/release.yml') }}
+
+      - name: Build native Qt dependencies
+        if: steps.native-deps.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/dependencies .native-deps
+          git clone --depth 1 --branch 2.2.0 https://github.com/lxqt/lxqt-build-tools.git build/dependencies/lxqt-build-tools
+          cmake -S build/dependencies/lxqt-build-tools -B build/dependencies/lxqt-build-tools-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps"
+          cmake --build build/dependencies/lxqt-build-tools-build --parallel
+          cmake --install build/dependencies/lxqt-build-tools-build
+
+          git clone --depth 1 --branch 2.2.0 https://github.com/lxqt/qtermwidget.git build/dependencies/qtermwidget
+          cmake -S build/dependencies/qtermwidget -B build/dependencies/qtermwidget-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" -DBUILD_EXAMPLE=OFF
+          cmake --build build/dependencies/qtermwidget-build --parallel
+          cmake --install build/dependencies/qtermwidget-build
+
+          git clone --depth 1 --branch v6.13.0 https://github.com/KDE/syntax-highlighting.git build/dependencies/syntax-highlighting
+          cmake -S build/dependencies/syntax-highlighting -B build/dependencies/syntax-highlighting-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" -DBUILD_TESTING=OFF -DQRC_SYNTAX=OFF
+          cmake --build build/dependencies/syntax-highlighting-build --parallel
+          cmake --install build/dependencies/syntax-highlighting-build
 
       - name: Cache C++ compiler output
         uses: actions/cache@v4
         with:
-          path: /root/.cache/ccache
+          path: ${{ env.CCACHE_DIR }}
           key: linux-ccache-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
             linux-ccache-${{ github.ref_name }}-
             linux-ccache-
 
-      - name: Derive version
+      - name: Build Linux packages
         shell: bash
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-
-      - name: Build
+        env:
+          VERSION: ${{ github.ref_name }}
+          QTERMWIDGET_DATA_DIR: ${{ github.workspace }}/.native-deps/share/qtermwidget6
+          SYNTAX_HIGHLIGHTING_DATA_DIR: ${{ github.workspace }}/.native-deps/share/org.kde.syntax-highlighting
         run: |
-          cmake -S qt -B qt/build-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build qt/build-release --parallel
-          mkdir -p build/release
-          go build -trimpath -ldflags="-s -w" \
-            -o build/release/ddetector-backend ./cmd/ddetector
-
-      - name: Create portable AppDir
-        shell: bash
-        run: |
-          mkdir -p build/AppDir/usr/lib/ddetector build/AppDir/usr/share/applications build/AppDir/usr/share/icons/hicolor/256x256/apps
-          install -Dm755 build/release/ddetector-backend build/AppDir/usr/lib/ddetector/ddetector-backend
-          install -Dm755 qt/build-release/ddetector-qt build/AppDir/usr/lib/ddetector/ddetector-qt
-          install -Dm644 qt/ddetector-qt.desktop build/AppDir/usr/share/applications/ddetector-qt.desktop
-          sed -i 's/^Exec=.*/Exec=ddetector/' build/AppDir/usr/share/applications/ddetector-qt.desktop
-          install -Dm644 qt/assets/icon-256.png build/AppDir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png
-          install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
-          cp -a /usr/share/qtermwidget6 build/AppDir/usr/share/
-          cp -a /usr/share/org.kde.syntax-highlighting build/AppDir/usr/share/
-          ln -s usr/share/applications/ddetector-qt.desktop build/AppDir/ddetector-qt.desktop
-          ln -s usr/share/icons/hicolor/256x256/apps/ddetector-qt.png build/AppDir/ddetector-qt.png
-
-          curl --fail --location --retry 3 \
-            --output build/linuxdeploy-x86_64.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl --fail --location --retry 3 \
-            --output build/linuxdeploy-plugin-qt-x86_64.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x build/linuxdeploy-x86_64.AppImage build/linuxdeploy-plugin-qt-x86_64.AppImage
-
-          export QMAKE=/usr/bin/qmake6
-          export QML_SOURCES_PATHS="$PWD/qt/qml"
-          export EXTRA_QT_PLUGINS="svg;webp"
-          export NO_STRIP=1
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          build/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
-            --appdir build/AppDir \
-            --executable build/AppDir/usr/lib/ddetector/ddetector-qt \
-            --desktop-file build/AppDir/usr/share/applications/ddetector-qt.desktop \
-            --icon-file qt/assets/icon-256.png \
-            --plugin qt
-          install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
-
-          export OUTPUT="build/DDetector-${VERSION}-x86_64.AppImage"
-          build/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
-            --appdir build/AppDir --output appimage
-
-      - name: Build Arch Linux package
-        shell: bash
-        run: |
-          VERSION_ARCH=${VERSION//-/_}
-          mkdir -p build/arch/pkg/opt build/arch/pkg/usr/bin
-          cp -a build/AppDir build/arch/pkg/opt/ddetector
-          ln -s /opt/ddetector/AppRun build/arch/pkg/usr/bin/ddetector
-          cat > build/arch/pkg/.PKGINFO <<EOF
-          pkgname = ddetector
-          pkgbase = ddetector
-          pkgver = ${VERSION_ARCH}-1
-          pkgdesc = Music library and duplicate detector
-          url = https://github.com/${GITHUB_REPOSITORY}
-          builddate = $(date +%s)
-          packager = GitHub Actions
-          size = $(du -sb build/arch/pkg | cut -f1)
-          arch = x86_64
-          depend = glibc
-          EOF
-          bsdtar --zstd -cf "build/ddetector-${VERSION_ARCH}-1-x86_64.pkg.tar.zst" \
-            -C build/arch/pkg .PKGINFO opt usr
-
-      - name: Build Debian package
-        shell: bash
-        run: |
-          mkdir -p build/deb/DEBIAN build/deb/opt build/deb/usr/bin
-          cp -a build/AppDir build/deb/opt/ddetector
-          ln -s /opt/ddetector/AppRun build/deb/usr/bin/ddetector
-          INSTALLED_SIZE=$(du -sk build/deb/opt/ddetector | cut -f1)
-          GLIBC_VERSION=$(ldd --version | sed -n '1s/.* //p')
-          cat > build/deb/DEBIAN/control <<EOF
-          Package: ddetector
-          Version: ${VERSION}
-          Section: sound
-          Priority: optional
-          Architecture: amd64
-          Installed-Size: ${INSTALLED_SIZE}
-          Maintainer: DDetector contributors
-          Depends: libc6 (>= ${GLIBC_VERSION})
-          Description: Music library and duplicate detector
-           Native Qt desktop client with its local Go backend.
-          EOF
-          dpkg-deb --root-owner-group --build build/deb "build/ddetector_${VERSION}_amd64.deb"
+          VERSION="${VERSION#v}" ./scripts/build-dist.sh linux
 
       - name: Validate Linux packages
         shell: bash
         run: |
-          test -x build/AppDir/AppRun
-          desktop-file-validate build/AppDir/usr/share/applications/ddetector-qt.desktop
-          dpkg-deb --info "build/ddetector_${VERSION}_amd64.deb"
-          ARCH_PACKAGE=$(find build -maxdepth 1 -name 'ddetector-*-1-x86_64.pkg.tar.zst' -print -quit)
+          test -x build/native/AppDir/AppRun
+          desktop-file-validate build/native/AppDir/usr/share/applications/ddetector-qt.desktop
+          DEB_PACKAGE=$(find dist -maxdepth 1 -name '*.deb' -print -quit)
+          ARCH_PACKAGE=$(find dist -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
+          APPIMAGE=$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)
+          test -n "$DEB_PACKAGE"
           test -n "$ARCH_PACKAGE"
-          pacman -Qip "$ARCH_PACKAGE"
-          file "build/DDetector-${VERSION}-x86_64.AppImage"
+          test -n "$APPIMAGE"
+          dpkg-deb --info "$DEB_PACKAGE"
+          bsdtar -tf "$ARCH_PACKAGE" | grep -qx '.PKGINFO'
+          file "$APPIMAGE"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -199,9 +121,9 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           path: |
-            build/ddetector-*.pkg.tar.zst
-            build/ddetector_*_amd64.deb
-            build/DDetector-*-x86_64.AppImage
+            dist/*.pkg.tar.zst
+            dist/*.deb
+            dist/*.AppImage
 
   windows:
     name: Windows installer

@@ -1,11 +1,11 @@
 /build/
+/dist/
 /Testing/
 /.ruff_cache/
 __pycache__/
 /qt/build*/
 .env
 .env.*
-!.env.example
 session.json
 
 # Local Qt settings contain a plaintext Yandex token.

@@ -74,7 +74,7 @@ def main() -> None:
             title = subject
         grouped[kind].append(f"- {title} ([`{commit[:7]}`]({repository}/commit/{commit}))")
 
-    lines = [f"# DDetector {args.tag}", ""]
+    lines: list[str] = []
     if breaking:
         lines.extend(["## ⚠️ Breaking changes", "", *breaking, ""])
     for kind, heading in SECTIONS.items():
