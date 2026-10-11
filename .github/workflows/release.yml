@@ -1,0 +1,285 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: DDetector
+
+jobs:
+  linux:
+    name: Linux packages
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install checkout prerequisites
+        run: pacman -Syu --noconfirm git
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build and packaging dependencies
+        run: |
+          pacman -S --needed --noconfirm \
+            cmake ninja gcc go python curl file patchelf desktop-file-utils dpkg fakeroot \
+            qt6-base qt6-declarative qt6-multimedia qt6-svg qt6-imageformats \
+            qtermwidget syntax-highlighting qtkeychain-qt6 libgit2 pkgconf
+
+      - name: Derive version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -S qt -B qt/build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF
+          cmake --build qt/build-release --parallel
+          mkdir -p build/release
+          go build -trimpath -ldflags="-s -w" \
+            -o build/release/ddetector-backend ./cmd/ddetector
+
+      - name: Create portable AppDir
+        shell: bash
+        run: |
+          mkdir -p build/AppDir/usr/lib/ddetector build/AppDir/usr/share/applications build/AppDir/usr/share/icons/hicolor/256x256/apps
+          install -Dm755 build/release/ddetector-backend build/AppDir/usr/lib/ddetector/ddetector-backend
+          install -Dm755 qt/build-release/ddetector-qt build/AppDir/usr/lib/ddetector/ddetector-qt
+          install -Dm644 qt/ddetector-qt.desktop build/AppDir/usr/share/applications/ddetector-qt.desktop
+          sed -i 's/^Exec=.*/Exec=ddetector/' build/AppDir/usr/share/applications/ddetector-qt.desktop
+          install -Dm644 qt/assets/app-icon.png build/AppDir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png
+          install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
+          cp -a /usr/share/qtermwidget6 build/AppDir/usr/share/
+          cp -a /usr/share/org.kde.syntax-highlighting build/AppDir/usr/share/
+          ln -s usr/share/applications/ddetector-qt.desktop build/AppDir/ddetector-qt.desktop
+          ln -s usr/share/icons/hicolor/256x256/apps/ddetector-qt.png build/AppDir/ddetector-qt.png
+
+          curl --fail --location --retry 3 \
+            --output build/linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl --fail --location --retry 3 \
+            --output build/linuxdeploy-plugin-qt-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x build/linuxdeploy-x86_64.AppImage build/linuxdeploy-plugin-qt-x86_64.AppImage
+
+          export QMAKE=/usr/bin/qmake6
+          export QML_SOURCES_PATHS="$PWD/qt/qml"
+          export EXTRA_QT_PLUGINS="svg;webp"
+          export NO_STRIP=1
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          build/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+            --appdir build/AppDir \
+            --executable build/AppDir/usr/lib/ddetector/ddetector-qt \
+            --desktop-file build/AppDir/usr/share/applications/ddetector-qt.desktop \
+            --icon-file qt/assets/app-icon.png \
+            --plugin qt
+          install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
+
+          export OUTPUT="build/DDetector-${VERSION}-x86_64.AppImage"
+          build/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+            --appdir build/AppDir --output appimage
+
+      - name: Build Arch Linux package
+        shell: bash
+        run: |
+          VERSION_ARCH=${VERSION//-/_}
+          mkdir -p build/arch/pkg/opt build/arch/pkg/usr/bin
+          cp -a build/AppDir build/arch/pkg/opt/ddetector
+          ln -s /opt/ddetector/AppRun build/arch/pkg/usr/bin/ddetector
+          cat > build/arch/pkg/.PKGINFO <<EOF
+          pkgname = ddetector
+          pkgbase = ddetector
+          pkgver = ${VERSION_ARCH}
+          pkgdesc = Music library and duplicate detector
+          url = https://github.com/${GITHUB_REPOSITORY}
+          builddate = $(date +%s)
+          packager = GitHub Actions
+          size = $(du -sb build/arch/pkg | cut -f1)
+          arch = x86_64
+          depend = glibc
+          EOF
+          bsdtar --zstd -cf "build/ddetector-${VERSION_ARCH}-1-x86_64.pkg.tar.zst" -C build/arch/pkg .
+
+      - name: Build Debian package
+        shell: bash
+        run: |
+          mkdir -p build/deb/DEBIAN build/deb/opt build/deb/usr/bin
+          cp -a build/AppDir build/deb/opt/ddetector
+          ln -s /opt/ddetector/AppRun build/deb/usr/bin/ddetector
+          INSTALLED_SIZE=$(du -sk build/deb/opt/ddetector | cut -f1)
+          GLIBC_VERSION=$(ldd --version | sed -n '1s/.* //p')
+          cat > build/deb/DEBIAN/control <<EOF
+          Package: ddetector
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: ${INSTALLED_SIZE}
+          Maintainer: DDetector contributors
+          Depends: libc6 (>= ${GLIBC_VERSION})
+          Description: Music library and duplicate detector
+           Native Qt desktop client with its local Go backend.
+          EOF
+          dpkg-deb --root-owner-group --build build/deb "build/ddetector_${VERSION}_amd64.deb"
+
+      - name: Validate Linux packages
+        shell: bash
+        run: |
+          test -x build/AppDir/AppRun
+          desktop-file-validate build/AppDir/usr/share/applications/ddetector-qt.desktop
+          dpkg-deb --info "build/ddetector_${VERSION}_amd64.deb"
+          ARCH_PACKAGE=$(find build -maxdepth 1 -name 'ddetector-*-1-x86_64.pkg.tar.zst' -print -quit)
+          test -n "$ARCH_PACKAGE"
+          bsdtar -tf "$ARCH_PACKAGE" >/dev/null
+          file "build/DDetector-${VERSION}-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          if-no-files-found: error
+          path: |
+            build/ddetector-*.pkg.tar.zst
+            build/ddetector_*_amd64.deb
+            build/DDetector-*-x86_64.AppImage
+
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-qt6-svg
+            mingw-w64-ucrt-x86_64-qt6-imageformats
+            mingw-w64-ucrt-x86_64-kf6-syntax-highlighting
+            mingw-w64-ucrt-x86_64-qtkeychain
+            mingw-w64-ucrt-x86_64-libgit2
+
+      - name: Derive version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $numeric = (($version -split '-')[0] -split '\.')
+          while ($numeric.Count -lt 3) { $numeric += '0' }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION_NUM=$($numeric[0]).$($numeric[1]).$($numeric[2])" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Qt frontend
+        shell: msys2 {0}
+        run: |
+          cmake -S qt -B qt/build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_PREFIX_PATH=/ucrt64
+          cmake --build qt/build-release --parallel
+
+      - name: Build Go backend
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\windows | Out-Null
+          go build -trimpath -ldflags="-s -w" `
+            -o build\windows\ddetector.exe .\cmd\ddetector
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress --yes
+
+      - name: Deploy Windows runtime
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p build/windows/dist
+          cp build/windows/ddetector.exe build/windows/dist/
+          cp qt/build-release/ddetector-qt.exe build/windows/dist/
+          /ucrt64/bin/windeployqt6.exe --release --qmldir qt/qml --compiler-runtime build/windows/dist/ddetector-qt.exe
+
+          for pass in 1 2 3 4 5 6; do
+            copied=0
+            while IFS= read -r dependency; do
+              name=$(basename "$dependency")
+              if [[ ! -e "build/windows/dist/$name" ]]; then
+                cp "$dependency" build/windows/dist/
+                copied=1
+              fi
+            done < <(find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
+              | xargs -0 -r ldd 2>/dev/null \
+              | awk '/=> \/ucrt64\/bin\// {print $3}' \
+              | sort -u)
+            [[ $copied -eq 0 ]] && break
+          done
+
+          if find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
+            | xargs -0 -r ldd 2>/dev/null | grep -q 'not found'; then
+            echo 'Unresolved Windows runtime dependency' >&2
+            find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
+              | xargs -0 -r ldd 2>/dev/null | grep 'not found' >&2
+            exit 1
+          fi
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $dist = (Resolve-Path "build\windows\dist").Path
+          $output = (Join-Path (Resolve-Path "build\windows").Path "DDetector-$env:VERSION-Setup.exe")
+          makensis.exe "/DVERSION=$env:VERSION_NUM" "/DDIST_DIR=$dist" "/DOUTPUT_FILE=$output" packaging\windows\installer.nsi
+          if (-not (Test-Path $output)) { throw "NSIS did not create $output" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          if-no-files-found: error
+          path: build/windows/DDetector-*-Setup.exe
+
+  release:
+    name: Publish GitHub Release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate changelog
+        run: python3 scripts/release_notes.py --tag "${{ github.ref_name }}" --output release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.pkg.tar.zst
+            release-assets/*.deb
+            release-assets/*.AppImage
