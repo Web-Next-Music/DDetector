@@ -22,6 +22,7 @@ VIAddVersionKey "ProductName" "DDetector"
 VIAddVersionKey "FileDescription" "DDetector installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
+VIAddVersionKey "LegalCopyright" "DDetector contributors"
 
 Page directory
 Page instfiles
