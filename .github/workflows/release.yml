@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,21 +21,38 @@ jobs:
   linux:
     name: Linux packages
     runs-on: ubuntu-latest
-    container: archlinux:base-devel
+    container:
+      image: ghcr.io/web-next-music/ddetector-build-arch:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CCACHE_DIR: /root/.cache/ccache
     steps:
-      - name: Install checkout prerequisites
-        run: pacman -Syu --noconfirm git
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install build and packaging dependencies
-        run: |
-          pacman -S --needed --noconfirm \
-            cmake ninja gcc go python curl file patchelf desktop-file-utils dpkg fakeroot \
-            qt6-base qt6-declarative qt6-multimedia qt6-svg qt6-imageformats \
-            qtermwidget syntax-highlighting qtkeychain-qt6 libgit2 pkgconf
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache Go dependencies and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            /root/go/pkg/mod
+            /root/.cache/go-build
+          key: linux-go-${{ hashFiles('go.sum') }}
+          restore-keys: linux-go-
+
+      - name: Cache C++ compiler output
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: linux-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            linux-ccache-${{ github.ref_name }}-
+            linux-ccache-
 
       - name: Derive version
         shell: bash
@@ -44,7 +62,8 @@ jobs:
         run: |
           cmake -S qt -B qt/build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build qt/build-release --parallel
           mkdir -p build/release
           go build -trimpath -ldflags="-s -w" \
@@ -58,7 +77,7 @@ jobs:
           install -Dm755 qt/build-release/ddetector-qt build/AppDir/usr/lib/ddetector/ddetector-qt
           install -Dm644 qt/ddetector-qt.desktop build/AppDir/usr/share/applications/ddetector-qt.desktop
           sed -i 's/^Exec=.*/Exec=ddetector/' build/AppDir/usr/share/applications/ddetector-qt.desktop
-          install -Dm644 qt/assets/app-icon.png build/AppDir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png
+          install -Dm644 qt/assets/icon-256.png build/AppDir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png
           install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
           cp -a /usr/share/qtermwidget6 build/AppDir/usr/share/
           cp -a /usr/share/org.kde.syntax-highlighting build/AppDir/usr/share/
@@ -82,7 +101,7 @@ jobs:
             --appdir build/AppDir \
             --executable build/AppDir/usr/lib/ddetector/ddetector-qt \
             --desktop-file build/AppDir/usr/share/applications/ddetector-qt.desktop \
-            --icon-file qt/assets/app-icon.png \
+            --icon-file qt/assets/icon-256.png \
             --plugin qt
           install -Dm755 packaging/linux/AppRun build/AppDir/AppRun
 
@@ -100,7 +119,7 @@ jobs:
           cat > build/arch/pkg/.PKGINFO <<EOF
           pkgname = ddetector
           pkgbase = ddetector
-          pkgver = ${VERSION_ARCH}
+          pkgver = ${VERSION_ARCH}-1
           pkgdesc = Music library and duplicate detector
           url = https://github.com/${GITHUB_REPOSITORY}
           builddate = $(date +%s)
@@ -109,7 +128,8 @@ jobs:
           arch = x86_64
           depend = glibc
           EOF
-          bsdtar --zstd -cf "build/ddetector-${VERSION_ARCH}-1-x86_64.pkg.tar.zst" -C build/arch/pkg .
+          bsdtar --zstd -cf "build/ddetector-${VERSION_ARCH}-1-x86_64.pkg.tar.zst" \
+            -C build/arch/pkg .PKGINFO opt usr
 
       - name: Build Debian package
         shell: bash
@@ -141,13 +161,14 @@ jobs:
           dpkg-deb --info "build/ddetector_${VERSION}_amd64.deb"
           ARCH_PACKAGE=$(find build -maxdepth 1 -name 'ddetector-*-1-x86_64.pkg.tar.zst' -print -quit)
           test -n "$ARCH_PACKAGE"
-          bsdtar -tf "$ARCH_PACKAGE" >/dev/null
+          pacman -Qip "$ARCH_PACKAGE"
           file "build/DDetector-${VERSION}-x86_64.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-packages
           if-no-files-found: error
+          compression-level: 0
           path: |
             build/ddetector-*.pkg.tar.zst
             build/ddetector_*_amd64.deb
@@ -156,18 +177,27 @@ jobs:
   windows:
     name: Windows installer
     runs-on: windows-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
+          update: false
+          cache: true
           install: >-
             git
             mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
@@ -176,9 +206,18 @@ jobs:
             mingw-w64-ucrt-x86_64-qt6-multimedia
             mingw-w64-ucrt-x86_64-qt6-svg
             mingw-w64-ucrt-x86_64-qt6-imageformats
-            mingw-w64-ucrt-x86_64-kf6-syntax-highlighting
+            mingw-w64-ucrt-x86_64-syntax-highlighting
             mingw-w64-ucrt-x86_64-qtkeychain
             mingw-w64-ucrt-x86_64-libgit2
+
+      - name: Cache C++ compiler output
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: windows-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            windows-ccache-${{ github.ref_name }}-
+            windows-ccache-
 
       - name: Derive version
         shell: pwsh
@@ -195,7 +234,8 @@ jobs:
           cmake -S qt -B qt/build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
-            -DCMAKE_PREFIX_PATH=/ucrt64
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build qt/build-release --parallel
 
       - name: Build Go backend
@@ -205,7 +245,15 @@ jobs:
           go build -trimpath -ldflags="-s -w" `
             -o build\windows\ddetector.exe .\cmd\ddetector
 
+      - name: Restore NSIS
+        id: cache-nsis
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files (x86)\NSIS
+          key: windows-nsis-v1
+
       - name: Install NSIS
+        if: steps.cache-nsis.outputs.cache-hit != 'true'
         shell: pwsh
         run: choco install nsis --no-progress --yes
 
@@ -246,13 +294,16 @@ jobs:
         run: |
           $dist = (Resolve-Path "build\windows\dist").Path
           $output = (Join-Path (Resolve-Path "build\windows").Path "DDetector-$env:VERSION-Setup.exe")
-          makensis.exe "/DVERSION=$env:VERSION_NUM" "/DDIST_DIR=$dist" "/DOUTPUT_FILE=$output" packaging\windows\installer.nsi
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { throw "NSIS compiler not found at $makensis" }
+          & $makensis "/DVERSION=$env:VERSION_NUM" "/DDIST_DIR=$dist" "/DOUTPUT_FILE=$output" packaging\windows\installer.nsi
           if (-not (Test-Path $output)) { throw "NSIS did not create $output" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           if-no-files-found: error
+          compression-level: 0
           path: build/windows/DDetector-*-Setup.exe
 
   release:

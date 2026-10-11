@@ -11,14 +11,14 @@ from pathlib import Path
 
 SECTIONS = OrderedDict(
     [
-        ("feat", "✨ Features"),
-        ("fix", "🐛 Bug fixes"),
-        ("perf", "⚡ Performance"),
-        ("refactor", "♻️ Refactoring"),
-        ("docs", "📚 Documentation"),
-        ("build", "📦 Build and dependencies"),
-        ("ci", "👷 CI/CD"),
-        ("other", "🔧 Other changes"),
+        ("feat", "Features"),
+        ("fix", "Bug fixes"),
+        ("perf", "Performance"),
+        ("refactor", "Refactoring"),
+        ("docs", "Documentation"),
+        ("build", "Build and dependencies"),
+        ("ci", "CI/CD"),
+        ("other", "Other changes"),
     ]
 )
 CONVENTIONAL = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?:\s*(?P<title>.+)$")
