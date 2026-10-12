@@ -89,7 +89,17 @@ build_appdir() {
         "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/$LINUXDEPLOY_PLUGIN_QT_VERSION/linuxdeploy-plugin-qt-x86_64.AppImage" \
         "$LINUXDEPLOY_PLUGIN_QT_SHA256"
 
-    QMAKE="${QMAKE:-$(command -v qmake6)}" \
+    local qmake qt_plugins platform_plugins
+    qmake="${QMAKE:-$(command -v qmake6)}"
+    qt_plugins="$("$qmake" -query QT_INSTALL_PLUGINS)"
+    platform_plugins="$(find "$qt_plugins/platforms" -maxdepth 1 -name 'libqwayland*.so' -printf '%f\n' | sort | paste -sd ';')"
+    if [[ -z "$platform_plugins" ]]; then
+        echo "Qt Wayland platform plugins are missing from $qt_plugins; install Qt Wayland before packaging." >&2
+        exit 1
+    fi
+
+    QMAKE="$qmake" \
+    EXTRA_PLATFORM_PLUGINS="$platform_plugins" \
     QML_SOURCES_PATHS="$SOURCE_DIR/qt/qml" \
     EXTRA_QT_PLUGINS='svg;webp' \
     NO_STRIP=1 \
