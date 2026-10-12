@@ -13,8 +13,8 @@ SiteButton {
     height: 48
     padding: 0
     iconOnly: true
-    glyph: ["window-minus", "window-maximize", "window-x"][index]
-    glyphSize: index === 1 ? 14 : 16
+    glyph: ["window-minus", "square", "window-x"][index]
+    glyphSize: index === 1 ? 12 : 16
     textColor: hovered && index === 2 ? "white" : "#f0f0f4"
     hoverTextColor: textColor
     surfaceColor: "transparent"

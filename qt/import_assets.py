@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Protocol, cast
 
 PROTECTED = {"lucide-music.svg", "lucide-git-branch.svg"}
-WINDOW_ICONS = {"minus": "lucide-window-minus.svg", "square": "lucide-window-maximize.svg", "x": "lucide-window-x.svg"}
+WINDOW_ICONS = {
+    "minus": "lucide-window-minus.svg",
+    "maximize": "lucide-window-maximize.svg",
+    "copy": "lucide-window-restore.svg",
+    "x": "lucide-window-x.svg",
+}
 CONTROL_ICONS = {
     "compass": "lucide-compass.svg",
     "container": "lucide-container.svg",
