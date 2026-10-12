@@ -7,10 +7,24 @@ readonly DIST_DIR="$SOURCE_DIR/dist"
 readonly BUILD_DIR="$SOURCE_DIR/build/native"
 readonly VERSION="${VERSION:-$(git -C "$SOURCE_DIR" describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || printf '0.0.0')}"
 readonly GIT_TAG="${GIT_TAG:-$(git -C "$SOURCE_DIR" describe --tags --exact-match 2>/dev/null || printf 'dev')}"
-readonly VERSION_NUM="$(printf '%s' "$VERSION" | sed -E 's/-.*//; s/[^0-9.].*$//' | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 }')"
+readonly VERSION_NUM="$(printf '%s\n' "$VERSION" | awk -F. '
+    /^[0-9]+\.[0-9]+\.[0-9]+([.+-]|$)/ {
+        if ($1 <= 65535 && $2 <= 65535 && $3 + 0 <= 65535) {
+            printf "%d.%d.%d.0", $1, $2, $3
+            valid = 1
+        }
+    }
+    END { if (!valid) printf "0.0.0.0" }
+')"
 readonly ARCH_VERSION="${VERSION//-/_}"
 readonly JOBS="${JOBS:-$(nproc)}"
 readonly LINSYS2_BIN="${LINSYS2_BIN:-$HOME/.local/share/linsys2/ucrt64/ucrt64/bin}"
+set -a
+source "$SOURCE_DIR/packaging/deps.env"
+set +a
+readonly TOOLS_DIR="${TOOLS_DIR:-$SOURCE_DIR/build/tools}"
+readonly LINUXDEPLOY_DIR="$TOOLS_DIR/linuxdeploy-$LINUXDEPLOY_VERSION-qt-$LINUXDEPLOY_PLUGIN_QT_VERSION"
+readonly LINUXDEPLOY="$LINUXDEPLOY_DIR/linuxdeploy-x86_64.AppImage"
 APPDIR_READY=0
 
 case "$TARGET" in
@@ -24,22 +38,27 @@ fi
 
 mkdir -p "$DIST_DIR" "$BUILD_DIR"
 
+fetch_tool() {
+    local path="$1" url="$2" sha256="$3"
+    mkdir -p "$(dirname "$path")"
+    if [[ ! -f "$path" ]] || ! echo "$sha256  $path" | sha256sum --check --status; then
+        curl --fail --location --retry 3 "$url" --output "$path"
+        echo "$sha256  $path" | sha256sum --check --status || {
+            echo "Checksum mismatch for $url; update packaging/deps.env" >&2
+            rm -f "$path"
+            exit 1
+        }
+    fi
+    chmod +x "$path"
+}
+
 build_linux() {
-    if [[ -x "$BUILD_DIR/linux/ddetector-qt" && -x "$BUILD_DIR/linux/ddetector-backend" ]]; then
-        return
-    fi
-    local cmake_args=(
-        -S "$SOURCE_DIR/qt" -B "$BUILD_DIR/linux" -G Ninja
-        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-        "-DDDETECTOR_GIT_TAG=$GIT_TAG"
-    )
-    if command -v ccache >/dev/null; then
-        cmake_args+=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-    fi
-    cmake "${cmake_args[@]}"
-    cmake --build "$BUILD_DIR/linux" --parallel "$JOBS"
+    cmake -S "$SOURCE_DIR/qt" -B "$BUILD_DIR/linux" --preset release "-DDDETECTOR_GIT_TAG=$GIT_TAG"
     go build -C "$SOURCE_DIR" -trimpath -ldflags='-s -w' \
-        -o "$BUILD_DIR/linux/ddetector-backend" ./cmd/ddetector
+        -o "$BUILD_DIR/linux/ddetector-backend" ./cmd/ddetector &
+    local backend_pid=$!
+    cmake --build "$BUILD_DIR/linux" --parallel "$JOBS"
+    wait "$backend_pid"
 }
 
 build_appdir() {
@@ -63,22 +82,19 @@ build_appdir() {
     ln -s usr/share/applications/ddetector-qt.desktop "$appdir/ddetector-qt.desktop"
     ln -s usr/share/icons/hicolor/256x256/apps/ddetector-qt.png "$appdir/ddetector-qt.png"
 
-    local linuxdeploy="$BUILD_DIR/linuxdeploy-x86_64.AppImage"
-    local qt_plugin="$BUILD_DIR/linuxdeploy-plugin-qt-x86_64.AppImage"
-    [[ -x "$linuxdeploy" ]] || curl --fail --location --retry 3 \
-        https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
-        --output "$linuxdeploy"
-    [[ -x "$qt_plugin" ]] || curl --fail --location --retry 3 \
-        https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage \
-        --output "$qt_plugin"
-    chmod +x "$linuxdeploy" "$qt_plugin"
+    fetch_tool "$LINUXDEPLOY" \
+        "https://github.com/linuxdeploy/linuxdeploy/releases/download/$LINUXDEPLOY_VERSION/linuxdeploy-x86_64.AppImage" \
+        "$LINUXDEPLOY_SHA256"
+    fetch_tool "$LINUXDEPLOY_DIR/linuxdeploy-plugin-qt-x86_64.AppImage" \
+        "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/$LINUXDEPLOY_PLUGIN_QT_VERSION/linuxdeploy-plugin-qt-x86_64.AppImage" \
+        "$LINUXDEPLOY_PLUGIN_QT_SHA256"
 
     QMAKE="${QMAKE:-$(command -v qmake6)}" \
     QML_SOURCES_PATHS="$SOURCE_DIR/qt/qml" \
     EXTRA_QT_PLUGINS='svg;webp' \
     NO_STRIP=1 \
     APPIMAGE_EXTRACT_AND_RUN=1 \
-        "$linuxdeploy" --appimage-extract-and-run \
+        "$LINUXDEPLOY" --appimage-extract-and-run \
         --appdir "$appdir" \
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
@@ -93,7 +109,7 @@ build_appimage() {
     local output="$DIST_DIR/DDetector-$VERSION-x86_64.AppImage"
     rm -f "$output"
     OUTPUT="$output" APPIMAGE_EXTRACT_AND_RUN=1 \
-        "$BUILD_DIR/linuxdeploy-x86_64.AppImage" --appimage-extract-and-run \
+        "$LINUXDEPLOY" --appimage-extract-and-run \
         --appdir "$BUILD_DIR/AppDir" --output appimage
     file "$output"
 }
@@ -142,73 +158,14 @@ Depends: libc6
 Description: Music library and duplicate detector
  Native Qt desktop client with its local Go backend.
 EOF
-    dpkg-deb --root-owner-group --build "$root" "$output"
+    dpkg-deb -Zzstd --root-owner-group --build "$root" "$output"
     dpkg-deb --info "$output"
 }
 
 build_windows() {
-    command -v linsys2 >/dev/null || {
-        echo 'linsys2 is required: install it with yay -S linsys2' >&2
-        exit 1
-    }
-    [[ -d "$LINSYS2_BIN" ]] || {
-        echo "LinSYS2 UCRT64 environment not found at $LINSYS2_BIN; run: linsys2-pacman init" >&2
-        exit 1
-    }
-    for tool in cmake.exe windeployqt6.exe makensis.exe ntldd.exe; do
-        [[ -f "$LINSYS2_BIN/$tool" ]] || {
-            echo "Missing LinSYS2 tool: $tool" >&2
-            echo 'Install the Windows build dependencies listed in qt/README.md.' >&2
-            exit 1
-        }
-    done
-
-    local winbuild="$BUILD_DIR/windows"
-    local windist="$winbuild/dist"
-    local output="$DIST_DIR/DDetector-$VERSION-Setup.exe"
-    local source_win="Z:$SOURCE_DIR"
-    local build_win="Z:$winbuild"
-    local dist_win="Z:$DIST_DIR"
-    local linsys2_prefix_win="Z:${LINSYS2_BIN%/bin}"
-    rm -rf "$winbuild" "$output"
-    mkdir -p "$windist"
-
-    GOOS=windows GOARCH=amd64 go build -C "$SOURCE_DIR" -trimpath -ldflags='-s -w' \
-        -o "$windist/ddetector.exe" ./cmd/ddetector
-
-    linsys2 run -- cmake.exe -S "$source_win/qt" -B "$build_win/qt" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-        "-DCMAKE_PREFIX_PATH=$linsys2_prefix_win" \
-        "-DDDETECTOR_GIT_TAG=$GIT_TAG"
-    linsys2 run -- cmake.exe --build "$build_win/qt" --parallel "$JOBS"
-    cp "$winbuild/qt/ddetector-qt.exe" "$windist/"
-
-    linsys2 run -- windeployqt6.exe --release --qmldir "$source_win/qt/qml" \
-        --compiler-runtime "$build_win/dist/ddetector-qt.exe"
-
-    local dependency report executable
-    for executable in "$windist/ddetector.exe" "$windist/ddetector-qt.exe"; do
-        report="$(linsys2 run -- ntldd.exe -R "Z:$executable" 2>/dev/null)"
-        if grep -q 'not found' <<<"$report"; then
-            printf '%s\n' "$report" >&2
-            echo "Unresolved Windows runtime dependency in $executable" >&2
-            exit 1
-        fi
-        while IFS= read -r dependency; do
-            [[ -n "$dependency" ]] || continue
-            if [[ ! -f "$windist/$dependency" ]]; then
-                cp "$LINSYS2_BIN/$dependency" "$windist/"
-            fi
-        done < <(awk '/=> Z:/ {print $1}' <<<"$report" | sort -u)
-    done
-
-    linsys2 run -- makensis.exe \
-        "-DVERSION=$VERSION_NUM" \
-        "-DDIST_DIR=$build_win/dist" \
-        "-DOUTPUT_FILE=$dist_win/DDetector-$VERSION-Setup.exe" \
-        "$source_win/packaging/windows/installer.nsi"
-    test -s "$output"
-    file "$output"
+    VERSION="$VERSION" VERSION_NUM="$VERSION_NUM" GIT_TAG="$GIT_TAG" JOBS="$JOBS" \
+        SOURCE_DIR="$SOURCE_DIR" BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" \
+        LINSYS2_BIN="$LINSYS2_BIN" bash "$SOURCE_DIR/packaging/windows/build.sh"
 }
 
 case "$TARGET" in

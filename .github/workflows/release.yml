@@ -32,6 +32,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Load pinned dependency versions
+        shell: bash
+        run: cat packaging/deps.env >> "$GITHUB_ENV"
+
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
@@ -47,6 +51,7 @@ jobs:
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
           echo "QMAKE=$(brew --prefix qt)/bin/qmake" >> "$GITHUB_ENV"
           echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
+          echo "QT_VERSION=$(brew list --versions qt | cut -d' ' -f2)" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/.native-deps:$(brew --prefix)" >> "$GITHUB_ENV"
 
       - name: Cache native Qt dependencies
@@ -54,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .native-deps
-          key: linux-native-deps-qt-${{ hashFiles('.github/workflows/release.yml') }}
+          key: linux-native-deps-qt${{ env.QT_VERSION }}-${{ hashFiles('packaging/deps.env') }}
 
       - name: Build native Qt dependencies
         if: steps.native-deps.outputs.cache-hit != 'true'
@@ -62,25 +67,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/dependencies .native-deps
-          git clone --depth 1 --branch 2.2.0 https://github.com/lxqt/lxqt-build-tools.git build/dependencies/lxqt-build-tools
+          git clone --depth 1 --branch "$LXQT_BUILD_TOOLS_VERSION" https://github.com/lxqt/lxqt-build-tools.git build/dependencies/lxqt-build-tools
           cmake -S build/dependencies/lxqt-build-tools -B build/dependencies/lxqt-build-tools-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps"
           cmake --build build/dependencies/lxqt-build-tools-build --parallel
           cmake --install build/dependencies/lxqt-build-tools-build
 
-          git clone --depth 1 --branch 2.2.0 https://github.com/lxqt/qtermwidget.git build/dependencies/qtermwidget
+          git clone --depth 1 --branch "$QTERMWIDGET_VERSION" https://github.com/lxqt/qtermwidget.git build/dependencies/qtermwidget
           cmake -S build/dependencies/qtermwidget -B build/dependencies/qtermwidget-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps" \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/.native-deps;$(brew --prefix)" -DBUILD_EXAMPLE=OFF
           cmake --build build/dependencies/qtermwidget-build --parallel
           cmake --install build/dependencies/qtermwidget-build
 
-          git clone --depth 1 --branch v6.13.0 https://github.com/KDE/syntax-highlighting.git build/dependencies/syntax-highlighting
+          git clone --depth 1 --branch "v$SYNTAX_HIGHLIGHTING_VERSION" https://github.com/KDE/syntax-highlighting.git build/dependencies/syntax-highlighting
           cmake -S build/dependencies/syntax-highlighting -B build/dependencies/syntax-highlighting-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.native-deps" \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/.native-deps;$(brew --prefix)" -DBUILD_TESTING=OFF -DQRC_SYNTAX=OFF
           cmake --build build/dependencies/syntax-highlighting-build --parallel
           cmake --install build/dependencies/syntax-highlighting-build
+
+      - name: Cache packaging tools
+        uses: actions/cache@v4
+        with:
+          path: build/tools
+          key: linux-packaging-tools-${{ hashFiles('packaging/deps.env') }}
 
       - name: Cache C++ compiler output
         uses: actions/cache@v4
@@ -161,6 +172,8 @@ jobs:
             mingw-w64-ucrt-x86_64-syntax-highlighting
             mingw-w64-ucrt-x86_64-qtkeychain
             mingw-w64-ucrt-x86_64-libgit2
+            mingw-w64-ucrt-x86_64-ntldd
+            mingw-w64-ucrt-x86_64-nsis
 
       - name: Cache C++ compiler output
         uses: actions/cache@v4
@@ -171,94 +184,21 @@ jobs:
             windows-ccache-${{ github.ref_name }}-
             windows-ccache-
 
-      - name: Derive version
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          $numeric = (($version -split '-')[0] -split '\.')
-          while ($numeric.Count -lt 3) { $numeric += '0' }
-          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "GIT_TAG=${{ github.ref_name }}" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VERSION_NUM=$($numeric[0]).$($numeric[1]).$($numeric[2])" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Build Qt frontend
+      - name: Build Windows installer
         shell: msys2 {0}
+        env:
+          VERSION: ${{ github.ref_name }}
+          GIT_TAG: ${{ github.ref_name }}
         run: |
-          cmake -S qt -B qt/build-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DCMAKE_PREFIX_PATH=/ucrt64 \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DDDETECTOR_GIT_TAG="$GIT_TAG"
-          cmake --build qt/build-release --parallel
-
-      - name: Build Go backend
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force build\windows | Out-Null
-          go build -trimpath -ldflags="-s -w" `
-            -o build\windows\ddetector.exe .\cmd\ddetector
-
-      - name: Restore NSIS
-        id: cache-nsis
-        uses: actions/cache@v4
-        with:
-          path: C:\Program Files (x86)\NSIS
-          key: windows-nsis-v1
-
-      - name: Install NSIS
-        if: steps.cache-nsis.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: choco install nsis --no-progress --yes
-
-      - name: Deploy Windows runtime
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          mkdir -p build/windows/dist
-          cp build/windows/ddetector.exe build/windows/dist/
-          cp qt/build-release/ddetector-qt.exe build/windows/dist/
-          /ucrt64/bin/windeployqt6.exe --release --qmldir qt/qml --compiler-runtime build/windows/dist/ddetector-qt.exe
-
-          for pass in 1 2 3 4 5 6; do
-            copied=0
-            while IFS= read -r dependency; do
-              name=$(basename "$dependency")
-              if [[ ! -e "build/windows/dist/$name" ]]; then
-                cp "$dependency" build/windows/dist/
-                copied=1
-              fi
-            done < <(find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
-              | xargs -0 -r ldd 2>/dev/null \
-              | awk '/=> \/ucrt64\/bin\// {print $3}' \
-              | sort -u)
-            [[ $copied -eq 0 ]] && break
-          done
-
-          if find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
-            | xargs -0 -r ldd 2>/dev/null | grep -q 'not found'; then
-            echo 'Unresolved Windows runtime dependency' >&2
-            find build/windows/dist -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 \
-              | xargs -0 -r ldd 2>/dev/null | grep 'not found' >&2
-            exit 1
-          fi
-
-      - name: Build NSIS installer
-        shell: pwsh
-        run: |
-          $dist = (Resolve-Path "build\windows\dist").Path
-          $output = (Join-Path (Resolve-Path "build\windows").Path "DDetector-$env:VERSION-Setup.exe")
-          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $makensis)) { throw "NSIS compiler not found at $makensis" }
-          & $makensis "/DVERSION=$env:VERSION_NUM" "/DDIST_DIR=$dist" "/DOUTPUT_FILE=$output" packaging\windows\installer.nsi
-          if (-not (Test-Path $output)) { throw "NSIS did not create $output" }
+          export PATH="$(cygpath -u "$GOROOT")/bin:$PATH"
+          VERSION="${VERSION#v}" bash packaging/ci/build.sh windows
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           if-no-files-found: error
           compression-level: 0
-          path: build/windows/DDetector-*-Setup.exe
+          path: dist/DDetector-*-Setup.exe
 
   release:
     name: Publish GitHub Release

@@ -4,6 +4,9 @@ SetCompressor /SOLID lzma
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
+!ifndef VERSION_NUM
+  !define VERSION_NUM "0.0.0.0"
+!endif
 !ifndef DIST_DIR
   !error "DIST_DIR must point to the deployed application directory"
 !endif
@@ -17,7 +20,7 @@ InstallDir "$LOCALAPPDATA\Programs\DDetector"
 InstallDirRegKey HKCU "Software\DDetector" "InstallLocation"
 RequestExecutionLevel user
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VERSION_NUM}"
 VIAddVersionKey "ProductName" "DDetector"
 VIAddVersionKey "FileDescription" "DDetector installer"
 VIAddVersionKey "FileVersion" "${VERSION}"

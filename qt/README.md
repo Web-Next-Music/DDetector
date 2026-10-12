@@ -28,13 +28,20 @@ deployment machines, not only the development machine.
 From the `ddetector-go` root:
 
 ```sh
-cmake -S qt -B qt/build -DCMAKE_BUILD_TYPE=Release
-cmake --build qt/build -j 4
+cmake -S qt --preset dev
+cmake --build qt/build
 cmake --build qt/build --target qml-lint
 ctest --test-dir qt/build --output-on-failure --timeout 120
 ```
 
-For an application-only build, add `-DBUILD_TESTING=OFF` to configuration.
+Presets are defined in `qt/CMakePresets.json`: `dev` is a Debug build with tests in `qt/build`,
+`release` is an application-only Release build in `qt/build-release`. The release packaging
+scripts and CI use the same `release` preset. `ccache` and `lld` are used automatically when installed.
+
+Minimum versions of `qtermwidget` and `KF6SyntaxHighlighting` and the pinned packaging tools are
+defined once in `packaging/deps.env`, which is read by CMake, `packaging/ci/build.sh` and CI.
+The packaging tools there are pinned by SHA-256; if an upstream `continuous` build is replaced, the
+checksum check fails and the new value must be written to `deps.env`.
 
 ### Windows application icons
 
