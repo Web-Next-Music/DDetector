@@ -141,6 +141,15 @@ build_appimage() {
     file "$output"
 }
 
+install_desktop_integration() {
+    local root="$1"
+    local appdir="$BUILD_DIR/AppDir"
+    install -Dm644 "$appdir/usr/share/applications/ddetector-qt.desktop" \
+        "$root/usr/share/applications/ddetector-qt.desktop"
+    install -Dm644 "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png" \
+        "$root/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
+}
+
 build_arch() {
     build_appdir
     local root="$BUILD_DIR/arch/root"
@@ -149,6 +158,7 @@ build_arch() {
     mkdir -p "$root/opt" "$root/usr/bin"
     cp -a "$BUILD_DIR/AppDir" "$root/opt/ddetector"
     ln -s /opt/ddetector/AppRun "$root/usr/bin/ddetector"
+    install_desktop_integration "$root"
     cat > "$root/.PKGINFO" <<EOF
 pkgname = ddetector
 pkgbase = ddetector
@@ -173,6 +183,7 @@ build_deb() {
     mkdir -p "$root/DEBIAN" "$root/opt" "$root/usr/bin"
     cp -a "$BUILD_DIR/AppDir" "$root/opt/ddetector"
     ln -s /opt/ddetector/AppRun "$root/usr/bin/ddetector"
+    install_desktop_integration "$root"
     cat > "$root/DEBIAN/control" <<EOF
 Package: ddetector
 Version: $VERSION
