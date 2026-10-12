@@ -106,7 +106,9 @@ build_appdir() {
         exit 1
     fi
     mkdir -p "$bundled_integrations"
-    cp -a "$wayland_integrations/"*.so "$bundled_integrations/"
+    # Qt installations may expose plugins through symlinks into their package store.
+    # Bundle the library bytes, not links that break outside the build machine.
+    cp -aL "$wayland_integrations/"*.so "$bundled_integrations/"
 
     QMAKE="$qmake" \
     EXTRA_PLATFORM_PLUGINS="$platform_plugins" \
@@ -121,6 +123,10 @@ build_appdir() {
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --icon-file "$SOURCE_DIR/qt/assets/icons/app/icon-256.png" \
         --plugin qt
+    if [[ ! -f "$bundled_integrations/libqt-plugin-wayland-egl.so" || -L "$bundled_integrations/libqt-plugin-wayland-egl.so" ]]; then
+        echo "Bundled Qt Wayland EGL integration must be a regular library, not a symlink." >&2
+        exit 1
+    fi
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     APPDIR_READY=1
 }
