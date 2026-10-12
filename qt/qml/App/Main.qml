@@ -358,15 +358,30 @@ ApplicationWindow {
             y: 8
             height: 32
             spacing: 10
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appGitTag + "</span>"
-                textFormat: Text.RichText
-                color: appUi.ink
-                font.family: "DDetector Quicksand"
-                font.pixelSize: 18
-                font.weight: Font.Bold
-
+            Item {
+                id: windowTitleSlot
+                width: windowTitle.width
+                height: 32
+                Text {
+                    id: windowTitle
+                    objectName: "windowTitle"
+                    parent: auth.visible ? Overlay.overlay : windowTitleSlot
+                    x: auth.visible ? 16 : 0
+                    y: auth.visible ? (mainHeader.height - height) / 2 : (windowTitleSlot.height - height) / 2
+                    z: 40
+                    text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appGitTag + "</span>"
+                    textFormat: Text.RichText
+                    color: appUi.ink
+                    font.family: "DDetector Quicksand"
+                    font.pixelSize: 18
+                    font.weight: Font.Bold
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: auth.visible
+                        onPressed: appUi.startSystemMove()
+                        onDoubleClicked: appUi.toggleMaximized()
+                    }
+                }
             }
 
             Text {
@@ -519,6 +534,7 @@ ApplicationWindow {
     }
     Row {
         id: windowControls
+        parent: auth.visible ? Overlay.overlay : appUi.contentItem
         anchors.right: parent.right
         anchors.rightMargin: appConfig.hideWindowControls ? 8 : 0
         y: 0
@@ -1252,6 +1268,11 @@ ApplicationWindow {
         }
         Overlay.modal: Rectangle {
             color: "#99000000"
+            MouseArea {
+                objectName: "authOverlayDragArea"
+                anchors.fill: parent
+                onPressed: appUi.startSystemMove()
+            }
         }
         contentItem: Item {
             id: authContent
