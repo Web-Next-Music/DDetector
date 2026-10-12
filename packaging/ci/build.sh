@@ -98,6 +98,16 @@ build_appdir() {
         exit 1
     fi
 
+    # The Qt deployment plugin omits Wayland client-buffer integrations.
+    local wayland_integrations="$qt_plugins/wayland-graphics-integration-client"
+    local bundled_integrations="$appdir/usr/plugins/wayland-graphics-integration-client"
+    if [[ ! -f "$wayland_integrations/libqt-plugin-wayland-egl.so" ]]; then
+        echo "Qt Wayland EGL integration is missing from $wayland_integrations." >&2
+        exit 1
+    fi
+    mkdir -p "$bundled_integrations"
+    cp -a "$wayland_integrations/"*.so "$bundled_integrations/"
+
     QMAKE="$qmake" \
     EXTRA_PLATFORM_PLUGINS="$platform_plugins" \
     QML_SOURCES_PATHS="$SOURCE_DIR/qt/qml" \
@@ -107,6 +117,7 @@ build_appdir() {
         "$LINUXDEPLOY" --appimage-extract-and-run \
         --appdir "$appdir" \
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
+        --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --icon-file "$SOURCE_DIR/qt/assets/icon-256.png" \
         --plugin qt
