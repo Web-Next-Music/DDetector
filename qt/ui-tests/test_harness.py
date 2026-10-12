@@ -84,7 +84,7 @@ class SmokeTests(unittest.TestCase):
                     "layers", "link", "list-filter", "navigation", "panel-top", "radar", "sliders-horizontal"}
         self.assertEqual(set(assets.CONTROL_ICONS), expected)
         for name, filename in assets.CONTROL_ICONS.items():
-            source = (ROOT / "assets" / filename).read_text()
+            source = (ROOT / "assets" / assets.asset_path(filename)).read_text()
             self.assertIn("lucide-react 1.52.0", source, name)
             self.assertIn('stroke="#000000"', source, name)
         card = (ROOT / "qml" / "Components" / "SiteSettingsCard.qml").read_text()
@@ -127,7 +127,7 @@ class SmokeTests(unittest.TestCase):
         import json
         provenance = json.loads((ROOT / "assets/bearded-provenance.json").read_text())
         for name, expected in provenance["sha256"].items():
-            self.assertEqual(hashlib.sha256((ROOT / "assets" / name).read_bytes()).hexdigest(), expected)
+            self.assertEqual(hashlib.sha256((ROOT / "assets/icons/bearded" / name).read_bytes()).hexdigest(), expected)
 
     def test_protected_activity_icon_bytes(self):
         import hashlib

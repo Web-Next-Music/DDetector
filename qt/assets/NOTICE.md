@@ -3,6 +3,23 @@
 Unless noted otherwise, these assets originate from `/home/admin/Documents/Git/Next-Music-Website`.
 No assets are downloaded at application startup.
 
+## Directory layout
+
+- `icons/lucide/`: Lucide controls; protected activity icons `lucide-music.svg`
+  and `lucide-git-branch.svg` stay in this directory's parent asset root unchanged.
+- `icons/bearded/`: original file-tree SVGs.
+- `icons/brands/`: provider logos.
+- `icons/app/`: application PNG/ICO icons.
+- `fonts/`: native TTF/OTF fonts.
+- `images/`: artwork and track placeholder.
+- `audio/`: notification sounds.
+- `themes/`: terminal color schemes.
+
+Licenses and provenance manifests remain in the asset root. Manifest filenames
+and hashes are unchanged. CMake assigns flat `qrc:/assets/<filename>` aliases to
+all bundled assets, preserving existing runtime URLs; filenames must be unique
+across subdirectories. `../import_assets.py` exports into this layout.
+
 ## Editor menu icons (Lucide)
 
 `lucide-undo-2.svg`, `lucide-redo-2.svg`, `lucide-scissors.svg`,

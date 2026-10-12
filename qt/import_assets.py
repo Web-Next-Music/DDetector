@@ -165,6 +165,21 @@ def generate(source, icons_only=False):
     return outputs, manifest
 
 
+def asset_path(name):
+    """Resolve export filenames without changing the provenance manifest format."""
+    if name.startswith("lucide-") and name not in PROTECTED:
+        return Path("icons/lucide") / name
+    if name.endswith((".ttf", ".otf")):
+        return Path("fonts") / name
+    if name in {"github-dark.svg", "discord-dark.svg", "spotify-dark.svg"}:
+        return Path("icons/brands") / name
+    if name == "icon-256.png":
+        return Path("icons/app") / name
+    if name == "Kagami.webp":
+        return Path("images") / name
+    return Path(name)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
@@ -182,7 +197,7 @@ def main():
     manifest_name = "window-icons-provenance.json" if args.icons_only else "import-manifest.json"
     outputs[manifest_name] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     if args.check:
-        mismatches = [name for name, data in outputs.items() if not (output / name).is_file() or (output / name).read_bytes() != data]
+        mismatches = [name for name, data in outputs.items() if not (output / asset_path(name)).is_file() or (output / asset_path(name)).read_bytes() != data]
         if mismatches:
             raise RuntimeError("Asset/provenance mismatch: " + ", ".join(mismatches))
         print(f"PASS reproducible assets: {len(outputs)} files")
@@ -194,7 +209,9 @@ def main():
             for name, data in outputs.items():
                 (Path(stage) / name).write_bytes(data)
             for name in outputs:
-                os.replace(Path(stage) / name, output / name)
+                target = output / asset_path(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(Path(stage) / name, target)
         print(f"Published {len(outputs)} validated files to {output}")
 
 

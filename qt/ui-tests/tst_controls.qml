@@ -7,8 +7,8 @@ Item {
     id: scene
     width: 800
     height: 600
-    FontLoader { id: nunitoBold; source: Qt.resolvedUrl("../assets/Nunito-Bold.ttf") }
-    FontLoader { id: nunitoSemiBold; source: Qt.resolvedUrl("../assets/Nunito-SemiBold.ttf") }
+    FontLoader { id: nunitoBold; source: Qt.resolvedUrl("../assets/fonts/Nunito-Bold.ttf") }
+    FontLoader { id: nunitoSemiBold; source: Qt.resolvedUrl("../assets/fonts/Nunito-SemiBold.ttf") }
     QtObject {
         id: fakeUi
         property string selectedId: ""
@@ -45,7 +45,7 @@ Item {
             ui: fakeUi
             playbackBackend: fakePlayer
             actionBackend: null
-            placeholderSource: Qt.resolvedUrl("../assets/track-placeholder.svg")
+            placeholderSource: "qrc:/assets/track-placeholder.svg"
             row: ({id: "101", title: "<b>literal title</b>", artist: "Artist", lines: [
                 {ts: "00:42", parts: [{text: "<literal>", marked: true}]},
                 {ts: "01:17", parts: [{text: "second line", marked: false}]}
@@ -66,7 +66,7 @@ Item {
                 ui: fakeUi
                 playbackBackend: fakePlayer
                 actionBackend: null
-                placeholderSource: Qt.resolvedUrl("../assets/track-placeholder.svg")
+                placeholderSource: "qrc:/assets/track-placeholder.svg"
                 row: {
                     const lines = [];
                     for (let i = 0; i < ListView.view.rowCount; ++i)
@@ -97,10 +97,10 @@ Item {
             ui: fakeUi
             number: 1
             row: ({id: "101", title: "<b>literal title</b>", artist: "Artist", status: "found"})
-            placeholderSource: Qt.resolvedUrl("../assets/track-placeholder.svg")
+            placeholderSource: "qrc:/assets/track-placeholder.svg"
         }
     }
-    Component { id: dialogFactory; UI.SiteDialog { title: "Settings"; assetRoot: Qt.resolvedUrl("../assets/"); width: 300; contentItem: UI.SiteTextField { Accessible.name: "Token" } } }
+    Component { id: dialogFactory; UI.SiteDialog { title: "Settings"; assetRoot: "qrc:/assets/"; width: 300; contentItem: UI.SiteTextField { Accessible.name: "Token" } } }
 
     TestCase {
         name: "SharedControls"

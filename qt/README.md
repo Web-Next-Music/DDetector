@@ -89,7 +89,7 @@ checksum check fails and the new value must be written to `deps.env`.
 
 ### Windows application icons
 
-Windows Qt builds embed `assets/app-icon.ico` through `app-icon.rc`, in addition
+Windows Qt builds embed `assets/icons/app/app-icon.ico` through `app-icon.rc`, in addition
 to the runtime window icon. The ICO contains 16, 24, 32, 48, 64, 128 and 256 px
 sizes. The Go launcher embeds the same icon automatically through the checked-in
 `cmd/ddetector/app_icon_windows_{amd64,386,arm64}.syso` files; ordinary `go build`

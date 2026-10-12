@@ -75,7 +75,7 @@ build_appdir() {
     install -Dm755 "$BUILD_DIR/linux/ddetector-qt" "$appdir/usr/lib/ddetector/ddetector-qt"
     install -Dm644 "$SOURCE_DIR/qt/ddetector-qt.desktop" "$appdir/usr/share/applications/ddetector-qt.desktop"
     sed -i 's/^Exec=.*/Exec=ddetector/' "$appdir/usr/share/applications/ddetector-qt.desktop"
-    install -Dm644 "$SOURCE_DIR/qt/assets/icon-256.png" "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
+    install -Dm644 "$SOURCE_DIR/qt/assets/icons/app/icon-256.png" "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     cp -a "$qtermwidget_data" "$appdir/usr/share/"
     cp -a "$syntax_data" "$appdir/usr/share/"
@@ -119,7 +119,7 @@ build_appdir() {
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
-        --icon-file "$SOURCE_DIR/qt/assets/icon-256.png" \
+        --icon-file "$SOURCE_DIR/qt/assets/icons/app/icon-256.png" \
         --plugin qt
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     APPDIR_READY=1
