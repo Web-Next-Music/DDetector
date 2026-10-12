@@ -75,7 +75,7 @@ build_appdir() {
     install -Dm755 "$BUILD_DIR/linux/ddetector-qt" "$appdir/usr/lib/ddetector/ddetector-qt"
     install -Dm644 "$SOURCE_DIR/qt/packaging/ddetector-qt.desktop" "$appdir/usr/share/applications/ddetector-qt.desktop"
     sed -i 's/^Exec=.*/Exec=ddetector/' "$appdir/usr/share/applications/ddetector-qt.desktop"
-    install -Dm644 "$SOURCE_DIR/qt/assets/icons/app/icon-256.png" "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
+    install -Dm644 "$SOURCE_DIR/qt/assets/icons/app/app-icon.png" "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     cp -a "$qtermwidget_data" "$appdir/usr/share/"
     cp -a "$syntax_data" "$appdir/usr/share/"
@@ -121,12 +121,24 @@ build_appdir() {
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
-        --icon-file "$SOURCE_DIR/qt/assets/icons/app/icon-256.png" \
         --plugin qt
     if [[ ! -f "$bundled_integrations/libqt-plugin-wayland-egl.so" || -L "$bundled_integrations/libqt-plugin-wayland-egl.so" ]]; then
         echo "Bundled Qt Wayland EGL integration must be a regular library, not a symlink." >&2
         exit 1
     fi
+    # patchelf 0.15 (bundled by linuxdeploy) adds a program header over
+    # leancrypto's GNU hash table. Keep this libc-only library unmodified;
+    # AppRun's LD_LIBRARY_PATH already resolves it without an RPATH.
+    local leancrypto bundled_leancrypto
+    for bundled_leancrypto in "$appdir/usr/lib/"libleancrypto.so.*; do
+        [[ -f "$bundled_leancrypto" ]] || continue
+        leancrypto="$(env -u LD_LIBRARY_PATH -u LD_PRELOAD ldd "$qt_plugins/multimedia/libffmpegmediaplugin.so" | awk -v name="$(basename "$bundled_leancrypto")" '$1 == name && $2 == "=>" && $3 ~ /^\// { print $3; exit }')"
+        if [[ -z "$leancrypto" || ! -f "$leancrypto" ]]; then
+            echo "Cannot locate original $(basename "$bundled_leancrypto") for safe deployment." >&2
+            exit 1
+        fi
+        cp -L "$leancrypto" "$bundled_leancrypto"
+    done
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     APPDIR_READY=1
 }
@@ -135,9 +147,14 @@ build_appimage() {
     build_appdir
     local output="$DIST_DIR/DDetector-$VERSION-x86_64.AppImage"
     rm -f "$output"
-    OUTPUT="$output" APPIMAGE_EXTRACT_AND_RUN=1 \
-        "$LINUXDEPLOY" --appimage-extract-and-run \
-        --appdir "$BUILD_DIR/AppDir" --output appimage
+    # Package the already deployed AppDir directly. Running linuxdeploy again
+    # would repatch libraries, including the untouched leancrypto above.
+    local extracted="$LINUXDEPLOY_DIR/appimage-output"
+    mkdir -p "$extracted"
+    (cd "$extracted" && "$LINUXDEPLOY" --appimage-extract >/dev/null)
+    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+        "$extracted/squashfs-root/plugins/linuxdeploy-plugin-appimage/appimagetool-prefix/AppRun" \
+        "$BUILD_DIR/AppDir" "$output"
     file "$output"
 }
 
