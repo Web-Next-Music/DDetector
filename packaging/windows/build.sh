@@ -58,6 +58,7 @@ GOOS=windows GOARCH=amd64 go build -C "$SOURCE_DIR" -trimpath -ldflags='-s -w -H
 export MSYS2_ARG_CONV_EXCL='*'
 
 "${TOOL[@]}" cmake.exe -S "$source_win/qt" -B "$build_win/qt" --preset release \
+    -DBUILD_TESTING=OFF \
     "-DCMAKE_PREFIX_PATH=$prefix_win" \
     "-DDDETECTOR_GIT_TAG=$GIT_TAG"
 "${TOOL[@]}" cmake.exe --build "$build_win/qt" --parallel "$JOBS"
@@ -69,21 +70,50 @@ cp "$winbuild/qt/ddetector-qt.exe" "$windist/"
 # Keep Qt's lookup paths relative to the installed executable, not the build prefix.
 printf '[Paths]\nPrefix=.\nPlugins=.\nQmlImports=qml\n' > "$windist/qt.conf"
 
-# Plugins loaded at runtime (including FFmpeg and QML) are not EXE imports.
+# Seed every runtime plugin as well as the EXEs; traverse direct imports only.
+readonly dependency_root="$(cd "$windist" && pwd)"
+declare -a dependency_queue=()
+declare -A dependency_seen=()
 while IFS= read -r -d '' executable; do
-    report="$("${TOOL[@]}" ntldd.exe -R "$(windows_path "$executable")" 2>/dev/null)"
-    if grep -q 'not found' <<<"$report"; then
+    dependency_queue+=("$executable")
+done < <(find "$dependency_root" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+deployment_started=$SECONDS
+scanned=0
+for ((next=0; next<${#dependency_queue[@]}; next++)); do
+    executable="${dependency_queue[next]}"
+    key="${executable//\\//}"
+    key="${key,,}"
+    [[ -z "${dependency_seen[$key]:-}" ]] || continue
+    dependency_seen[$key]=1
+    if ! report="$("${TOOL[@]}" ntldd.exe "$(windows_path "$executable")")"; then
+        printf '%s\n' "$report" >&2
+        echo "Windows dependency scan failed for $executable" >&2
+        exit 1
+    fi
+    if grep -qi 'not[[:space:]]\+found' <<<"$report"; then
         printf '%s\n' "$report" >&2
         echo "Unresolved Windows runtime dependency in $executable" >&2
         exit 1
     fi
-    while IFS= read -r dependency; do
-        [[ -n "$dependency" ]] || continue
-        if [[ -f "$TOOL_BIN/$dependency" && ! -f "$windist/$dependency" ]]; then
-            cp "$TOOL_BIN/$dependency" "$windist/"
+    scanned=$((scanned + 1))
+    while IFS= read -r import; do
+        [[ "$import" == *'=>'* ]] || continue
+        read -r dependency _ <<<"$import"
+        resolved="${import#*=>}"
+        resolved="${resolved//\\//}"
+        resolved="${resolved,,}"
+        # Windows supplies these DLLs; never ship them from the toolchain.
+        [[ "$resolved" =~ /windows/(system32|syswow64|winsxs)/ ]] && continue
+        if [[ -f "$TOOL_BIN/$dependency" ]]; then
+            if [[ ! -f "$windist/$dependency" ]]; then
+                cp "$TOOL_BIN/$dependency" "$windist/"
+            fi
+            # Already deployed does not mean already scanned.
+            dependency_queue+=("$dependency_root/$dependency")
         fi
-    done < <(awk '/=>/ {print $1}' <<<"$report" | sort -u)
-done < <(find "$windist" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+    done <<<"$report"
+done
+printf 'Windows dependencies: scanned %d binaries in %ds\n' "$scanned" "$((SECONDS - deployment_started))"
 
 "${TOOL[@]}" makensis.exe \
     "-DVERSION=$VERSION" \

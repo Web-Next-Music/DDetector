@@ -19,9 +19,11 @@ env:
 jobs:
   linux:
     name: Linux packages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,30 +38,49 @@ jobs:
         shell: bash
         run: cat packaging/deps.env >> "$GITHUB_ENV"
 
-      - name: Cache Homebrew downloads
-        uses: actions/cache@v4
+      - name: Identify Linux toolchain cache
+        id: toolchain-key
+        shell: bash
+        run: |
+          # Refresh rolling Homebrew dependencies weekly, never across runner images.
+          echo "key=linux-homebrew-installed-v1-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}-$(date -u +%G-%V)-${{ hashFiles('packaging/deps.env', '.github/workflows/release.yml') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore installed Homebrew toolchain
+        id: homebrew
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/Homebrew
-          key: linux-homebrew-${{ runner.os }}-${{ hashFiles('.github/workflows/release.yml') }}
-          restore-keys: linux-homebrew-${{ runner.os }}-
+          path: /home/linuxbrew/.linuxbrew
+          key: ${{ steps.toolchain-key.outputs.key }}
 
       - name: Install native build dependencies
         shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libgl1 libopengl0
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install cmake ninja ccache qt qtkeychain libgit2 pkgconf libarchive dpkg desktop-file-utils extra-cmake-modules
+          if [[ '${{ steps.homebrew.outputs.cache-hit }}' != 'true' ]]; then
+            # Keep runtime image/Wayland plugins and LinguistTools without the Qt umbrella.
+            brew install --force-bottle cmake ninja ccache qtbase qtdeclarative qtmultimedia qtsvg qtimageformats qtwayland qttools qtkeychain libgit2 pkgconf libarchive dpkg desktop-file-utils extra-cmake-modules
+          fi
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-          echo "QMAKE=$(brew --prefix qt)/bin/qmake" >> "$GITHUB_ENV"
+          echo "QMAKE=$(brew --prefix qtbase)/bin/qmake" >> "$GITHUB_ENV"
           echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
-          echo "QT_VERSION=$(brew list --versions qt | cut -d' ' -f2)" >> "$GITHUB_ENV"
+          echo "QT_VERSION=$(brew list --versions qtbase | cut -d' ' -f2)" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/.native-deps:$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Save installed Homebrew toolchain
+        if: steps.homebrew.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/linuxbrew/.linuxbrew
+          key: ${{ steps.toolchain-key.outputs.key }}
 
       - name: Cache native Qt dependencies
         id: native-deps
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .native-deps
-          key: linux-native-deps-qt${{ env.QT_VERSION }}-${{ hashFiles('packaging/deps.env') }}
+          key: linux-native-deps-v2-${{ steps.toolchain-key.outputs.key }}-qt${{ env.QT_VERSION }}
 
       - name: Build native Qt dependencies
         if: steps.native-deps.outputs.cache-hit != 'true'
@@ -87,14 +108,23 @@ jobs:
           cmake --build build/dependencies/syntax-highlighting-build --parallel
           cmake --install build/dependencies/syntax-highlighting-build
 
+      - name: Save native Qt dependencies
+        if: steps.native-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .native-deps
+          key: ${{ steps.native-deps.outputs.cache-primary-key }}
+
       - name: Cache packaging tools
-        uses: actions/cache@v4
+        id: packaging-tools
+        uses: actions/cache/restore@v4
         with:
           path: build/tools
           key: linux-packaging-tools-${{ hashFiles('packaging/deps.env') }}
 
       - name: Cache C++ compiler output
-        uses: actions/cache@v4
+        id: linux-ccache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: linux-ccache-${{ github.ref_name }}-${{ github.sha }}
@@ -103,6 +133,7 @@ jobs:
             linux-ccache-
 
       - name: Build Linux packages
+        id: linux-build
         shell: bash
         env:
           VERSION: ${{ github.ref_name }}
@@ -111,6 +142,20 @@ jobs:
           SYNTAX_HIGHLIGHTING_DATA_DIR: ${{ github.workspace }}/.native-deps/share/org.kde.syntax-highlighting
         run: |
           VERSION="${VERSION#v}" ./scripts/build-dist.sh linux
+
+      - name: Save C++ compiler output
+        if: ${{ !cancelled() && steps.linux-build.outcome != 'skipped' && steps.linux-ccache.outputs.cache-hit != 'true' && steps.linux-ccache.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.linux-ccache.outputs.cache-primary-key }}
+
+      - name: Save verified packaging tools
+        if: ${{ !cancelled() && steps.packaging-tools.outputs.cache-hit != 'true' && steps.packaging-tools.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/tools
+          key: ${{ steps.packaging-tools.outputs.cache-primary-key }}
 
       - name: Validate Linux packages
         shell: bash
@@ -159,7 +204,7 @@ jobs:
           cache: true
           install: >-
             git
-            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
@@ -184,13 +229,20 @@ jobs:
             windows-ccache-${{ github.ref_name }}-
             windows-ccache-
 
+      - name: Locate Go for MSYS2
+        shell: pwsh
+        run: |
+          $goBin = Split-Path (Get-Command go.exe -ErrorAction Stop).Source
+          "GO_BIN=$goBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build Windows installer
         shell: msys2 {0}
         env:
           VERSION: ${{ github.ref_name }}
           GIT_TAG: ${{ github.ref_name }}
         run: |
-          export PATH="$(cygpath -u "$GOROOT")/bin:$PATH"
+          export PATH="$(cygpath -u "$GO_BIN"):$PATH"
+          go version
           VERSION="${VERSION#v}" bash packaging/ci/build.sh windows
 
       - uses: actions/upload-artifact@v4
