@@ -64,11 +64,11 @@ def validate_png(path, width, height):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executable", type=Path, default=Path(__file__).resolve().parent / "build/ddetector-qt")
-    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parent / "build/screenshots")
+    parser.add_argument("--executable", type=Path, default=Path(__file__).resolve().parents[1] / "build/ddetector-qt")
+    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "build/screenshots")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    fixture = json.loads((Path(__file__).resolve().parent / "test-fixtures/state.json").read_text())
+    fixture = json.loads((Path(__file__).resolve().parents[1] / "test-fixtures/state.json").read_text())
     key = secrets.token_urlsafe(32)
     state = copy.deepcopy(fixture)
     request_count = 0

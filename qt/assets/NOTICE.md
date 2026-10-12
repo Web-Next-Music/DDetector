@@ -5,8 +5,8 @@ No assets are downloaded at application startup.
 
 ## Directory layout
 
-- `icons/lucide/`: Lucide controls; protected activity icons `lucide-music.svg`
-  and `lucide-git-branch.svg` stay in this directory's parent asset root unchanged.
+- `icons/lucide/`: Lucide controls, including protected activity icons
+  `lucide-music.svg` and `lucide-git-branch.svg`, whose contents remain unchanged.
 - `icons/bearded/`: original file-tree SVGs.
 - `icons/brands/`: provider logos.
 - `icons/app/`: application PNG/ICO icons.

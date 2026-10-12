@@ -22,7 +22,7 @@ obj = build / "censor_detail_tests.o"
 subprocess.run(
     [link[0], *flags["CXX_DEFINES"], *flags["CXX_INCLUDES"], *flags["CXX_FLAGS"],
      "-c", str(source), "-o", str(obj)], cwd=build, check=True, timeout=120)
-old = "CMakeFiles/ddetector-qt-tests.dir/tests.cpp.o"
+old = "CMakeFiles/ddetector-qt-tests.dir/tests/tests.cpp.o"
 if old not in link:
     raise RuntimeError("Native-ui link command has no test entry-point object")
 link[link.index(old)] = str(obj)

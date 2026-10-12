@@ -167,7 +167,7 @@ def generate(source, icons_only=False):
 
 def asset_path(name):
     """Resolve export filenames without changing the provenance manifest format."""
-    if name.startswith("lucide-") and name not in PROTECTED:
+    if name.startswith("lucide-"):
         return Path("icons/lucide") / name
     if name.endswith((".ttf", ".otf")):
         return Path("fonts") / name
@@ -183,7 +183,7 @@ def asset_path(name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
-    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parent / "assets")
+    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "assets")
     parser.add_argument("--icons-only", action="store_true", help="Export only new window icons; never regenerate existing control/artwork assets")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Generate/validate and print hashes; write nothing")

@@ -5,12 +5,12 @@ from pathlib import Path
 
 
 def main():
-    qt = Path(__file__).resolve().parent
+    qt = Path(__file__).resolve().parents[1]
     launcher = qt.parent / "cmd" / "ddetector"
     with tempfile.TemporaryDirectory() as temporary:
         resource = Path(temporary) / "app-icon.res"
         subprocess.run(
-            ["llvm-rc", "/I", str(qt), "/FO", str(resource), str(qt / "app-icon.rc")],
+            ["llvm-rc", "/I", str(qt), "/FO", str(resource), str(qt / "packaging/app-icon.rc")],
             cwd=qt,
             check=True,
         )

@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / (name + ".py"))
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load {name} from {ROOT / (name + '.py')}")
+        raise ImportError(f"Cannot load {name} from {ROOT / 'scripts' / (name + '.py')}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -134,7 +134,7 @@ class SmokeTests(unittest.TestCase):
         expected = {"lucide-music.svg": "25d72005128b6fd930d133c4d75e625b0c7b2b0bd01ace787ca90f7ff4ada604",
                     "lucide-git-branch.svg": "aba18380437638ef1e51310163092923658874431853977da7d6511fdff5d109"}
         for name, value in expected.items():
-            self.assertEqual(hashlib.sha256((ROOT / "assets" / name).read_bytes()).hexdigest(), value)
+            self.assertEqual(hashlib.sha256((ROOT / "assets/icons/lucide" / name).read_bytes()).hexdigest(), value)
 
 
 if __name__ == "__main__":

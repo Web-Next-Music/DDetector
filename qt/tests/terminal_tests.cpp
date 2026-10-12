@@ -28,7 +28,7 @@ private slots:
         // This standalone target has no bundled UI assets; exercise the same resource path as the app.
         QVERIFY(resources.isValid());
         const QString scheme = QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir()
-                                   .filePath("assets/themes/DDetector.colorscheme");
+                                   .filePath("../assets/themes/DDetector.colorscheme");
         QFile manifest(resources.filePath("terminal.qrc"));
         QVERIFY(manifest.open(QIODevice::WriteOnly));
         manifest.write(("<RCC><qresource prefix=\"/assets\"><file alias=\"DDetector.colorscheme\">"
