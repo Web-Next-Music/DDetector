@@ -8,7 +8,7 @@ Rectangle {
     component SettingsDescription: SiteQuote {
         Layout.fillWidth: true
         Layout.minimumWidth: 0
-        Layout.leftMargin: parent && parent.parent && parent.parent.leadingGlyph ? -30 : 0
+        Layout.leftMargin: parent && (parent.parent as SiteSettingsCard)?.leadingGlyph ? -30 : 0
         Layout.topMargin: 10
         textColor: "#666666"
         backgroundRadius: 8

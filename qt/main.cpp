@@ -7,6 +7,7 @@
 #include "uploader.h"
 #include "repositorycoordinator.h"
 #include "version.h"
+#include "updater.h"
 #include <QCommandLineParser>
 #include <QDirIterator>
 #include <QFontDatabase>
@@ -67,6 +68,7 @@ int main(int argc, char **argv) {
     GitWorkspace workspace;
     Uploader uploader;
     RepositoryCoordinator repositories(config, workspace, uploader, &bridge);
+    Updater updater(nullptr, !parser.isSet("smoke-test"));
     MusicPlayer musicPlayer;
     musicPlayer.setVolume(config.volume());
 
@@ -90,12 +92,29 @@ int main(int argc, char **argv) {
     qmlRegisterType<AvatarImage>("DDetector", 1, 0, "AvatarImage");
     QQmlApplicationEngine engine;
     engine.addImageProvider("trackcovers", new CoverImageProvider);
+    engine.rootContext()->setContextProperty("appUpdater", &updater);
+#ifdef DDETECTOR_DEV_TOOLS
+    const bool developmentToolsEnabled = true;
+#else
+    const bool developmentToolsEnabled = false;
+#endif
+    engine.rootContext()->setContextProperty("devToolsEnabled", developmentToolsEnabled);
     engine.rootContext()->setContextProperty("appConfig", &config);
     engine.rootContext()->setContextProperty("appGitTag", QStringLiteral(DDETECTOR_GIT_TAG));
     engine.rootContext()->setContextProperty("backend", &bridge);
     engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
     engine.rootContext()->setContextProperty("gitWorkspace", &workspace);
     engine.rootContext()->setContextProperty("localUploader", &uploader);
+    engine.setInitialProperties({
+        {"config", QVariant::fromValue(&config)},
+        {"backendBridge", QVariant::fromValue(&bridge)},
+        {"player", QVariant::fromValue(&musicPlayer)},
+        {"workspace", QVariant::fromValue(&workspace)},
+        {"uploader", QVariant::fromValue(&uploader)},
+        {"gitTag", QStringLiteral(DDETECTOR_GIT_TAG)},
+        {"developmentToolsEnabled", developmentToolsEnabled},
+        {"updater", QVariant::fromValue(&updater)}
+    });
 
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;

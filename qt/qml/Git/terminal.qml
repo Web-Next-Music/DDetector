@@ -4,7 +4,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
+
 import DDetector.Terminal 1.0
 
 Rectangle {

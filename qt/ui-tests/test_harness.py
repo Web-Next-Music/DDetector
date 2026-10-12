@@ -72,7 +72,12 @@ class SmokeTests(unittest.TestCase):
     def test_protected_icons_are_not_export_targets(self):
         self.assertFalse(assets.PROTECTED.intersection(assets.WINDOW_ICONS.values()))
         self.assertFalse(assets.PROTECTED.intersection(assets.CONTROL_ICONS.values()))
-        self.assertEqual(len(assets.WINDOW_ICONS), 3)
+        self.assertEqual(assets.WINDOW_ICONS, {
+            "minus": "lucide-window-minus.svg",
+            "maximize": "lucide-window-maximize.svg",
+            "copy": "lucide-window-restore.svg",
+            "x": "lucide-window-x.svg",
+        })
 
     def test_settings_icons_are_exported_and_muted(self):
         expected = {"compass", "container", "cpu", "database", "gauge", "globe", "languages",

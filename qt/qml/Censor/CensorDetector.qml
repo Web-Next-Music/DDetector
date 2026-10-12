@@ -11,14 +11,14 @@ Rectangle {
     property var uploadBackend: null
     property bool approveSoundEnabled: false
     property bool pageActive: true
-    property var state: bridge ? bridge.censorState : ({})
-    property var jobs: state.jobs || []
+    property var censorState: bridge ? bridge.censorState : ({})
+    property var jobs: censorState.jobs || []
     property string selectedId: ""
     property string candidateId: ""
     property var selectedDetail: bridge && bridge.censorSelectedJob !== undefined ? bridge.censorSelectedJob : ({})
     property var job: {
         // Legacy backends provide complete inline jobs and no paging envelope.
-                if (state.jobs_total !== undefined && bridge && bridge.censorSelectJob !== undefined) return selectedDetail.id === selectedId ? selectedDetail : null;
+                if (censorState.jobs_total !== undefined && bridge && bridge.censorSelectJob !== undefined) return selectedDetail.id === selectedId ? selectedDetail : null;
         for (const j of jobs) if (j.id === selectedId) return j;
         return null;
     }
@@ -28,14 +28,15 @@ Rectangle {
     property var comparison: candidate && candidate.result ? candidate.result.comparison || null : null
     property var waveformData: result.waveform && (result.waveform.samples || result.waveform.points || result.waveform).length ? result.waveform : sourceResult.waveform || []
     property real waveformDuration: Number(result.waveform && (result.waveform.samples || result.waveform.points || result.waveform).length ? result.duration_seconds : sourceResult.duration_seconds) || 0
-    property var statistics: state.statistics || state.stats || ({})
+    property var statistics: censorState.statistics || censorState.stats || ({})
     property var statisticKeys: {
         const keys = ["total", "pending", "running", "censorship_found", "suitable_mp3", "review_required", "local_saved", "succeeded", "failed"];
         for (const key of Object.keys(statistics)) if (keys.indexOf(key) < 0) keys.push(key);
         return keys;
     }
     property var retryIds: []
-    property var normalPlayer: typeof musicPlayer !== "undefined" ? musicPlayer : null
+    readonly property var hostWindow: Window.window
+        property var normalPlayer: hostWindow ? hostWindow.player || null : null
     property var candidates: job && job.candidates ? job.candidates : []
     property var candidate: {
         for (const c of candidates) if (c.id === candidateId) return c;
@@ -119,7 +120,7 @@ Rectangle {
         playbackError = "";
         if (listenCandidate) {
             original.pause();
-            if (state.native === true && bridge && bridge.censorResolvePlayback !== undefined) {
+            if (censorState.native === true && bridge && bridge.censorResolvePlayback !== undefined) {
                 replacement.stop();
                 resolvingPlayback = true;
                 bridge.censorResolvePlayback(selectedId, candidateId, ++playbackRequestId);
@@ -133,12 +134,12 @@ Rectangle {
         else { playing = true; playSelection(); }
     }
     property url candidateAudioUrl: playableCandidate(candidate)
-        ? (state.native === true && bridge && bridge.censorResolvePlayback !== undefined
+        ? (censorState.native === true && bridge && bridge.censorResolvePlayback !== undefined
             ? resolvedCandidateUrl : resolvedCandidateUrl.toString() || candidate.url) : ""
     onCandidateAudioUrlChanged: if (!candidateAudioUrl.toString()) replacement.stop()
-    property bool configured: state.configured === true
+    property bool configured: censorState.configured === true
     property bool busy: bridge ? bridge.censorBusy : false
-    property bool backendBusy: state.busy === true
+    property bool backendBusy: censorState.busy === true
     property bool playing: false
     property bool clockTime: false
     readonly property bool listenCandidate: candidateId.length > 0 && playableCandidate(candidate)
@@ -168,7 +169,7 @@ Rectangle {
             && String(metadata.content_type || "").trim().toLowerCase() === "audio/mpeg";
     }
     function playableCandidate(c) {
-        return audioCandidate(c) || (webAudioCandidate(c) && state.native === true
+        return audioCandidate(c) || (webAudioCandidate(c) && censorState.native === true
             && !!bridge && bridge.censorResolvePlayback !== undefined);
     }
     function candidateType(c) {
@@ -206,7 +207,7 @@ Rectangle {
             || !(c.overlap_seconds >= Math.max(6, 0.9 * r.duration_seconds))
             || (c.fingerprint_similarity !== undefined && c.fingerprint_similarity !== null && !(c.fingerprint_similarity >= 0.85)))
             return "The selected candidate does not meet the server's strong full-recording match requirements";
-        if (c.confidence < Number((state.settings || {}).min_confidence || 0.75)) return "The selected candidate's comparison confidence is below the configured minimum";
+        if (c.confidence < Number((censorState.settings || {}).min_confidence || 0.75)) return "The selected candidate's comparison confidence is below the configured minimum";
         for (const interval of r.suspicious_intervals || []) {
             const restoration = interval.restoration;
             if (interval.status === "reference_restoration_candidate" && restoration
@@ -229,7 +230,7 @@ Rectangle {
     function disabledReason(action) {
         if (action === "send_candidate") {
             if (!uploadBackend) return "Upload backend is not configured";
-            if (state.native === true && state.native_repository_ready !== true) return "Configure and validate the Git repository first";
+            if (censorState.native === true && censorState.native_repository_ready !== true) return "Configure and validate the Git repository first";
             if (uploadBackend.busy) return "Wait for the current Send operation to finish";
             if (!candidate) return "Select a candidate first";
             if (!playableCandidate(candidate)) return "Select a downloadable audio candidate";
@@ -237,15 +238,15 @@ Rectangle {
             return "";
         }
         if (action === "check_track") {
-            if (!bridge || state.native !== true) return "Manual current-track analysis requires the native backend";
-            if (busy || backendBusy || state.running || retryIds.length) return "Wait for current analysis or commands to finish";
+            if (!bridge || censorState.native !== true) return "Manual current-track analysis requires the native backend";
+            if (busy || backendBusy || censorState.running || retryIds.length) return "Wait for current analysis or commands to finish";
             return currentTrackError();
         }
         if (!bridge || !configured) return "Censor Detector is not configured or authorized";
         if (busy) return "Waiting for the current HTTP command";
         if (retryIds.length && action !== "pause" && action !== "stop") return "Retrying errored jobs one at a time";
         if (backendBusy && action !== "pause" && action !== "stop") return "A server command is active; pause or stop it first";
-        if (action === "settings") return state.running ? "Pause or stop analysis before changing settings" : "";
+        if (action === "settings") return censorState.running ? "Pause or stop analysis before changing settings" : "";
         if (["fetch", "start", "resume", "pause", "stop", "retry_errors"].indexOf(action) >= 0) {
             if (action === "retry_errors" && !retryableErrors.length) return "No retryable errors on this page. Publication errors require approving the same candidate; rollback errors require rollback";
             return "";
@@ -253,11 +254,11 @@ Rectangle {
         if (!job) return "Select a request first";
         if (["running", "publishing", "rolling_back"].indexOf(job.status) >= 0) return "This request is active (" + (job.stage || job.status) + "). Pause or stop first";
         if (action === "rollback") {
-            if (!state.rollback_supported) return "This backend does not support rollback";
+            if (!censorState.rollback_supported) return "This backend does not support rollback";
             return (job.status === "succeeded" || job.status === "local_saved") && job.replacement ? "" : "Rollback requires a durably saved replacement";
         }
         if (action === "approve") {
-            if (state.native === true && state.native_repository_ready !== true) return "Connect a repository in the Git workspace before approving a replacement";
+            if (censorState.native === true && censorState.native_repository_ready !== true) return "Connect a repository in the Git workspace before approving a replacement";
             if (job.status !== "review_required") return "Approval requires a request awaiting review";
             if (job.publication_key && candidateId !== job.selected_candidate) return "Publication is awaiting reconciliation. Approve the same previously selected candidate";
             return approvalEvidenceReason();
@@ -498,12 +499,12 @@ Rectangle {
                 SiteButton {
                     text: root.job ? "Analyze again" : "Analyze track"
                     glyph: "search"
-                    loading: root.state.running === true || (!!root.job && root.job.status === "running")
+                    loading: root.censorState.running === true || (!!root.job && root.job.status === "running")
                     enabled: !root.disabledReason("check_track")
                     onClicked: root.command("check_track")
                     SiteToolTip { text: root.disabledReason("check_track") }
                 }
-                SiteButton { text: "Stop"; glyph: "square"; visible: root.state.running === true; enabled: !root.disabledReason("stop"); onClicked: root.command("stop") }
+                SiteButton { text: "Stop"; glyph: "square"; visible: root.censorState.running === true; enabled: !root.disabledReason("stop"); onClicked: root.command("stop") }
 
 
                 SiteButton { text: "Undo replacement"; glyph: "undo-2"; visible: !!root.job && !!root.job.replacement; enabled: !root.disabledReason("rollback"); onClicked: root.command("rollback") }
@@ -653,7 +654,7 @@ Rectangle {
     ScrollEdgeShadow {
         objectName: "censorScrollEdgeShadow"
         anchors.fill: detectorScroll
-        flickable: detectorScroll.contentItem
+        flickable: detectorScroll.contentItem as Flickable
         shadowColor: "#0c0c0e"
     }
     SendDialog {

@@ -1,5 +1,23 @@
 Unicode true
 SetCompressor /SOLID lzma
+!include "FileFunc.nsh"
+Var RestartApp
+
+Function .onInit
+  StrCpy $RestartApp 0
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RESTARTAPP" $R1
+  IfErrors restart_not_requested
+  StrCpy $RestartApp 1
+restart_not_requested:
+FunctionEnd
+
+Function .onInstSuccess
+  StrCmp $RestartApp 1 0 restart_done
+  ExecShell "open" "$INSTDIR\ddetector.exe" '--qt "$INSTDIR\ddetector-qt.exe"'
+restart_done:
+FunctionEnd
 
 !ifndef VERSION
   !define VERSION "0.0.0"

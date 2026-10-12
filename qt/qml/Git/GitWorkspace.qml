@@ -74,7 +74,7 @@ Item {
     Shortcut {
         sequence: StandardKey.Save
         enabled: root.visible && root.available && !!root.workspaceBackend.filePath
-                 && !(terminalLoader.item && terminalLoader.item.terminalHasFocus)
+                 && !(terminalLoader.terminalView && terminalLoader.terminalView.terminalHasFocus)
         onActivated: root.workspaceBackend.save()
     }
 
@@ -246,7 +246,7 @@ Item {
                                 width: Math.max(32, editorMetrics.averageCharacterWidth * String(editor.lineCount).length + 16)
                                 height: editorScroll.availableHeight
                                 clip: true
-                                readonly property real scrollY: editorScroll.contentItem ? editorScroll.contentItem.contentY : 0
+                                readonly property real scrollY: (editorScroll.contentItem as Flickable)?.contentY ?? 0
                                 // PlainText + NoWrap has uniform line boxes. Use Qt's maintained
                                 // lineCount, not a JS copy/index of the entire document on every edit.
                                 readonly property int firstLine: Math.max(0, Math.min(editor.lineCount - 1,
@@ -346,8 +346,10 @@ Item {
                 SplitView.preferredHeight: 230
                 SplitView.minimumHeight: 120
                 active: root.pageActive
-                source: "terminal.qml"
-                onLoaded: item.workspaceBackend = Qt.binding(function() { return root.workspaceBackend })
+                readonly property var terminalView: item
+                Component.onCompleted: setSource("terminal.qml", {
+                    workspaceBackend: Qt.binding(function() { return root.workspaceBackend })
+                })
             }
         }
     }

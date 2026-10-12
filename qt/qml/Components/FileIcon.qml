@@ -22,8 +22,8 @@ Image {
         if (Object.prototype.hasOwnProperty.call(nameIcons, basename))
             return asset(nameIcons[basename])
         var parts = basename.split(".")
-        for (var i = 1; i < parts.length; ++i) {
-            var suffix = parts.slice(i).join(".")
+        for (let i = 1; i < parts.length; ++i) {
+            const suffix = parts.slice(i).join(".")
             if (Object.prototype.hasOwnProperty.call(extensionIcons, suffix))
                 return asset(extensionIcons[suffix])
         }

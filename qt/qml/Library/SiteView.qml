@@ -7,8 +7,9 @@ SiteDialog {
     id: site
     objectName: "accessPopup"
     required property var ui
+    readonly property var appBackend: ui.backendBridge
     property url artworkSource: "qrc:/assets/Kagami-access-denied.jpg"
-    readonly property string error: backend.connectionError || ui.state.error || ""
+    readonly property string error: appBackend.connectionError || ui.state.error || ""
     readonly property bool denied: !!ui.state.isBanned || (!!ui.state.authenticated && !ui.state.hasAccess && (!!ui.state.accessChecked || error === "DDetector access denied"))
 
     visible: ui.state.authenticated !== false && !ui.privileged && !ui.checkingAccess
@@ -97,7 +98,7 @@ SiteDialog {
                 font.family: "DDetector Quicksand"
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
-                onClicked: backend.logout()
+                onClicked: site.appBackend.logout()
                 contentItem: Text { textFormat: Text.PlainText;
                     text: logoutButton.text
                     font: logoutButton.font

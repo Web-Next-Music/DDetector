@@ -21,6 +21,8 @@ Button {
     property color accentBorder: "#332bfef5"
     property color hoverBorderColor: accentBorder
     property bool loading: false
+    property bool circularProgress: false
+    property real progress: -1
     enabled: !loading
     implicitHeight: 30
     implicitWidth: iconOnly ? implicitHeight : contentItem.implicitWidth + leftPadding + rightPadding
@@ -35,15 +37,24 @@ Button {
         cursorShape: control.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
     }
     contentItem: Item {
-        implicitWidth: Math.max(contentRow.implicitWidth, control.loading ? buttonSpinner.implicitWidth : 0)
-        implicitHeight: contentRow.implicitHeight
+        implicitWidth: Math.max(contentRow.implicitWidth, control.loading ? (control.circularProgress ? buttonProgress.implicitWidth : buttonSpinner.implicitWidth) : 0)
+        implicitHeight: Math.max(contentRow.implicitHeight, control.loading && control.circularProgress ? buttonProgress.implicitHeight : 0)
         SiteSpinner {
             id: buttonSpinner
             objectName: "buttonSpinner"
             anchors.centerIn: parent
-            visible: control.loading
+            visible: control.loading && !control.circularProgress
             accentColor: control.accented ? control.accentColor : control.textColor
             label: control.text + " in progress"
+        }
+        SiteProgressRing {
+            id: buttonProgress
+            objectName: "buttonProgressRing"
+            anchors.centerIn: parent
+            visible: control.loading && control.circularProgress
+            progress: control.progress
+            accentColor: control.accented ? control.accentColor : control.textColor
+            label: control.text
         }
         Row {
             id: contentRow

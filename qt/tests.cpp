@@ -121,9 +121,22 @@ struct LocalContexts {
     RepositoryCoordinator repositories;
     explicit LocalContexts(Config &config) : repositories(config, workspace, uploader) {}
 
-    void attach(QQmlApplicationEngine &engine) {
+    void attach(QQmlApplicationEngine &engine, Config &config, Bridge &bridge, MusicPlayer &player) {
         engine.rootContext()->setContextProperty("gitWorkspace", &workspace);
         engine.rootContext()->setContextProperty("localUploader", &uploader);
+        engine.rootContext()->setContextProperty("appConfig", &config);
+        engine.rootContext()->setContextProperty("backend", &bridge);
+        engine.rootContext()->setContextProperty("musicPlayer", &player);
+        engine.setInitialProperties({
+            {"config", QVariant::fromValue(&config)},
+            {"backendBridge", QVariant::fromValue(&bridge)},
+            {"player", QVariant::fromValue(&player)},
+            {"workspace", QVariant::fromValue(&workspace)},
+            {"uploader", QVariant::fromValue(&uploader)},
+            {"gitTag", QStringLiteral("dev")},
+            {"developmentToolsEnabled", false},
+            {"updater", QVariant::fromValue(static_cast<QObject *>(nullptr))}
+        });
     }
 };
 
@@ -700,7 +713,7 @@ private slots:
             {"candidates", QVariantList{}}};
         QScopedPointer<QObject> view(component.createWithInitialProperties({
             {"normalPlayer", QVariant::fromValue(mainPlayer.data())},
-            {"state", QVariantMap{{"configured", true}, {"jobs", QVariantList{job}}}},
+            {"censorState", QVariantMap{{"configured", true}, {"jobs", QVariantList{job}}}},
             {"width", 640}, {"height", 700}}));
         QVERIFY2(view, qPrintable(component.errorString()));
         QCOMPARE(view->property("selectedId").toString(), QString("detail"));
@@ -1855,6 +1868,146 @@ private slots:
         }
         QVERIFY(forcedSeen);
     }
+    void developerToolsIndicator() {
+        Config config{QString()};
+        MockBackend server;
+        Bridge bridge(server.url(), "test-random-key", nullptr, &config);
+        QTRY_COMPARE(bridge.tracks()->count(), 6);
+        MusicPlayer player;
+        LocalContexts local(config);
+        QQmlApplicationEngine engine;
+        local.attach(engine, config, bridge, player);
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(!window->findChild<QQuickItem *>("devToolsButton"));
+        QVERIFY(!window->findChild<QQuickItem *>("accountDevMenuEntry"));
+        auto separator = window->findChild<QQuickItem *>("accountDevMenuSeparator");
+        QVERIFY(separator);
+        QVERIFY(!separator->property("visible").toBool());
+        if (!QFile::exists(":/DevTools.qml")) return;
+
+        QQmlComponent mockUpdater(&engine);
+        mockUpdater.setData(R"(
+            import QtQml
+            QtObject {
+                property bool available: false
+                property bool busy: false
+                property string version: "v1.2.3"
+                property string status: ""
+                property string error: ""
+                property real progress: -1
+                property int installs: 0
+                signal changed()
+                function forceAvailable() { available = true; }
+                function install() { installs++; busy = true; progress = 0; changed(); }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> updater(mockUpdater.create());
+        QVERIFY2(updater, qPrintable(mockUpdater.errorString()));
+        QVERIFY(window->setProperty("updater", QVariant::fromValue(updater.data())));
+        QVERIFY(window->setProperty("developmentToolsEnabled", true));
+        QQuickItem *devEntry = nullptr;
+        QTRY_VERIFY((devEntry = window->findChild<QQuickItem *>("accountDevMenuEntry")));
+        auto avatar = window->findChild<QQuickItem *>("avatarButton");
+        auto accountMenu = window->findChild<QObject *>("accountMenu");
+        auto settingsEntry = window->findChild<QQuickItem *>("accountSettingsEntry");
+        QVERIFY(avatar);
+        QVERIFY(accountMenu);
+        QVERIFY(settingsEntry);
+        QVERIFY(QMetaObject::invokeMethod(avatar, "clicked"));
+        QTRY_VERIFY(accountMenu->property("visible").toBool());
+        QTRY_VERIFY(devEntry->isVisible());
+        QVERIFY(separator->isVisible());
+        QCOMPARE(devEntry->property("glyph").toString(), QString("flask-conical"));
+        QCOMPARE(accountMenu->property("surfaceColor"), window->property("surface2"));
+        QTRY_VERIFY(devEntry->mapToScene(QPointF()).y() < separator->mapToScene(QPointF()).y());
+        QTRY_VERIFY(separator->mapToScene(QPointF()).y() < settingsEntry->mapToScene(QPointF()).y());
+        QVERIFY(!window->findChild<QQuickItem *>("devToolsButton"));
+        auto download = window->findChild<QQuickItem *>("updateDownloadButton");
+        QVERIFY(download);
+        QVERIFY(!download->isVisible());
+        QTRY_VERIFY(accountMenu->property("opened").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            devEntry->mapToScene(QPointF(devEntry->width() / 2, devEntry->height() / 2)).toPoint());
+        QTRY_VERIFY(!accountMenu->property("visible").toBool());
+        auto menu = window->findChild<QObject *>("devToolsDialog");
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->property("visible").toBool());
+        auto force = window->findChild<QQuickItem *>("forceUpdateButton");
+        QVERIFY(force);
+        auto real = window->findChild<QQuickItem *>("realUpdateButton");
+        auto quote = window->findChild<QQuickItem *>("updateExplanationQuote");
+        QVERIFY(real);
+        QVERIFY(quote);
+        QTRY_COMPARE(force->height(), real->height());
+        QTRY_COMPARE(force->width(), real->width());
+        QCOMPARE(force->height(), force->implicitHeight());
+        QTRY_COMPARE(force->mapToScene(QPointF()).y(), real->mapToScene(QPointF()).y());
+        auto forceBackground = force->property("background").value<QQuickItem *>();
+        auto realBackground = real->property("background").value<QQuickItem *>();
+        QVERIFY(forceBackground);
+        QVERIFY(realBackground);
+        QTRY_COMPARE(forceBackground->height(), realBackground->height());
+        QTRY_COMPARE(forceBackground->width(), realBackground->width());
+        QTRY_COMPARE(forceBackground->mapToScene(QPointF()).y(), realBackground->mapToScene(QPointF()).y());
+        auto card = window->findChild<QQuickItem *>("developerUpdateCard");
+        QVERIFY(card);
+        QCOMPARE(card->property("color").value<QColor>(), QColor("#171719"));
+        QCOMPARE(card->property("radius").toDouble(), 14.0);
+        QCOMPARE(card->property("contentPadding").toInt(), 12);
+        QCOMPARE(quote->parentItem()->parentItem(), card);
+        QCOMPARE(force->parentItem()->parentItem()->parentItem(), card);
+        QTRY_VERIFY(force->mapToScene(QPointF()).x() < real->mapToScene(QPointF()).x());
+        QVERIFY(quote->mapToScene(QPointF()).y() < force->mapToScene(QPointF()).y());
+        QVERIFY(QMetaObject::invokeMethod(force, "clicked"));
+        QTRY_VERIFY(download->isVisible());
+        QTRY_VERIFY(!menu->property("visible").toBool());
+        QVERIFY(download->mapToScene(QPointF()).y() < avatar->mapToScene(QPointF()).y());
+        QVERIFY(!window->findChild<QObject *>("updateDialog"));
+        auto ring = download->findChild<QQuickItem *>("buttonProgressRing");
+        auto spinner = download->findChild<QQuickItem *>("buttonSpinner");
+        QVERIFY(ring);
+        QVERIFY(spinner);
+        QVERIFY(!ring->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(download, "clicked"));
+        QCOMPARE(updater->property("installs").toInt(), 1);
+        QTRY_VERIFY(ring->isVisible());
+        QVERIFY(!download->isEnabled());
+        QVERIFY(!spinner->isVisible());
+        QCOMPARE(ring->property("progress").toDouble(), 0.0);
+        QVERIFY(updater->setProperty("progress", 0.5));
+        QTRY_COMPARE(ring->property("fraction").toDouble(), 0.5);
+        QVERIFY(updater->setProperty("progress", -1.0));
+        QTRY_VERIFY(ring->property("indeterminate").toBool());
+        QVERIFY(updater->setProperty("progress", 1.0));
+        QTRY_COMPARE(ring->property("fraction").toDouble(), 1.0);
+        QVERIFY(updater->setProperty("busy", false));
+        QTRY_VERIFY(!ring->isVisible());
+        QVERIFY(download->isEnabled());
+        auto notifications = window->findChild<QAbstractItemModel *>("notificationModel");
+        QVERIFY(notifications);
+        const int initialNotifications = notifications->rowCount();
+        for (const QString status : {"Update available", "Up to date", "Update installed; restarting"}) {
+            QVERIFY(updater->setProperty("busy", true));
+            QVERIFY(QMetaObject::invokeMethod(updater.data(), "changed"));
+            QVERIFY(updater->setProperty("status", status));
+            QVERIFY(updater->setProperty("busy", false));
+            QVERIFY(QMetaObject::invokeMethod(updater.data(), "changed"));
+            QCoreApplication::processEvents();
+            QCOMPARE(notifications->rowCount(), initialNotifications);
+        }
+        QVERIFY(updater->setProperty("busy", true));
+        QVERIFY(QMetaObject::invokeMethod(updater.data(), "changed"));
+        QVERIFY(updater->setProperty("error", "Update fixture failure"));
+        QVERIFY(updater->setProperty("busy", false));
+        QVERIFY(QMetaObject::invokeMethod(updater.data(), "changed"));
+        QTRY_COMPARE(notifications->rowCount(), initialNotifications + 1);
+        QCOMPARE(warnings.count(), 0);
+    }
+
     void nativeQmlInteractions() {
         Config config{QString()};
         MockBackend server;
@@ -1864,15 +2017,20 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
-        engine.rootContext()->setContextProperty("backend", &bridge);
+        local.attach(engine, config, bridge, musicPlayer);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         QVERIFY(window);
+        QCOMPARE(window->property("config").value<QObject *>(), &config);
+        QCOMPARE(window->property("backendBridge").value<QObject *>(), &bridge);
+        QCOMPARE(window->property("player").value<QObject *>(), &musicPlayer);
+        QCOMPARE(window->property("workspace").value<QObject *>(), &local.workspace);
+        QCOMPARE(window->property("uploader").value<QObject *>(), &local.uploader);
+        QCOMPARE(window->property("gitTag").toString(), QStringLiteral("dev"));
+        QVERIFY(!window->property("developmentToolsEnabled").toBool());
+        QVERIFY(!window->property("updater").value<QObject *>());
         QQuickItem *sidebarSearchIcon = nullptr;
         const auto findSearchIcon = [&](auto &&self, QQuickItem *item) -> void {
             if (item->property("source").toUrl() == QUrl("qrc:/assets/lucide-search.svg"))
@@ -2074,10 +2232,7 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("backend", &bridge);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+        local.attach(engine, config, bridge, musicPlayer);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = engine.rootObjects().first();
@@ -2120,10 +2275,7 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("backend", &bridge);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
+        local.attach(engine, config, bridge, musicPlayer);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
@@ -2209,10 +2361,7 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
-        engine.rootContext()->setContextProperty("backend", &bridge);
+        local.attach(engine, config, bridge, musicPlayer);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -2238,10 +2387,7 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
-        engine.rootContext()->setContextProperty("backend", &bridge);
+        local.attach(engine, config, bridge, musicPlayer);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
@@ -2280,10 +2426,7 @@ private slots:
         MusicPlayer musicPlayer;
         LocalContexts local(config);
         QQmlApplicationEngine engine;
-        local.attach(engine);
-        engine.rootContext()->setContextProperty("appConfig", &config);
-        engine.rootContext()->setContextProperty("musicPlayer", &musicPlayer);
-        engine.rootContext()->setContextProperty("backend", &bridge);
+        local.attach(engine, config, bridge, musicPlayer);
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         engine.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());

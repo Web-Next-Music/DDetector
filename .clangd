@@ -1,3 +1,4 @@
 # yaml-language-server: $schema=./.clangd.schema.json
 CompileFlags:
-  CompilationDatabase: qt/build
+  # Use the dev build (BUILD_TESTING=ON), with test targets and automoc headers built.
+  CompilationDatabase: ./qt/build

@@ -22,17 +22,30 @@ ApplicationWindow {
     font.family: "DDetector Nunito"
     font.pixelSize: 13
     font.weight: Font.Bold
+    property var backendBridge: null
+    property var config: null
+    property var player: null
+    property var uploader: null
+    property var workspace: null
+    property string gitTag: "dev"
+    property bool developmentToolsEnabled: false
+    property var updater: null
     property int rightPage: 0
     property bool workspaceCloseApproved: false
     onClosing: function(event) {
-        if (typeof localUploader !== "undefined" && localUploader.busy) {
+        if (appUi.updater && appUi.updater.busy) {
+            event.accepted = false;
+            notify("Wait for the update operation to finish before closing");
+            return;
+        }
+        if (!!appUi.uploader && appUi.uploader.busy) {
             event.accepted = false;
             notify("Wait for Send to finish before closing");
             return;
         }
         if (workspaceCloseApproved || !workspaceLoader.item) return;
         event.accepted = false;
-        workspaceLoader.item.requestClose(function() {
+        (workspaceLoader.item as GitWorkspace).requestClose(function() {
             workspaceCloseApproved = true;
             Qt.callLater(function() { appUi.close(); });
         });
@@ -48,9 +61,9 @@ ApplicationWindow {
     property color accentBg: "#142bfef5"
     property color accentBorder: "#332bfef5"
     property color ignoredColor: "#dc5050"
-    property var state: backend.state
+    property var state: appUi.backendBridge.state
     property bool privileged: !!state.authenticated && !!state.hasAccess && !state.isBanned
-        readonly property bool checkingAccess: (state.authenticated === undefined || (!!state.authenticated && !state.accessChecked && !state.isBanned)) && !state.error && backend.connectionError === ""
+        readonly property bool checkingAccess: (state.authenticated === undefined || (!!state.authenticated && !state.accessChecked && !state.isBanned)) && !state.error && appUi.backendBridge.connectionError === ""
         readonly property bool showShell: true
         readonly property bool tracksPending: checkingAccess || (!!state.loading && !state.processing && total === 0)
     property string selectedId: ""
@@ -92,16 +105,16 @@ ApplicationWindow {
         expanded = next;
     }
     function choose(track) {
-        backend.copyId(track.id);
+        appUi.backendBridge.copyId(track.id);
         selectedId = track.id;
-        const index = backend.cards.indexOf(track.id);
+        const index = appUi.backendBridge.cards.indexOf(track.id);
         if (index >= 0) {
             results.positionViewAtIndex(index, ListView.Contain);
         }
     }
     function playTrack(track) {
-        if (musicPlayer.enabled && !musicPlayer.busy)
-            musicPlayer.playTrack(track.id);
+        if (appUi.player.enabled && !appUi.player.busy)
+            appUi.player.playTrack(track.id);
     }
     function context(track, source, x, y, fullLyrics) {
         menuTrack = track;
@@ -135,12 +148,12 @@ ApplicationWindow {
         fillToastSlots();
     }
     Connections {
-        target: backend
+        target: appUi.backendBridge
         function onToast(message) {
             appUi.notify(message);
         }
         function onConnectionErrorChanged() {
-            if (backend.connectionError) appUi.notify(backend.connectionError);
+            if (appUi.backendBridge.connectionError) appUi.notify(appUi.backendBridge.connectionError);
         }
         function onStateChanged() {
             if (!appUi.privileged) {
@@ -155,24 +168,25 @@ ApplicationWindow {
         }
     }
     Connections {
-        target: appConfig
-        function onErrorChanged() { if (appConfig.error) appUi.notify(appConfig.error); }
+        target: appUi.config
+        function onErrorChanged() { if (appUi.config.error) appUi.notify(appUi.config.error); }
     }
     Binding {
-        target: musicPlayer
+        target: appUi.player
         property: "visualizerEnabled"
-        value: appConfig.visualizerEnabled
+        value: appUi.config.visualizerEnabled
     }
     Connections {
-        target: musicPlayer
+        id: playerConnections
+        target: appUi.player
         property string lastError: ""
         function onStateChanged() {
-            if (musicPlayer.error && musicPlayer.error !== lastError)
-                appUi.notify(musicPlayer.error);
-            lastError = musicPlayer.error;
+            if (appUi.player.error && appUi.player.error !== playerConnections.lastError)
+                appUi.notify(appUi.player.error);
+            playerConnections.lastError = appUi.player.error;
         }
     }
-    ListModel { id: toastModel }
+    ListModel { id: toastModel; objectName: "notificationModel" }
 
     component SmallButton: SiteButton {
         implicitHeight: 28
@@ -223,8 +237,8 @@ ApplicationWindow {
             text: "Play"
             glyph: "play"
             green: true
-            enabled: musicPlayer.enabled && !musicPlayer.busy
-            onTriggered: musicPlayer.playTrack(appUi.menuTrack.id)
+            enabled: appUi.player.enabled && !appUi.player.busy
+            onTriggered: appUi.player.playTrack(appUi.menuTrack.id)
         }
         SiteMenuSeparator { borderColor: appUi.borderColor }
         SiteMenuItem {
@@ -235,7 +249,7 @@ ApplicationWindow {
             dangerColor: appUi.ignoredColor
             text: "Search on Yandex"
             glyph: "search"
-            onTriggered: backend.searchYandex(appUi.menuTrack.title, appUi.menuTrack.artist)
+            onTriggered: appUi.backendBridge.searchYandex(appUi.menuTrack.title, appUi.menuTrack.artist)
         }
         SiteMenuItem {
             textColor: appUi.ink
@@ -245,7 +259,7 @@ ApplicationWindow {
             dangerColor: appUi.ignoredColor
             text: "Copy track ID"
             glyph: "copy"
-            onTriggered: backend.copyId(appUi.menuTrack.id)
+            onTriggered: appUi.backendBridge.copyId(appUi.menuTrack.id)
         }
         SiteMenuItem {
             textColor: appUi.ink
@@ -269,16 +283,27 @@ ApplicationWindow {
             text: appUi.menuTrack.ignored ? "Unignore" : "Ignore"
             glyph: appUi.menuTrack.ignored ? "shield-check" : "shield"
             danger: !appUi.menuTrack.ignored
-            onTriggered: backend.ignore(appUi.menuTrack.id, !appUi.menuTrack.ignored)
+            onTriggered: appUi.backendBridge.ignore(appUi.menuTrack.id, !appUi.menuTrack.ignored)
         }
+    }
+    Loader {
+        id: devToolsLoader
+        active: !!appUi.developmentToolsEnabled
+        Component.onCompleted: setSource("qrc:/DevTools.qml", { updater: Qt.binding(function() { return appUi.updater; }) })
+        onLoaded: headerMenu.insertItem(0, item as SiteMenuItem)
     }
     SiteMenu {
         id: headerMenu
         objectName: "accountMenu"
         width: 210
-        surfaceColor: appUi.surface
-        cornerRadius: 12
+        surfaceColor: appUi.surface2
         borderColor: appUi.borderColor
+        SiteMenuSeparator {
+            objectName: "accountDevMenuSeparator"
+            visible: appUi.developmentToolsEnabled
+            height: visible ? implicitHeight : 0
+            borderColor: appUi.borderColor
+        }
         SiteMenuItem {
             textColor: appUi.ink
             mutedColor: appUi.muted
@@ -301,7 +326,7 @@ ApplicationWindow {
             glyph: "log-out"
             danger: true
             enabled: !!appUi.state.authenticated
-            onTriggered: backend.logout()
+            onTriggered: appUi.backendBridge.logout()
         }
     }
     Repeater {
@@ -369,7 +394,7 @@ ApplicationWindow {
                     x: auth.visible ? 16 : 0
                     y: auth.visible ? (mainHeader.height - height) / 2 : (windowTitleSlot.height - height) / 2
                     z: 40
-                    text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appGitTag + "</span>"
+                    text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appUi.gitTag + "</span>"
                     textFormat: Text.RichText
                     color: appUi.ink
                     font.family: "DDetector Quicksand"
@@ -387,7 +412,7 @@ ApplicationWindow {
             Text {
                 textFormat: Text.PlainText
                 visible: appUi.showShell
-                text: backend.tracks.count + " tracks"
+                text: appUi.backendBridge.tracks.count + " tracks"
                 color: appUi.muted
                 font.pixelSize: 12
                 anchors.verticalCenter: parent.verticalCenter
@@ -395,11 +420,11 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.right: parent.right
-            anchors.rightMargin: appConfig.hideWindowControls ? 8 : windowControls.width + 8
+            anchors.rightMargin: appUi.config.hideWindowControls ? 8 : windowControls.width + 8
             visible: appUi.showShell
             enabled: appUi.privileged
             y: 9
-            width: parent.width - (appConfig.hideWindowControls ? 0 : windowControls.width) - 238
+            width: parent.width - (appUi.config.hideWindowControls ? 0 : windowControls.width) - 238
             height: 30
             spacing: 8
             Item {
@@ -414,7 +439,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 100
                 Layout.preferredHeight: 30
                 model: ["Default", "By date", "A - Z", "By artist"]
-                onActivated: backend.setSort(currentIndex)
+                onActivated: appUi.backendBridge.setSort(currentIndex)
                 font.pixelSize: 12
                 contentItem: Text { textFormat: Text.PlainText;
                     text: sorting.displayText
@@ -514,7 +539,7 @@ ApplicationWindow {
                 leftPadding: 12
                 rightPadding: 12
                 selectByMouse: true
-                onAccepted: backend.setSearch(text)
+                onAccepted: appUi.backendBridge.setSearch(text)
                 background: Rectangle {
                     color: appUi.surface
                     radius: 16
@@ -527,16 +552,66 @@ ApplicationWindow {
                 text: "Fetch"
                 loading: !!appUi.state.fetching
                 enabled: !loading && !appUi.state.loading
-                onClicked: backend.fetch()
+                onClicked: appUi.backendBridge.fetch()
                 SiteToolTip { text: "Rebuild track list from external source" }
             }
+        }
+    }
+    Column {
+        anchors.right: parent.right
+        anchors.rightMargin: 8
+        anchors.bottom: avatarButton.top
+        anchors.bottomMargin: 12
+        spacing: 8
+        z: 40
+        visible: appUi.showShell
+        SiteButton {
+            objectName: "updateDownloadButton"
+            width: 32; height: 32
+            visible: !!appUi.updater && appUi.updater.available
+            text: "Download update"
+            glyph: "download"
+            glyphSize: 22
+            iconOnly: true
+            textColor: "#4ade80"
+            hoverTextColor: textColor
+            accentColor: textColor
+            surfaceColor: "transparent"
+            hoverColor: appUi.surface2
+            borderColor: "transparent"
+            loading: !!appUi.updater && appUi.updater.busy
+            circularProgress: true
+            progress: appUi.updater ? appUi.updater.progress : -1
+            SiteToolTip {
+                text: !appUi.updater ? "Update" : appUi.updater.busy
+                    ? appUi.updater.status + (appUi.updater.progress >= 0 ? " · " + Math.round(appUi.updater.progress * 100) + "%" : "")
+                    : appUi.updater.error || "Update to " + appUi.updater.version
+            }
+            onClicked: {
+                if ((!!appUi.uploader && appUi.uploader.busy)
+                    || (workspaceLoader.item && appUi.workspace.dirty)) {
+                    appUi.notify("Finish Send and save workspace changes before updating");
+                    return;
+                }
+                appUi.updater.install();
+            }
+        }
+    }
+    Connections {
+        target: appUi.updater
+        ignoreUnknownSignals: true
+        property bool wasBusy: false
+        function onChanged() {
+            if (wasBusy && !appUi.updater.busy && appUi.updater.error)
+                appUi.notify(appUi.updater.error);
+            wasBusy = appUi.updater.busy;
         }
     }
     Row {
         id: windowControls
         parent: auth.visible ? Overlay.overlay : appUi.contentItem
         anchors.right: parent.right
-        anchors.rightMargin: appConfig.hideWindowControls ? 8 : 0
+        anchors.rightMargin: appUi.config.hideWindowControls ? 8 : 0
         y: 0
         z: 40
         spacing: 0
@@ -562,6 +637,10 @@ ApplicationWindow {
             }
             Accessible.name: "Account menu for " + appUi.userName
             SiteToolTip { text: appUi.userName }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: avatarButton.clicked()
+            }
             onClicked: {
                 headerMenu.x = appUi.width - headerMenu.width - 10;
                 const point = avatarButton.mapToItem(appUi.contentItem, 0, 0);
@@ -569,6 +648,7 @@ ApplicationWindow {
                 headerMenu.open();
             }
             contentItem: Item {
+                id: avatarContent
                 clip: true
                 Text {
                     textFormat: Text.PlainText
@@ -580,16 +660,16 @@ ApplicationWindow {
                 AvatarImage {
                     id: avatarImage
                     objectName: "accountAvatarImage"
-                    anchors.fill: parent
+                    anchors.fill: avatarContent
                     source: appUi.avatarUrl
                 }
 
             }
         }
         Item { width: 0; height: 48 }
-        WindowButton { targetWindow: appUi; index: 0; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
-        WindowButton { targetWindow: appUi; index: 1; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
-        WindowButton { targetWindow: appUi; index: 2; visible: !appConfig.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 0; visible: !appUi.config.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 1; visible: !appUi.config.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
+        WindowButton { targetWindow: appUi; index: 2; visible: !appUi.config.hideWindowControls; anchors.verticalCenter: parent.verticalCenter }
     }
     SiteDialog {
         id: settingsDialog
@@ -622,12 +702,12 @@ ApplicationWindow {
                         leftPadding: 12
                         rightPadding: 12
                         text: ""
-                        Component.onCompleted: text = appConfig.repositoryPath || ""
+                        Component.onCompleted: text = appUi.config.repositoryPath || ""
                         Connections {
-                            target: appConfig
+                            target: appUi.config
                             function onRepositoryPathChanged() {
                                 if (!repositoryPathInput.activeFocus)
-                                    repositoryPathInput.text = appConfig.repositoryPath || "";
+                                    repositoryPathInput.text = appUi.config.repositoryPath || "";
                             }
                         }
                         placeholderText: Qt.platform.os === "windows" ? "D:/FckCensorData" : "/run/media/admin/DATA/FckCensorData/"
@@ -636,25 +716,25 @@ ApplicationWindow {
                         selectionColor: appUi.accentBg
                         selectedTextColor: appUi.ink
                         selectByMouse: true
-                        enabled: typeof localUploader === "undefined" || !localUploader.busy
+                        enabled: !appUi.uploader || !appUi.uploader.busy
                         objectName: "repositoryPathInput"
                         function applyPath(automatic = false) {
                             const path = text.trim();
-                            if (typeof localUploader !== "undefined" && localUploader.busy) return;
-                            if (automatic && (!appConfig.repositoryDirectoryExists(path)
-                                || (typeof gitWorkspace !== "undefined" && (gitWorkspace.dirty || gitWorkspace.terminalRunning)))) return;
-                            if (path === appConfig.repositoryPath || changeRepositoryDialog.visible) return;
-                            if (typeof gitWorkspace !== "undefined" && gitWorkspace.dirty) {
+                            if (!!appUi.uploader && appUi.uploader.busy) return;
+                            if (automatic && (!appUi.config.repositoryDirectoryExists(path)
+                                || (!!appUi.workspace && (appUi.workspace.dirty || appUi.workspace.terminalRunning)))) return;
+                            if (path === appUi.config.repositoryPath || changeRepositoryDialog.visible) return;
+                            if (!!appUi.workspace && appUi.workspace.dirty) {
                                 appUi.notify("Save or discard file changes before changing the repository");
                                 return;
                             }
-                            if (typeof gitWorkspace !== "undefined" && gitWorkspace.terminalRunning) {
+                            if (!!appUi.workspace && appUi.workspace.terminalRunning) {
                                 changeRepositoryDialog.pendingPath = path;
                                 changeRepositoryDialog.open();
                             } else {
-                                appConfig.repositoryPath = path;
-                                if (appConfig.repositoryPath !== path)
-                                    text = appConfig.repositoryPath || "";
+                                appUi.config.repositoryPath = path;
+                                if (appUi.config.repositoryPath !== path)
+                                    text = appUi.config.repositoryPath || "";
                             }
                         }
                         onTextEdited: repositoryApplyTimer.restart()
@@ -691,14 +771,14 @@ ApplicationWindow {
                         selectionColor: appUi.accentBg
                         selectedTextColor: appUi.ink
 
-                        text: appConfig.musicToken
+                        text: appUi.config.musicToken
                         onTextEdited: tokenApplyTimer.restart()
-                        onAccepted: { tokenApplyTimer.stop(); appConfig.musicToken = text.trim(); }
-                        onEditingFinished: { tokenApplyTimer.stop(); appConfig.musicToken = text.trim(); }
+                        onAccepted: { tokenApplyTimer.stop(); appUi.config.musicToken = text.trim(); }
+                        onEditingFinished: { tokenApplyTimer.stop(); appUi.config.musicToken = text.trim(); }
                         Timer {
                             id: tokenApplyTimer
                             interval: 800
-                            onTriggered: appConfig.musicToken = musicToken.text.trim()
+                            onTriggered: appUi.config.musicToken = musicToken.text.trim()
                         }
                 }
             }
@@ -715,8 +795,8 @@ ApplicationWindow {
                     anchors.fill: parent
                     text: "Hide ignored tracks"
                     glyph: "shield"
-                    checked: backend.hideIgnored
-                    onToggled: backend.hideIgnored = checked
+                    checked: appUi.backendBridge.hideIgnored
+                    onToggled: appUi.backendBridge.hideIgnored = checked
                 }
             }
             Rectangle {
@@ -731,8 +811,8 @@ ApplicationWindow {
                     anchors.fill: parent
                     text: "Hide window controls"
                     glyph: "panel-top"
-                    checked: appConfig.hideWindowControls
-                    onToggled: appConfig.hideWindowControls = checked
+                    checked: appUi.config.hideWindowControls
+                    onToggled: appUi.config.hideWindowControls = checked
                 }
             }
                         Rectangle {
@@ -746,8 +826,8 @@ ApplicationWindow {
                     anchors.fill: parent
                     text: "Spectral visualizer"
                     glyph: "music-standard"
-                    checked: appConfig.visualizerEnabled
-                    onToggled: appConfig.visualizerEnabled = checked
+                    checked: appUi.config.visualizerEnabled
+                    onToggled: appUi.config.visualizerEnabled = checked
                 }
             }
             Rectangle {
@@ -761,8 +841,8 @@ ApplicationWindow {
                     anchors.fill: parent
                     text: "Approve sound"
                     glyph: "volume-2"
-                    checked: appConfig.approveSoundEnabled
-                    onToggled: appConfig.approveSoundEnabled = checked
+                    checked: appUi.config.approveSoundEnabled
+                    onToggled: appUi.config.approveSoundEnabled = checked
                 }
             }
         }
@@ -796,14 +876,14 @@ ApplicationWindow {
             }
         }
         onAccepted: {
-            if (gitWorkspace.dirty || (typeof localUploader !== "undefined" && localUploader.busy)) {
+            if (appUi.workspace.dirty || (!!appUi.uploader && appUi.uploader.busy)) {
                 appUi.notify("Save file changes and wait for Send before changing the repository");
                 return;
             }
-            gitWorkspace.stopTerminal();
-            appConfig.repositoryPath = pendingPath;
+            appUi.workspace.stopTerminal();
+            appUi.config.repositoryPath = pendingPath;
         }
-        onRejected: repositoryPathInput.text = appConfig.repositoryPath
+        onRejected: repositoryPathInput.text = appUi.config.repositoryPath
     }
 
     Item {
@@ -821,7 +901,7 @@ ApplicationWindow {
             y: 10
             width: panels.leftPanelWidth - 20
             height: panels.height - 20
-            model: appUi.showShell ? backend.tracks : null
+            model: appUi.showShell ? appUi.backendBridge.tracks : null
             cacheBuffer: 0
             topMargin: 6
             bottomMargin: 6
@@ -855,7 +935,7 @@ ApplicationWindow {
             color: appUi.borderColor
         }
         Rectangle {
-            id: right
+            id: rightPanel
             x: panels.leftPanelWidth + 1
             y: 0
             width: panels.width - panels.leftPanelWidth - 1
@@ -939,7 +1019,7 @@ ApplicationWindow {
                     GitWorkspace {
                         objectName: "gitWorkspaceView"
                         pageActive: workspaceLoader.visible
-                        workspaceBackend: typeof gitWorkspace !== "undefined" ? gitWorkspace : null
+                        workspaceBackend: appUi.workspace
                         onNotify: function(message) { appUi.notify(message); }
                     }
                 }
@@ -958,9 +1038,9 @@ ApplicationWindow {
                     CensorDetector {
                         objectName: "censorDetectorView"
                         pageActive: parent && parent.visible
-                        bridge: backend
-                        uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
-                        approveSoundEnabled: appConfig.approveSoundEnabled
+                        bridge: appUi.backendBridge
+                        uploadBackend: !!appUi.uploader ? appUi.uploader : null
+                        approveSoundEnabled: appUi.config.approveSoundEnabled
                     }
                 }
             }
@@ -980,7 +1060,7 @@ ApplicationWindow {
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    height: 2
+                    implicitHeight: 2
                     color: appUi.surface2
                     radius: 2
                     Rectangle {
@@ -1014,7 +1094,7 @@ ApplicationWindow {
                 y: progress.y + progress.height + 10
                 width: parent.width - 20 - activityBar.width
                 height: Math.max(0, parent.height - y - 10)
-                model: appUi.showShell ? backend.cards : null
+                model: appUi.showShell ? appUi.backendBridge.cards : null
                 cacheBuffer: 0
                 topMargin: 6
                 bottomMargin: 6
@@ -1030,7 +1110,7 @@ ApplicationWindow {
                 ScrollBar.vertical: ScrollBar {}
                 Text {
                     textFormat: Text.PlainText
-                    visible: backend.cards.count === 0 && !appUi.state.processing && !appUi.tracksPending
+                    visible: appUi.backendBridge.cards.count === 0 && !appUi.state.processing && !appUi.tracksPending
                     width: parent.width - 48
                     x: 24
                     y: 60
@@ -1047,8 +1127,8 @@ ApplicationWindow {
             }
         }
         SiteSpinner {
-            x: right.x + results.x + (results.width - width) / 2
-            y: right.y + results.y + (results.height - height) / 2
+            x: rightPanel.x + results.x + (results.width - width) / 2
+            y: rightPanel.y + results.y + (results.height - height) / 2
             visible: appUi.tracksPending && appUi.rightPage === 0
             accentColor: appUi.accent
             label: "Loading results"
@@ -1119,14 +1199,14 @@ ApplicationWindow {
         visible: true
         height: 88
         color: appUi.playerSurface
-        enabled: appUi.privileged && musicPlayer.enabled
+        enabled: appUi.privileged && appUi.player.enabled
         SpectrumVisualizer {
             objectName: "spectrumVisualizer"
             anchors.fill: parent
-            visible: appConfig.visualizerEnabled
+            visible: appUi.config.visualizerEnabled
             accent: appUi.accent
-            levels: musicPlayer.spectrumLevels
-            peaks: musicPlayer.spectrumPeaks
+            levels: appUi.player.spectrumLevels
+            peaks: appUi.player.spectrumPeaks
         }
         Rectangle { width: parent.width; height: 1; color: "#29292d" }
         function timeLabel(ms) {
@@ -1136,7 +1216,7 @@ ApplicationWindow {
         Item {
             anchors.fill: parent
             anchors.margins: 16
-            opacity: musicPlayer.enabled ? 1 : 0.4
+            opacity: appUi.player.enabled ? 1 : 0.4
             Rectangle {
                 id: playerCover
                 anchors.left: parent.left
@@ -1156,7 +1236,7 @@ ApplicationWindow {
                     visible: false
                     layer.enabled: true
                 }
-                Image { id: playerCoverImage; anchors.fill: parent; source: musicPlayer.cover ? "image://trackcovers/" + encodeURIComponent(musicPlayer.cover) : ""; sourceSize: Qt.size(104, 104); asynchronous: true; fillMode: Image.PreserveAspectCrop }
+                Image { id: playerCoverImage; anchors.fill: parent; source: appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : ""; sourceSize: Qt.size(104, 104); asynchronous: true; fillMode: Image.PreserveAspectCrop }
                 Image { anchors.centerIn: parent; width: 20; height: 20; visible: playerCoverImage.status !== Image.Ready; source: "qrc:/assets/track-placeholder.svg" }
             }
             ColumnLayout {
@@ -1164,11 +1244,11 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.max(0, parent.width * 0.25 - 68)
-                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: musicPlayer.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: appUi.player.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
                 Text {
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    text: musicPlayer.artist || (musicPlayer.enabled ? "Select a track" : "Add a token in Settings")
+                    text: appUi.player.artist || (appUi.player.enabled ? "Select a track" : "Add a token in Settings")
                     color: "#888888"; font.pixelSize: 11; elide: Text.ElideRight
                 }
             }
@@ -1180,31 +1260,31 @@ ApplicationWindow {
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
                     spacing: 12
-                    PlayerButton { glyph: "skip-back"; padding: 8; Accessible.name: "Previous track"; onClicked: musicPlayer.previous() }
+                    PlayerButton { glyph: "skip-back"; padding: 8; Accessible.name: "Previous track"; onClicked: appUi.player.previous() }
                     PlayerButton {
                         primary: true
                         padding: 7
                         implicitWidth: 32
                         implicitHeight: 32
-                        glyph: musicPlayer.playing ? "pause" : "play"
-                        Accessible.name: musicPlayer.playing ? "Pause" : "Play"
-                        enabled: musicPlayer.enabled && !musicPlayer.busy && musicPlayer.title !== ""
-                        onClicked: musicPlayer.toggle()
+                        glyph: appUi.player.playing ? "pause" : "play"
+                        Accessible.name: appUi.player.playing ? "Pause" : "Play"
+                        enabled: appUi.player.enabled && !appUi.player.busy && appUi.player.title !== ""
+                        onClicked: appUi.player.toggle()
                     }
-                    PlayerButton { glyph: "skip-forward"; padding: 8; Accessible.name: "Next track"; onClicked: musicPlayer.next() }
+                    PlayerButton { glyph: "skip-forward"; padding: 8; Accessible.name: "Next track"; onClicked: appUi.player.next() }
                 }
                 RowLayout {
-                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(musicPlayer.position); color: "#888888"; font.pixelSize: 11 }
+                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(appUi.player.position); color: "#888888"; font.pixelSize: 11 }
                     PlayerSlider {
                         Layout.fillWidth: true
-                        from: 0; to: Math.max(1, musicPlayer.duration)
-                        value: musicPlayer.position
-                        enabled: musicPlayer.enabled && musicPlayer.duration > 0
+                        from: 0; to: Math.max(1, appUi.player.duration)
+                        value: appUi.player.position
+                        enabled: appUi.player.enabled && appUi.player.duration > 0
                         Accessible.name: "Playback position"
-                        onMoved: musicPlayer.seek(value)
+                        onMoved: appUi.player.seek(value)
 
                     }
-                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(musicPlayer.duration); color: "#888888"; font.pixelSize: 11 }
+                    Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(appUi.player.duration); color: "#888888"; font.pixelSize: 11 }
                 }
             }
             PlayerButton {
@@ -1214,34 +1294,34 @@ ApplicationWindow {
                 glyph: "music-standard"
                 Accessible.name: "Send"
                 SiteToolTip { text: "Send track" }
-                enabled: musicPlayer.trackId !== "" && (typeof localUploader !== "undefined") && !localUploader.busy
-                onClicked: sendDialog.openTrack(musicPlayer.trackId, musicPlayer.title, musicPlayer.artist, musicPlayer.cover ? "image://trackcovers/" + encodeURIComponent(musicPlayer.cover) : "")
+                enabled: appUi.player.trackId !== "" && (!!appUi.uploader) && !appUi.uploader.busy
+                onClicked: sendDialog.openTrack(appUi.player.trackId, appUi.player.title, appUi.player.artist, appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : "")
             }
             PlayerButton {
                 id: volumeButton
                 anchors.right: volumeSlider.left
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                glyph: musicPlayer.volume > 0 ? "volume-2" : "volume-off"
-                                Accessible.name: musicPlayer.volume > 0 ? "Mute" : "Unmute"
-                onClicked: musicPlayer.volume = musicPlayer.volume > 0 ? 0 : 0.7
+                glyph: appUi.player.volume > 0 ? "volume-2" : "volume-off"
+                                Accessible.name: appUi.player.volume > 0 ? "Mute" : "Unmute"
+                onClicked: appUi.player.volume = appUi.player.volume > 0 ? 0 : 0.7
             }
             PlayerSlider {
                 id: volumeSlider
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 width: 100
-                from: 0; to: 1; value: musicPlayer.volume
+                from: 0; to: 1; value: appUi.player.volume
                 Accessible.name: "Volume"
-                onMoved: musicPlayer.volume = value
+                onMoved: appUi.player.volume = value
 
             }
         }
     }
     SendDialog {
         id: sendDialog
-        uploadBackend: typeof localUploader !== "undefined" ? localUploader : null
-        approveSoundEnabled: appConfig.approveSoundEnabled
+        uploadBackend: !!appUi.uploader ? appUi.uploader : null
+        approveSoundEnabled: appUi.config.approveSoundEnabled
         onSent: function(action) { appUi.notify("Send: " + action); }
     }
     SiteView {
@@ -1342,12 +1422,12 @@ ApplicationWindow {
                         objectName: "login-" + modelData.provider
                         width: parent.width
                         height: 46
-                        text: backend.pendingProvider === modelData.provider ? "Redirecting…" : "Continue with " + modelData.name
-                        enabled: !appUi.state.loginPending && backend.pendingProvider === ""
+                        text: appUi.backendBridge.pendingProvider === modelData.provider ? "Redirecting…" : "Continue with " + modelData.name
+                        enabled: !appUi.state.loginPending && appUi.backendBridge.pendingProvider === ""
                         font.family: "DDetector Quicksand"
                         font.pixelSize: 14
                         font.weight: Font.DemiBold
-                        onClicked: backend.login(modelData.provider)
+                        onClicked: appUi.backendBridge.login(modelData.provider)
                         contentItem: Row {
                             spacing: 10
                             leftPadding: Math.max(0, (providerButton.width - providerText.implicitWidth - 27) / 2 - providerButton.leftPadding)

@@ -136,9 +136,18 @@ Item {
             compare(fakeUi.selectedId, "101");
             fakeUi.choices = 0;
             fakeUi.selectedId = "";
-            mouseDoubleClickSequence(row, 200, 29);
+            // Qt Quick Test adds 500 ms to synthetic timestamps after every mouse
+            // release, even in mouseDoubleClickSequence with an explicit delay.
+            // Use timestamp-correct touch events to exercise the same TapHandler's
+            // exclusive double-tap path without changing the production interval.
+            const taps = touchEvent(row);
+            taps.press(0, row, 200, 29).commit();
+            taps.release(0, row, 200, 29).commit();
+            taps.press(0, row, 200, 29).commit();
+            taps.release(0, row, 200, 29).commit();
             tryCompare(fakeUi, "plays", 1);
-            wait(500);
+            // Let any deferred singleTapped signal fire before checking exclusivity.
+            wait(Qt.styleHints.mouseDoubleClickInterval);
             compare(fakeUi.choices, 0);
             compare(fakeUi.selectedId, "");
         }

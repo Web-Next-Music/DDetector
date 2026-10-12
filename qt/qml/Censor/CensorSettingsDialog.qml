@@ -20,7 +20,7 @@ SiteDialog {
     closePolicy: saving ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
     onOpened: panel.loadSettings()
     function setValue(key, value) { panel.setValue(key, value); }
-    function gpuOptionReason(value) { return panel.gpuOptionReason(value); }
+
     function saveSettings() { panel.saveSettings(); }
     contentItem: ScrollView {
         id: settingsScroll

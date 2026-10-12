@@ -48,7 +48,7 @@ find_package(Qt6Keychain REQUIRED CONFIG)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.5)
 qt_standard_project_setup()
-qt_add_executable(ddetector-qt workspace.cpp workspace.h uploader.cpp uploader.h main.cpp config.cpp config.h bridge.cpp bridge.h player.cpp player.h coverimageprovider.cpp coverimageprovider.h avatarimage.cpp avatarimage.h)
+qt_add_executable(ddetector-qt updater.cpp updater.h workspace.cpp workspace.h uploader.cpp uploader.h main.cpp config.cpp config.h bridge.cpp bridge.h player.cpp player.h coverimageprovider.cpp coverimageprovider.h avatarimage.cpp avatarimage.h)
 target_include_directories(ddetector-qt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(ddetector-qt PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Multimedia)
 if(WIN32)
@@ -59,19 +59,26 @@ if(WIN32)
     set_property(SOURCE app-icon.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app-icon.ico")
 endif()
 file(GLOB APP_ASSETS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" assets/*)
+list(REMOVE_ITEM APP_ASSETS assets/lucide-flask-conical.svg)
+set(DEV_QML)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(ddetector-qt PRIVATE DDETECTOR_DEV_TOOLS)
+    list(APPEND APP_ASSETS assets/lucide-flask-conical.svg)
+    list(APPEND DEV_QML qml/App/DevTools.qml)
+endif()
 # Preserve qrc:/Main.qml and runtime native registrations until they can be
 # migrated together. A QML module must not silently change the engine entry URL.
 set(SHARED_QML
     qml/Components/SiteFocusRing.qml qml/Components/SiteIcon.qml qml/Components/SiteButton.qml
     qml/Components/SiteTextField.qml qml/Components/SiteComboBox.qml qml/Components/SiteSpinBox.qml
-    qml/Components/SiteSettingsCard.qml qml/Components/SiteToggleRow.qml qml/Components/SiteSpinner.qml
+    qml/Components/SiteSettingsCard.qml qml/Components/SiteToggleRow.qml qml/Components/SiteSpinner.qml qml/Components/SiteProgressRing.qml
     qml/Components/FileIcon.qml qml/Components/SiteMenu.qml qml/Components/SiteMenuItem.qml
     qml/Components/SiteMenuSeparator.qml qml/Components/SiteEditMenu.qml qml/Components/SiteDialog.qml
     qml/Components/SiteToolTip.qml qml/Components/DialogHeader.qml qml/Components/WindowButton.qml
     qml/Components/SiteQuote.qml qml/Components/SiteSectionCard.qml qml/Components/SiteSubtitle.qml
     qml/Components/ScrollEdgeShadow.qml qml/Components/NotificationStack.qml)
 set(APP_QML
-    ${SHARED_QML}
+    ${SHARED_QML} ${DEV_QML}
     qml/App/Main.qml
     qml/Censor/CensorDetector.qml qml/Censor/CensorSettingsDialog.qml qml/Censor/CensorSettingsPanel.qml
     qml/Git/GitWorkspace.qml qml/Git/terminal.qml
@@ -86,11 +93,95 @@ get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
 get_filename_component(QT_TOOL_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
 find_program(QT_QMLLINT NAMES qmllint HINTS "${QT_TOOL_DIR}" NO_DEFAULT_PATH REQUIRED)
 set(QML_LINT_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/ui.qrc")
+# Tooling-only foreign declarations use the actual automoc metadata. They are
+# never linked into the application: main.cpp remains the registration owner.
+qt_extract_metatypes(ddetector-qt)
+get_target_property(APP_METATYPES ddetector-qt INTERFACE_QT_META_TYPES_BUILD_FILE)
+set(NATIVE_QML_IMPORT_DIR "${CMAKE_CURRENT_BINARY_DIR}/qml-lint-imports")
+set(NATIVE_QML_TYPE_TARGETS)
+# The installed KF class is a QObject base, but KF does not ship QML metadata.
+# Extract its real header rather than inventing a replacement prototype.
+get_target_property(SYNTAX_INCLUDE_DIRS KF6::SyntaxHighlighting INTERFACE_INCLUDE_DIRECTORIES)
+find_path(SYNTAX_HEADER_DIR KSyntaxHighlighting/syntaxhighlighter.h
+    HINTS ${SYNTAX_INCLUDE_DIRS} REQUIRED)
+qt_add_library(ddetector-lint-kf STATIC EXCLUDE_FROM_ALL
+    "${SYNTAX_HEADER_DIR}/KSyntaxHighlighting/syntaxhighlighter.h")
+target_link_libraries(ddetector-lint-kf PRIVATE KF6::SyntaxHighlighting)
+qt_extract_metatypes(ddetector-lint-kf)
+get_target_property(SYNTAX_METATYPES ddetector-lint-kf INTERFACE_QT_META_TYPES_BUILD_FILE)
+foreach(module IN ITEMS Terminal Syntax Lyrics Avatar)
+    if(module STREQUAL "Terminal")
+        set(uri DDetector.Terminal)
+        set(declarations [=[
+#include "terminal.h"
+struct TerminalForeign {
+    Q_GADGET
+    QML_FOREIGN(EmbeddedTerminal)
+    QML_NAMED_ELEMENT(EmbeddedTerminal)
+};
+struct SessionForeign {
+    Q_GADGET
+    QML_FOREIGN(TerminalSession)
+    QML_NAMED_ELEMENT(TerminalSession)
+    QML_UNCREATABLE("Owned by GitWorkspace")
+};
+]=])
+    elseif(module STREQUAL "Syntax")
+        set(uri DDetector.Syntax)
+        set(declarations [=[
+#include "syntaxhighlighter.h"
+struct SyntaxForeign {
+    Q_GADGET
+    QML_FOREIGN(SyntaxHighlighter)
+    QML_NAMED_ELEMENT(SyntaxHighlighter)
+};
+]=])
+    elseif(module STREQUAL "Lyrics")
+        set(uri DDetector.Lyrics)
+        set(declarations [=[
+#include "lyricslayout.h"
+struct LyricsForeign {
+    Q_GADGET
+    QML_FOREIGN(LyricsLayout)
+    QML_NAMED_ELEMENT(LyricsLayout)
+};
+]=])
+    else()
+        set(uri DDetector)
+        set(declarations [=[
+#include "avatarimage.h"
+struct AvatarForeign {
+    Q_GADGET
+    QML_FOREIGN(AvatarImage)
+    QML_NAMED_ELEMENT(AvatarImage)
+};
+]=])
+    endif()
+    set(metadata_target "ddetector-lint-${module}")
+    set(metadata_header "${CMAKE_CURRENT_BINARY_DIR}/generated/${metadata_target}.h")
+
+    file(CONFIGURE OUTPUT "${metadata_header}" CONTENT "#pragma once\n#include <QtQml/qqmlregistration.h>\n${declarations}" @ONLY)
+    qt_add_library(${metadata_target} STATIC EXCLUDE_FROM_ALL)
+    string(REPLACE "." "/" module_path "${uri}")
+    qt_add_qml_module(${metadata_target} URI ${uri} VERSION 1.0
+        NO_PLUGIN RESOURCE_PREFIX /qt/qml OUTPUT_DIRECTORY "${NATIVE_QML_IMPORT_DIR}/${module_path}"
+        DEPENDENCIES QtQuick
+        SOURCES "${metadata_header}" "${APP_METATYPES}")
+    if(module STREQUAL "Syntax")
+        target_sources(${metadata_target} PRIVATE "${SYNTAX_METATYPES}")
+    endif()
+    target_include_directories(${metadata_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(${metadata_target} PRIVATE Qt6::Quick KF6::SyntaxHighlighting)
+    list(APPEND NATIVE_QML_TYPE_TARGETS ${metadata_target}_qmltyperegistration)
+endforeach()
 add_custom_target(qml-lint
     COMMAND "${QT_QMLLINT}" --resource "${QML_LINT_RESOURCE}" -W 0 qml/Components/SiteButton.qml qml/Components/SiteFocusRing.qml qml/Components/SiteTextField.qml qml/Components/SiteToggleRow.qml qml/Components/WindowButton.qml
-    COMMAND "${QT_QMLLINT}" --resource "${QML_LINT_RESOURCE}" ${APP_QML}
+    COMMAND "${QT_QMLLINT}" --ignore-settings -W 0 -I "${NATIVE_QML_IMPORT_DIR}" --resource "${QML_LINT_RESOURCE}"
+            --json "${CMAKE_CURRENT_BINARY_DIR}/qml-lint.json" ${APP_QML}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Lint all QML (runtime context/native types may produce warnings)")
+    DEPENDS ${NATIVE_QML_TYPE_TARGETS}
+    COMMENT "Lint all QML with native type metadata")
+
 install(TARGETS ddetector-qt RUNTIME DESTINATION bin)
 if(UNIX AND NOT APPLE)
     install(FILES ddetector-qt.desktop DESTINATION share/applications)
@@ -108,6 +199,13 @@ if(BUILD_TESTING)
     add_test(NAME ui-smoke COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/smoke.py"
         --executable $<TARGET_FILE:ddetector-qt> --output "${CMAKE_CURRENT_BINARY_DIR}/screenshots")
     set_tests_properties(ui-smoke PROPERTIES TIMEOUT 120)
+    qt_add_executable(ddetector-updater-tests updater_tests.cpp updater.cpp updater.h)
+    target_include_directories(ddetector-updater-tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_libraries(ddetector-updater-tests PRIVATE Qt6::Network Qt6::Gui Qt6::Test)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_definitions(ddetector-updater-tests PRIVATE DDETECTOR_DEV_TOOLS)
+    endif()
+    add_test(NAME native-updater COMMAND ddetector-updater-tests)
     qt_add_executable(ddetector-uploader-tests uploader_tests.cpp uploader.cpp uploader.h)
     target_link_libraries(ddetector-uploader-tests PRIVATE Qt6::Network Qt6::Test)
     add_test(NAME local-uploader COMMAND ddetector-uploader-tests)

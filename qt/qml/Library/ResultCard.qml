@@ -9,8 +9,8 @@ Rectangle {
     id: card
     required property var ui
     required property var row
-    property var playbackBackend: typeof musicPlayer !== "undefined" ? musicPlayer : null
-    property var actionBackend: typeof backend !== "undefined" ? backend : null
+    property var playbackBackend: ui.player || null
+    property var actionBackend: ui.backendBridge || null
     property url placeholderSource: "qrc:/assets/track-placeholder.svg"
     property bool ignored: !!row.ignored
     property bool unsynced: !!row.allLines && row.allLines.length > 0

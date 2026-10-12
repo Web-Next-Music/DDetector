@@ -38,6 +38,50 @@ Presets are defined in `qt/CMakePresets.json`: `dev` is a Debug build with tests
 `release` is an application-only Release build in `qt/build-release`. The release packaging
 scripts and CI use the same `release` preset. `ccache` and `lld` are used automatically when installed.
 
+## Application updates
+
+The Qt client checks the latest stable release of `Web-Next-Music/DDetector` at startup
+and every 30 minutes while running (except smoke tests). Scheduled checks are skipped
+while an update check, download, or installation is in progress. A green Lucide download button appears above the account avatar
+when a newer semantic version is available. Clicking it immediately starts downloading
+and installing, without an application confirmation dialog. A circular progress ring
+replaces the icon and fills clockwise; unknown progress rotates a partial arc. Status
+and percentage appear in the tooltip; only failures use notifications. Availability,
+up-to-date results, and successful installation do not produce toasts.
+Finish Send and save workspace changes first. System installer/authorization prompts
+remain platform-dependent. Development/unknown versions do not pretend to be newer
+or older than published versions.
+
+Installation follows the actual installation type: Windows launches the matching NSIS
+installer with `/RESTARTAPP` and exits; the updated installer relaunches the installed
+Go launcher after successful installation. Previously published installers without this
+flag's implementation still require manual reopening until a new installer is released.
+AppImage verifies and atomically replaces a safe writable image, then restarts through
+AppRun and the Go launcher. Debian/Arch installations use `pkexec` with `dpkg`/`pacman`
+and restart `/usr/bin/ddetector` only after a successful install. Launchers receive a
+clean environment and no old Qt bridge credentials. Installation/authorization failure
+does not restart; restart failure is reported with instructions for manual reopening.
+Unsupported platforms/architectures, unmanaged installations in normal mode, unsafe
+AppImage paths, and releases without a GitHub SHA-256 asset digest open the release page instead.
+Downloads are streamed into private staging and size/hash-checked before installation.
+The GitHub digest protects integrity, not against a compromised release publisher.
+Windows installer staging is retained because the detached installer still needs it.
+
+Only Debug builds compile the forced latest-release action and bundle `DevTools.qml` and
+its Lucide flask icon. The avatar's shared account menu includes a “Dev menu” entry
+above Settings, separated from it by a divider. Clicking or right-clicking the avatar
+opens that menu; Release builds omit the dev entry and divider.
+The update card contains a shared quote and both actions: “Force latest release” on
+the left and “Check for updates” on the right. Force fetches real latest stable release
+metadata and offers installation regardless of the current version (including the same
+version or a development build). Clicking the download icon uses the real platform
+installer; there is no simulated download. Ordinary checking resets forced mode and
+only offers a newer version. On recognized Debian/Arch hosts, explicit forced mode
+also permits installing the native DDetector package from an unmanaged development
+checkout via `pkexec`; it does not replace the checkout's binary. Artifact validation,
+SHA-256 checks, and AppImage safety remain mandatory. Release resources contain
+neither the menu nor its icon.
+
 Minimum versions of `qtermwidget` and `KF6SyntaxHighlighting` and the pinned packaging tools are
 defined once in `packaging/deps.env`, which is read by CMake, `packaging/ci/build.sh` and CI.
 The packaging tools there are pinned by SHA-256; if an upstream `continuous` build is replaced, the
