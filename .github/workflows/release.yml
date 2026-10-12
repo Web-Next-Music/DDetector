@@ -141,7 +141,7 @@ jobs:
           QTERMWIDGET_DATA_DIR: ${{ github.workspace }}/.native-deps/share/qtermwidget6
           SYNTAX_HIGHLIGHTING_DATA_DIR: ${{ github.workspace }}/.native-deps/share/org.kde.syntax-highlighting
         run: |
-          VERSION="${VERSION#v}" ./scripts/build-dist.sh linux
+          VERSION="${VERSION#v}" python3 scripts/build-dist.py linux
 
       - name: Save C++ compiler output
         if: ${{ !cancelled() && steps.linux-build.outcome != 'skipped' && steps.linux-ccache.outputs.cache-hit != 'true' && steps.linux-ccache.outcome == 'success' }}
