@@ -148,7 +148,7 @@ def generate(source, icons_only=False):
                 stream = io.BytesIO()
                 font.save(stream)
                 outputs[f"{family}-{style}.ttf"] = stream.getvalue()
-        for relative, target in [("fonts/luckystar.otf", "luckystar.otf"), ("ui/Kagami.webp", "Kagami.webp"), ("icons/icon-256.png", "icon-256.png")]:
+        for relative, target in [("fonts/luckystar.otf", "luckystar.otf"), ("ui/Kagami.webp", "Kagami.webp")]:
             outputs[target] = read("public/" + relative)
         providers = dict(re.findall(r'(github|discord|spotify):\s*"(M[^"\n]+)"', read("src/components/profile/ServiceIcon.tsx").decode()))
         if set(providers) != {"github", "discord", "spotify"}:
@@ -173,8 +173,7 @@ def asset_path(name):
         return Path("fonts") / name
     if name in {"github-dark.svg", "discord-dark.svg", "spotify-dark.svg"}:
         return Path("icons/brands") / name
-    if name == "icon-256.png":
-        return Path("icons/app") / name
+
     if name == "Kagami.webp":
         return Path("images") / name
     return Path(name)

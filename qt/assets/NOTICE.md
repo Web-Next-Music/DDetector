@@ -67,7 +67,7 @@ this artwork. It is bundled locally; no runtime download is required.
 
 ## Source artwork and Lucky Star font
 
-`Kagami.webp`, `icon-256.png`, and `luckystar.otf` are copied unchanged from the
+`Kagami.webp` and `luckystar.otf` are copied unchanged from the
 website's `public/` directory. Provider SVG paths are from `ServiceIcon.tsx`.
 
 The Lucky Star font identifies itself as:

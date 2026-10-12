@@ -180,7 +180,7 @@ jobs:
             desktop-file-validate "$ROOT/usr/share/applications/ddetector-qt.desktop"
             grep -qx 'Exec=ddetector' "$ROOT/usr/share/applications/ddetector-qt.desktop"
             grep -qx 'Icon=ddetector-qt' "$ROOT/usr/share/applications/ddetector-qt.desktop"
-            cmp "$ROOT/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png" qt/assets/icons/app/icon-256.png
+            cmp "$ROOT/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png" qt/assets/icons/app/app-icon.png
             test -L "$ROOT/usr/bin/ddetector"
             rm -rf "$ROOT"
           done
