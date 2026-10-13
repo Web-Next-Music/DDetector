@@ -6,6 +6,24 @@ import QtQuick.Effects
 Dialog {
     id: dialog
 
+    property bool windowChromeRegistered: false
+    function updateWindowChromeRegistration() {
+        const owner = dialog.ApplicationWindow.window;
+        if (!owner || owner.activeModalCount === undefined) return;
+        const register = dialog.visible && dialog.modal;
+        if (register === windowChromeRegistered) return;
+        owner.activeModalCount += register ? 1 : -1;
+        windowChromeRegistered = register;
+    }
+    onVisibleChanged: updateWindowChromeRegistration()
+    onModalChanged: updateWindowChromeRegistration()
+    Component.onCompleted: updateWindowChromeRegistration()
+    Component.onDestruction: {
+        const owner = dialog.ApplicationWindow.window;
+        if (windowChromeRegistered && owner && owner.activeModalCount !== undefined)
+            owner.activeModalCount -= 1;
+    }
+
     property url icon: ""
     property url assetRoot: "qrc:/assets/"
     property color surface: "#0c0c0e"

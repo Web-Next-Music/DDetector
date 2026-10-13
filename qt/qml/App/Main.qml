@@ -32,6 +32,8 @@ ApplicationWindow {
     property var updater: null
     property int rightPage: 0
     property bool workspaceCloseApproved: false
+    property int activeModalCount: 0
+    readonly property bool raiseWindowChrome: activeModalCount > 0
     onClosing: function(event) {
         if (appUi.updater && appUi.updater.busy) {
             event.accepted = false;
@@ -390,9 +392,9 @@ ApplicationWindow {
                 Text {
                     id: windowTitle
                     objectName: "windowTitle"
-                    parent: auth.visible ? Overlay.overlay : windowTitleSlot
-                    x: auth.visible ? 16 : 0
-                    y: auth.visible ? (mainHeader.height - height) / 2 : (windowTitleSlot.height - height) / 2
+                    parent: appUi.raiseWindowChrome ? Overlay.overlay : windowTitleSlot
+                    x: appUi.raiseWindowChrome ? 16 : 0
+                    y: appUi.raiseWindowChrome ? (mainHeader.height - height) / 2 : (windowTitleSlot.height - height) / 2
                     z: 40
                     text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appUi.gitTag + "</span>"
                     textFormat: Text.RichText
@@ -402,7 +404,7 @@ ApplicationWindow {
                     font.weight: Font.Bold
                     MouseArea {
                         anchors.fill: parent
-                        enabled: auth.visible
+                        enabled: appUi.raiseWindowChrome
                         onPressed: appUi.startSystemMove()
                         onDoubleClicked: appUi.toggleMaximized()
                     }
@@ -609,7 +611,7 @@ ApplicationWindow {
     }
     Row {
         id: windowControls
-        parent: auth.visible ? Overlay.overlay : appUi.contentItem
+        parent: appUi.raiseWindowChrome ? Overlay.overlay : appUi.contentItem
         anchors.right: parent.right
         anchors.rightMargin: appUi.config.hideWindowControls ? 8 : 0
         y: 0
@@ -1458,7 +1460,7 @@ ApplicationWindow {
                     width: parent.width
                     wrapMode: Text.Wrap
                     text: appUi.state.error || ""
-                    visible: text !== ""
+                    visible: text !== "" && !text.startsWith("Lyrics acquisition failed")
                     color: appUi.ignoredColor
                     font.pixelSize: 13
                 }
