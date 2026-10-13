@@ -382,7 +382,7 @@ ApplicationWindow {
         }
         Row {
             x: 16
-            y: 8
+            y: 10
             height: 32
             spacing: 10
             Item {
@@ -394,14 +394,14 @@ ApplicationWindow {
                     objectName: "windowTitle"
                     parent: appUi.raiseWindowChrome ? Overlay.overlay : windowTitleSlot
                     x: appUi.raiseWindowChrome ? 16 : 0
-                    y: appUi.raiseWindowChrome ? (mainHeader.height - height) / 2 : (windowTitleSlot.height - height) / 2
+                    y: appUi.raiseWindowChrome ? (mainHeader.height - height) / 2 + 2 : (windowTitleSlot.height - height) / 2
                     z: 40
                     text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appUi.gitTag + "</span>"
                     textFormat: Text.RichText
                     color: appUi.ink
-                    font.family: "DDetector Quicksand"
-                    font.pixelSize: 18
-                    font.weight: Font.Bold
+                    font.family: "Luckystar"
+                    font.pixelSize: 28
+                    font.weight: Font.Normal
                     MouseArea {
                         anchors.fill: parent
                         enabled: appUi.raiseWindowChrome
