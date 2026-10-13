@@ -30,19 +30,17 @@ func writePrivateFile(path, prefix string, limit int64, encode func(io.Writer) e
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	info, err := os.Lstat(dir)
+	release, err := guardPrivateDirectory(dir)
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("private file directory must be non-symlink and private (0700)")
-	}
+	defer release()
 	f, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if err = f.Chmod(0600); err == nil {
+	if err = securePrivateFile(f); err == nil {
 		err = encode(&budgetWriter{w: f, remaining: limit})
 	}
 	if err == nil {
@@ -55,15 +53,10 @@ func writePrivateFile(path, prefix string, limit int64, encode func(io.Writer) e
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = os.Rename(f.Name(), path); err != nil {
+	if err = replacePrivateFile(f.Name(), path); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return syncPrivateDirectory(dir)
 }
 
 func readPrivateFile(path string, limit int64, exactMode bool) ([]byte, error) {
@@ -74,16 +67,17 @@ func readPrivateFile(path string, limit int64, exactMode bool) ([]byte, error) {
 	if !link.Mode().IsRegular() {
 		return nil, fmt.Errorf("private file must be regular and non-symlink")
 	}
-	f, err := os.Open(path)
+	f, release, err := openPrivateFile(path)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if !os.SameFile(link, info) || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || (exactMode && info.Mode().Perm() != 0600) {
+	if !os.SameFile(link, info) || !info.Mode().IsRegular() || !privateFileModeOK(info, exactMode) {
 		return nil, fmt.Errorf("private file must be regular, non-symlink, mode 0600")
 	}
 	if info.Size() > limit {
