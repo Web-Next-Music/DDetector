@@ -1430,22 +1430,47 @@ ApplicationWindow {
                         font.pixelSize: 14
                         font.weight: Font.DemiBold
                         onClicked: appUi.backendBridge.login(modelData.provider)
-                        contentItem: Row {
-                            spacing: 10
-                            leftPadding: Math.max(0, (providerButton.width - providerText.implicitWidth - 27) / 2 - providerButton.leftPadding)
-                            Image {
-                                width: 17
-                                height: 17
-                                anchors.verticalCenter: parent.verticalCenter
-                                source: "qrc:/assets/" + providerButton.modelData.provider + "-dark" + ".svg"
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                id: providerText
-                                text: providerButton.text
+                        contentItem: Item {
+                            TextMetrics {
+                                id: providerLabelMetrics
                                 font: providerButton.font
-                                color: appUi.ink
-                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Continue with Discord"
+                            }
+                            Item {
+                                width: Math.min(parent.width, providerLabelMetrics.width + 27)
+                                height: parent.height
+                                anchors.centerIn: parent
+                                Item {
+                                    id: providerIcon
+                                    width: 17
+                                    height: 17
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Image {
+                                        // Keep the 24-unit logo at 17px while giving its SVG edges transparent room.
+                                        width: parent.width * 27 / 24
+                                        height: parent.height * 27 / 24
+                                        anchors.centerIn: parent
+                                        anchors.alignWhenCentered: false
+                                        sourceSize.width: Math.ceil(width * 2)
+                                        sourceSize.height: Math.ceil(height * 2)
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        source: "qrc:/assets/" + providerButton.modelData.provider + "-dark" + ".svg"
+                                    }
+                                }
+                                Text {
+                                    textFormat: Text.PlainText
+                                    id: providerText
+                                    text: providerButton.text
+                                    font: providerButton.font
+                                    color: appUi.ink
+                                    anchors.left: providerIcon.right
+                                    anchors.leftMargin: 10
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
                             }
                         }
                         background: Rectangle {
