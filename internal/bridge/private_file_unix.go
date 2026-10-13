@@ -17,7 +17,8 @@ func guardPrivateDirectory(dir string) (func(), error) {
 	}
 	return func() {}, nil
 }
-func securePrivateFile(f *os.File) error { return f.Chmod(0600) }
+func createPrivateTemp(dir, prefix string) (*os.File, error) { return os.CreateTemp(dir, prefix) }
+func securePrivateFile(f *os.File) error                     { return f.Chmod(0600) }
 func privateFileModeOK(info os.FileInfo, exact bool) bool {
 	return info.Mode().Perm()&0077 == 0 && (!exact || info.Mode().Perm() == 0600)
 }

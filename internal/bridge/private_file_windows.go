@@ -1,9 +1,13 @@
 package bridge
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -49,13 +53,54 @@ func guardPrivateDirectory(dir string) (func(), error) {
 	return release, nil
 }
 
-func securePrivateFile(f *os.File) error {
+func privateSecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Match the protected current-user-only DACL used by openStorageLock.
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + user.User.Sid.String() + ")")
+	return windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + user.User.Sid.String() + ")")
+}
+
+func createPrivateTemp(dir, pattern string) (*os.File, error) {
+	if strings.ContainsAny(pattern, `/\`) {
+		return nil, fmt.Errorf("temporary file pattern contains path separator")
+	}
+	sd, err := privateSecurityDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	prefix, suffix := pattern, ""
+	if i := strings.LastIndexByte(pattern, '*'); i >= 0 {
+		prefix, suffix = pattern[:i], pattern[i+1:]
+	}
+	for attempts := 0; attempts < 100; attempts++ {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(dir, prefix+hex.EncodeToString(random[:])+suffix)
+		name, err := windows.UTF16PtrFromString(path)
+		if err != nil {
+			return nil, err
+		}
+		// Install the protected DACL at creation; retain this handle throughout
+		// writing so no reopening race or inherited-public-ACL window exists.
+		h, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, &sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err == windows.ERROR_FILE_EXISTS || err == windows.ERROR_ALREADY_EXISTS {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return os.NewFile(uintptr(h), path), nil
+	}
+	return nil, fmt.Errorf("private temporary file name collisions: %w", os.ErrExist)
+}
+
+func securePrivateFile(f *os.File) error {
+	sd, err := privateSecurityDescriptor()
 	if err != nil {
 		return err
 	}

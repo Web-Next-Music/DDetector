@@ -28,35 +28,42 @@ func (w *budgetWriter) Write(p []byte) (int, error) {
 func writePrivateFile(path, prefix string, limit int64, encode func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
+		return fmt.Errorf("create private file directory: %w", err)
 	}
 	release, err := guardPrivateDirectory(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("guard private file directory: %w", err)
 	}
 	defer release()
-	f, err := os.CreateTemp(dir, prefix)
+	f, err := createPrivateTemp(dir, prefix)
 	if err != nil {
-		return err
+		return fmt.Errorf("create private temporary file: %w", err)
 	}
 	defer os.Remove(f.Name())
-	if err = securePrivateFile(f); err == nil {
-		err = encode(&budgetWriter{w: f, remaining: limit})
+	if err = securePrivateFile(f); err != nil {
+		err = fmt.Errorf("secure private temporary file: %w", err)
+	} else if err = encode(&budgetWriter{w: f, remaining: limit}); err != nil {
+		err = fmt.Errorf("encode private file: %w", err)
 	}
 	if err == nil {
-		err = f.Sync()
+		if err = f.Sync(); err != nil {
+			err = fmt.Errorf("sync private temporary file: %w", err)
+		}
 	}
 	closeErr := f.Close()
 	if err != nil {
 		return err
 	}
 	if closeErr != nil {
-		return closeErr
+		return fmt.Errorf("close private temporary file: %w", closeErr)
 	}
 	if err = replacePrivateFile(f.Name(), path); err != nil {
-		return err
+		return fmt.Errorf("replace private file: %w", err)
 	}
-	return syncPrivateDirectory(dir)
+	if err := syncPrivateDirectory(dir); err != nil {
+		return fmt.Errorf("sync private file directory: %w", err)
+	}
+	return nil
 }
 
 func readPrivateFile(path string, limit int64, exactMode bool) ([]byte, error) {
