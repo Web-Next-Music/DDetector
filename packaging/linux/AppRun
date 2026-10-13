@@ -4,8 +4,15 @@ set -eu
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export QT_PLUGIN_PATH="$HERE/usr/plugins"
+# Keep bundled platform plugins first, but allow the desktop's native widget
+# style/platform theme (KDE, qt6ct, Kvantum, etc.) just as in a dev launch.
+QT_PLUGIN_PATH="$HERE/usr/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+for plugins in /usr/lib/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/*/qt6/plugins; do
+    [ -d "$plugins" ] || continue
+    QT_PLUGIN_PATH="$QT_PLUGIN_PATH:$plugins"
+done
+export QT_PLUGIN_PATH
 export QML_IMPORT_PATH="$HERE/usr/qml"
-export XDG_DATA_DIRS="$HERE/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 exec "$HERE/usr/lib/ddetector/ddetector-backend" --qt "$HERE/usr/lib/ddetector/ddetector-qt" "$@"
