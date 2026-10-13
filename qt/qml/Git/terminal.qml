@@ -28,7 +28,7 @@ Rectangle {
     function startIfReady() {
         if (!started && sessionVisible && workspaceBackend && repositoryRoot) {
             started = true // Set before synchronous backend notifications, including errors.
-            workspaceBackend.startTerminal()
+            workspaceBackend.startTerminal(true)
         }
     }
     onWorkspaceBackendChanged: { started = false; startIfReady() }

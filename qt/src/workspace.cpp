@@ -642,9 +642,16 @@ void GitWorkspace::appendOutput(const QString &text) {
     emit terminalChanged();
 }
 
-void GitWorkspace::startTerminal() {
-    if (m_writeValidator) { const auto error = m_writeValidator(); if (!error.isEmpty()) { fail(error); return; } }
+void GitWorkspace::startTerminal(bool automatic) {
     if (terminalRunning()) return;
+    if (m_writeValidator) {
+        const auto error = m_writeValidator();
+        if (!error.isEmpty()) {
+            // Opening a tab is not an explicit request to modify the repository.
+            if (!automatic) fail(error);
+            return;
+        }
+    }
     if (m_root.isEmpty() || !QFileInfo(m_root).isDir()) { fail("Select a valid repository first"); return; }
     if (!m_terminal.start(m_root)) fail(m_terminal.error());
 }

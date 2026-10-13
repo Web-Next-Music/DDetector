@@ -58,7 +58,7 @@ public:
     Q_INVOKABLE void requestClose();
     // decision: "save", "discard", "cancel". Failed saves keep the prompt pending.
     Q_INVOKABLE void resolveUnsaved(const QString &decision);
-    Q_INVOKABLE void startTerminal();
+    Q_INVOKABLE void startTerminal(bool automatic = false);
     Q_INVOKABLE bool sendTerminalInput(const QString &text);
     Q_INVOKABLE void stopTerminal();
     // Sends terminal Ctrl+D; unlike a pipe this does not permanently close stdin.

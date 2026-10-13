@@ -171,6 +171,19 @@ private slots:
         item->setParentItem(window.contentItem()); item->setSize(QSizeF(800, 400));
         window.show(); QTest::qWait(50);
         QVERIFY(!workspace.terminalRunning());
+        const QString blocked = "Repository publication is busy";
+        workspace.setWriteValidator([blocked] { return blocked; });
+        item->setVisible(true);
+        QTest::qWait(100);
+        QVERIFY(!workspace.terminalRunning());
+        QVERIFY(workspace.error().isEmpty()); // Tab activation silently skips a blocked automatic start.
+        workspace.startTerminal();
+        QVERIFY(!workspace.terminalRunning());
+        QCOMPARE(workspace.error(), blocked); // Explicit requests still report the lock.
+        workspace.setWriteValidator({});
+        item->setVisible(false);
+        object->setProperty("workspaceBackend", QVariant::fromValue<QObject *>(nullptr));
+        object->setProperty("workspaceBackend", QVariant::fromValue(&workspace));
         item->setVisible(true);
         QTRY_VERIFY(workspace.terminalRunning());
         item->setSize(QSizeF(320, 120));
