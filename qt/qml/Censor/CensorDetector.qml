@@ -339,7 +339,7 @@ Rectangle {
         id: detectorScroll
         objectName: "censorScrollViewport"
         anchors.fill: parent
-        anchors.margins: 16
+        anchors.margins: 10
         contentWidth: availableWidth
         ColumnLayout {
             width: detectorScroll.availableWidth
