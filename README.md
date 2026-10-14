@@ -6,7 +6,8 @@
 - `CMake` 3.21+, `Ninja`, and a `C++17` compiler;
 - `Qt` 6.9+ with the `Quick`, `QuickControls2`, `Network`, `Multimedia`, `Widgets`, and `Concurrent` modules, plus `qmllint`;
 - `qtermwidget6` 2.2.0+, `KF6SyntaxHighlighting` 6.13.0+, and `Qt6Keychain`;
-- `libgit2` 1.5+ and `pkg-config`.
+- `libgit2` 1.5+ and `pkg-config`;
+- `ffmpeg` on `PATH` for audio analysis and distribution builds. Distribution packages bundle the executable and its runtime libraries.
 
 Install development packages; see `packaging/deps.env` for versions. For a non-system Qt installation, set `-DCMAKE_PREFIX_PATH=...` in CMake.
 
@@ -47,6 +48,7 @@ pacman -S --needed \
   mingw-w64-ucrt-x86_64-qt6-base \
   mingw-w64-ucrt-x86_64-qt6-declarative \
   mingw-w64-ucrt-x86_64-qt6-multimedia \
+  mingw-w64-ucrt-x86_64-ffmpeg \
   mingw-w64-ucrt-x86_64-qt6-svg \
   mingw-w64-ucrt-x86_64-qt6-imageformats \
   mingw-w64-ucrt-x86_64-syntax-highlighting \

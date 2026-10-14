@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -135,6 +138,14 @@ type Processor interface {
 func normalize(c Config) (Config, error) {
 	if c.FFmpeg == "" {
 		c.FFmpeg = "ffmpeg"
+		if runtime.GOOS == "windows" {
+			if executable, err := os.Executable(); err == nil {
+				bundled := filepath.Join(filepath.Dir(executable), "ffmpeg.exe")
+				if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
+					c.FFmpeg = bundled
+				}
+			}
+		}
 	}
 	if c.CPUThreads == 0 {
 		c.CPUThreads = 1

@@ -67,12 +67,17 @@ build_appdir() {
     fi
     build_linux
     local appdir="$BUILD_DIR/AppDir"
-    local qtermwidget_data syntax_data
+    local qtermwidget_data syntax_data ffmpeg
+    ffmpeg="$(command -v ffmpeg)" || {
+        echo 'FFmpeg is required to package audio analysis; install ffmpeg.' >&2
+        exit 1
+    }
     qtermwidget_data="${QTERMWIDGET_DATA_DIR:-/usr/share/qtermwidget6}"
     syntax_data="${SYNTAX_HIGHLIGHTING_DATA_DIR:-/usr/share/org.kde.syntax-highlighting}"
     rm -rf "$appdir"
     install -Dm755 "$BUILD_DIR/linux/ddetector-backend" "$appdir/usr/lib/ddetector/ddetector-backend"
     install -Dm755 "$BUILD_DIR/linux/ddetector-qt" "$appdir/usr/lib/ddetector/ddetector-qt"
+    install -Dm755 "$ffmpeg" "$appdir/usr/bin/ffmpeg"
     install -Dm644 "$SOURCE_DIR/qt/packaging/ddetector-qt.desktop" "$appdir/usr/share/applications/ddetector-qt.desktop"
     sed -i 's/^Exec=.*/Exec=ddetector/' "$appdir/usr/share/applications/ddetector-qt.desktop"
     install -Dm644 "$SOURCE_DIR/qt/assets/icons/app/app-icon.png" "$appdir/usr/share/icons/hicolor/256x256/apps/ddetector-qt.png"
@@ -119,6 +124,7 @@ build_appdir() {
         "$LINUXDEPLOY" --appimage-extract-and-run \
         --appdir "$appdir" \
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
+        --executable "$appdir/usr/bin/ffmpeg" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --plugin qt
@@ -140,6 +146,7 @@ build_appdir() {
         cp -L "$leancrypto" "$bundled_leancrypto"
     done
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
+    LD_LIBRARY_PATH="$appdir/usr/lib" "$appdir/usr/bin/ffmpeg" -version >/dev/null
     APPDIR_READY=1
 }
 

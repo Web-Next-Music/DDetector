@@ -32,7 +32,7 @@ case "$(uname -s)" in
         ;;
     *) echo 'Windows builds require Linux/LinSYS2 or native MSYS2.' >&2; exit 2 ;;
 esac
-for tool in cmake.exe windeployqt6.exe makensis.exe ntldd.exe; do
+for tool in cmake.exe windeployqt6.exe makensis.exe ntldd.exe ffmpeg.exe; do
     [[ -f "$TOOL_BIN/$tool" ]] || {
         echo "Missing Windows build tool: $TOOL_BIN/$tool" >&2
         echo 'Install the Windows build dependencies listed in qt/README.md.' >&2
@@ -63,6 +63,7 @@ export MSYS2_ARG_CONV_EXCL='*'
     "-DDDETECTOR_GIT_TAG=$GIT_TAG"
 "${TOOL[@]}" cmake.exe --build "$build_win/qt" --parallel "$JOBS"
 cp "$winbuild/qt/ddetector-qt.exe" "$windist/"
+cp "$TOOL_BIN/ffmpeg.exe" "$windist/"
 
 "${TOOL[@]}" windeployqt6.exe --release --qmldir "$source_win/qt/qml" \
     --compiler-runtime "$build_win/dist/ddetector-qt.exe"
@@ -114,6 +115,7 @@ for ((next=0; next<${#dependency_queue[@]}; next++)); do
     done <<<"$report"
 done
 printf 'Windows dependencies: scanned %d binaries in %ds\n' "$scanned" "$((SECONDS - deployment_started))"
+"${TOOL[@]}" "$(windows_path "$windist/ffmpeg.exe")" -version >/dev/null
 
 "${TOOL[@]}" makensis.exe \
     "-DVERSION=$VERSION" \
