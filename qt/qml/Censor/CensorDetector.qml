@@ -31,7 +31,7 @@ Rectangle {
     property real waveformDuration: Number(result.waveform && (result.waveform.samples || result.waveform.points || result.waveform).length ? result.duration_seconds : sourceResult.duration_seconds) || 0
     property var statistics: censorState.statistics || censorState.stats || ({})
     property var statisticKeys: {
-        const keys = ["total", "pending", "running", "censorship_found", "suitable_mp3", "review_required", "local_saved", "succeeded", "failed"];
+        const keys = ["total", "pending", "running", "suitable_mp3", "review_required", "local_saved", "succeeded", "failed"];
         for (const key of Object.keys(statistics)) if (keys.indexOf(key) < 0) keys.push(key);
         return keys;
     }
@@ -242,7 +242,6 @@ Rectangle {
         const r = candidate.result;
         const c = comparison;
         if (!r || !c) return "The selected candidate has no comparison result. Analyze or search again";
-        if (r.intervals_truncated) return "The selected candidate's intervals are truncated; publication is unsafe";
         if (!(Number(r.duration_seconds) > 0) || !c.comparable || c.confidence_class !== "strong_match"
             || !(c.confidence >= 0.75) || !(c.spectral_similarity >= 0.93)
             || !(c.spectral_match_fraction >= 0.8) || !(c.correlation >= 0.5)
@@ -251,14 +250,7 @@ Rectangle {
             || (c.fingerprint_similarity !== undefined && c.fingerprint_similarity !== null && !(c.fingerprint_similarity >= 0.85)))
             return "The selected candidate does not meet the server's strong full-recording match requirements";
         if (c.confidence < Number((censorState.settings || {}).min_confidence || 0.75)) return "The selected candidate's comparison confidence is below the configured minimum";
-        for (const interval of r.suspicious_intervals || []) {
-            const restoration = interval.restoration;
-            if (interval.status === "reference_restoration_candidate" && restoration
-                && isFinite(restoration.confidence) && restoration.confidence >= 0.65
-                && isFinite(restoration.reference_start_seconds) && isFinite(restoration.reference_end_seconds)
-                && restoration.reference_start_seconds >= 0 && restoration.reference_end_seconds > restoration.reference_start_seconds) return "";
-        }
-        return "No localized reference-restoration evidence for the selected candidate";
+        return "";
     }
     function currentTrackError() {
         const id = normalPlayer ? String(normalPlayer.trackId || "") : "";
@@ -342,7 +334,7 @@ Rectangle {
         return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
     }
         function statisticLabel(key) {
-            const labels = {total: "Total", pending: "Awaiting analysis", running: "Processing", censorship_found: "Suspected censorship", suitable_mp3: "Suitable MP3s", review_required: "Review required", local_saved: "Saved locally", succeeded: "Completed", failed: "Errors"};
+            const labels = {total: "Total", pending: "Awaiting analysis", running: "Processing", suitable_mp3: "Suitable MP3s", review_required: "Review required", local_saved: "Saved locally", succeeded: "Completed", failed: "Errors"};
             return labels[key] || key.replace(/_/g, " ");
         }
         function actionLabel(key) {
@@ -468,30 +460,14 @@ Rectangle {
                             property var samples: root.waveformData.samples || root.waveformData.points || root.waveformData
                             property real duration: root.waveformDuration
                             property real playhead: root.timelinePosition / 1000
-                            property var intervals: root.result.suspicious_intervals || root.sourceResult.suspicious_intervals || []
                             onDurationChanged: requestPaint()
                             onSamplesChanged: requestPaint()
-                            onIntervalsChanged: requestPaint()
                             onWidthChanged: requestPaint()
                             onHeightChanged: requestPaint()
                             onPaint: {
                                 const ctx = getContext("2d"); ctx.clearRect(0, 0, width, height);
                                 ctx.fillStyle = "#0c0c0e"; ctx.fillRect(0, 0, width, height);
                                 ctx.strokeStyle = "#242428"; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
-                                if (duration > 0) {
-                                    for (const region of intervals) {
-                                        const start = Math.max(0, Number(region.start_seconds));
-                                        const end = Math.min(duration, Number(region.end_seconds));
-                                        if (!isFinite(start) || !isFinite(end) || end <= start) continue;
-                                        const x = start / duration * width;
-                                        const w = Math.max(4, (end - start) / duration * width);
-                                        ctx.fillStyle = "#40D50811"; ctx.fillRect(x, 0, w, height);
-                                        ctx.fillStyle = "#D50811";
-                                        ctx.fillRect(x, 0, 2, height);
-                                        ctx.fillRect(Math.max(x, x + w - 2), 0, 2, height);
-                                        ctx.fillRect(x, 0, w, 3);
-                                    }
-                                }
                                 ctx.lineWidth = 1;
                                 for (let i = 0; i < samples.length; ++i) {
                                     const point = samples[i];
@@ -501,8 +477,7 @@ Rectangle {
                                     if (!isFinite(low) || !isFinite(high)) continue;
                                     const time = nativePoint ? (Number(point.start_seconds) + Number(point.end_seconds)) / 2 : i / samples.length * duration;
                                     const x = nativePoint && duration > 0 ? time / duration * width : i * width / samples.length;
-                                    const suspicious = intervals.some(r => time >= Number(r.start_seconds) && time <= Number(r.end_seconds));
-                                    ctx.strokeStyle = suspicious ? "#ff5a60" : "#2bfef5";
+                                    ctx.strokeStyle = "#2bfef5";
                                     ctx.beginPath(); ctx.moveTo(x, height * (1 - high) / 2); ctx.lineTo(x, height * (1 - low) / 2); ctx.stroke();
                                 }
                             }
@@ -517,18 +492,6 @@ Rectangle {
                             anchors.fill: parent; enabled: original.source.toString().length > 0 && waveform.duration > 0
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: function(mouse) { root.waveformSeek(mouse.x / width); }
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: waveform.intervals.length > 0
-                        spacing: 6
-                        Rectangle { Layout.preferredWidth: 10; Layout.preferredHeight: 10; radius: 2; color: "#D50811" }
-                        Label {
-                            text: "Censorship detected: " + waveform.intervals.length
-                                + (waveform.intervals.length === 1 ? " interval" : " intervals")
-                            color: "#ff7277"
-                            font.bold: true
                         }
                     }
                     Item {

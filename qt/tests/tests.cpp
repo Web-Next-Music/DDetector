@@ -512,7 +512,6 @@ private slots:
         selectedResult.insert("waveform", nativeWaveform);
         selectedComparison.insert("confidence", .95);
         selectedResult.insert("comparison", selectedComparison);
-        selectedResult.insert("suspicious_intervals", QJsonArray{interval});
         auto candidates = review.value("candidates").toArray();
         auto selected = candidates[1].toObject(); selected.insert("result", selectedResult); candidates[1] = selected;
         review.insert("candidates", candidates);
@@ -524,7 +523,7 @@ private slots:
         auto canvas = visualChild(qobject_cast<QQuickItem *>(view.data()), "censorWaveform");
         QVERIFY(canvas);
         QCOMPARE(canvas->property("samples").toList().first().toMap().value("min").toDouble(), -.1);
-        QCOMPARE(canvas->property("intervals").toList().first().toMap().value("reason").toString(), QString("restored vocal"));
+        QVERIFY(!canvas->property("intervals").isValid()); // Legacy detection data must not create overlays.
         QVERIFY(view->setProperty("candidateId", "unanalyzed"));
         QCOMPARE(view->property("offsetMs").toDouble(), 0.0);
         QVERIFY(view->property("result").toMap().isEmpty());

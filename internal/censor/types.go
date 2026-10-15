@@ -39,10 +39,9 @@ type Config struct {
 	HTTPTimeout time.Duration
 	JobTimeout  time.Duration
 	// Private/loopback HTTP addresses are rejected unless explicitly enabled.
-	AllowPrivateHTTP       bool
-	MaxWaveformPoints      int
-	MaxSuspiciousIntervals int
-	MaxTranscriptBytes     int // Legacy persisted-result size budget.
+	AllowPrivateHTTP   bool
+	MaxWaveformPoints  int
+	MaxTranscriptBytes int // Legacy persisted-result size budget.
 	// Empty disables Chromaprint. Usually "fpcalc"; executable and model assets are caller-owned.
 	FPcalcCommand       string
 	MaxFingerprintBytes int
@@ -67,20 +66,7 @@ type WaveformPoint struct {
 	Max          float64 `json:"max"`
 	RMS          float64 `json:"rms"`
 }
-type SuspiciousInterval struct {
-	StartSeconds float64              `json:"start_seconds"`
-	EndSeconds   float64              `json:"end_seconds"`
-	Reason       string               `json:"reason"`
-	Confidence   float64              `json:"confidence"`
-	Status       string               `json:"status"`
-	Restoration  *RestorationEvidence `json:"restoration,omitempty"`
-}
-type RestorationEvidence struct {
-	ReferenceStartSeconds float64 `json:"reference_start_seconds"`
-	ReferenceEndSeconds   float64 `json:"reference_end_seconds"`
-	Confidence            float64 `json:"confidence"`
-	Reason                string  `json:"reason"`
-}
+
 type Fingerprint struct {
 	Algorithm       string   `json:"algorithm"`
 	DurationSeconds float64  `json:"duration_seconds"`
@@ -99,12 +85,10 @@ type ExcerptTranscript struct {
 }
 
 type Result struct {
-	DurationSeconds     float64              `json:"duration_seconds"`
-	Waveform            []WaveformPoint      `json:"waveform"`
-	SuspiciousIntervals []SuspiciousInterval `json:"suspicious_intervals"`
-	IntervalsTruncated  bool                 `json:"intervals_truncated"`
-	Fingerprint         *Fingerprint         `json:"fingerprint,omitempty"`
-	ExcerptTranscripts  []ExcerptTranscript  `json:"excerpt_transcripts,omitempty"` // Legacy persisted evidence.
+	DurationSeconds    float64             `json:"duration_seconds"`
+	Waveform           []WaveformPoint     `json:"waveform"`
+	Fingerprint        *Fingerprint        `json:"fingerprint,omitempty"`
+	ExcerptTranscripts []ExcerptTranscript `json:"excerpt_transcripts,omitempty"` // Legacy persisted evidence.
 
 	Comparison *Comparison `json:"comparison,omitempty"`
 	Transcript string      `json:"transcript,omitempty"` // Legacy persisted evidence.
@@ -184,13 +168,10 @@ func normalize(c Config) (Config, error) {
 	if c.MaxWaveformPoints == 0 {
 		c.MaxWaveformPoints = 1024
 	}
-	if c.MaxSuspiciousIntervals == 0 {
-		c.MaxSuspiciousIntervals = 128
-	}
 	if c.MaxFingerprintBytes == 0 {
 		c.MaxFingerprintBytes = 65536
 	}
-	if c.MaxWaveformPoints < 1 || c.MaxWaveformPoints > 2048 || c.MaxSuspiciousIntervals < 1 || c.MaxSuspiciousIntervals > 128 || c.MaxFingerprintBytes < 1024 || c.MaxFingerprintBytes > 131072 {
+	if c.MaxWaveformPoints < 1 || c.MaxWaveformPoints > 2048 || c.MaxFingerprintBytes < 1024 || c.MaxFingerprintBytes > 131072 {
 		return c, errors.New("censor: invalid analysis limits")
 	}
 

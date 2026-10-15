@@ -7,7 +7,7 @@
 - `Qt` 6.9+ with the `Quick`, `QuickControls2`, `Network`, `Multimedia`, `Widgets`, and `Concurrent` modules, plus `qmllint`;
 - `qtermwidget6` 2.2.0+, `KF6SyntaxHighlighting` 6.13.0+, and `Qt6Keychain`;
 - `libgit2` 1.5+ and `pkg-config`;
-- `ffmpeg` on `PATH` for audio analysis and distribution builds. Distribution packages bundle the executable and its runtime libraries.
+- `ffmpeg` on `PATH` for waveform generation, recording comparison, and distribution builds. Distribution packages bundle the executable and its runtime libraries.
 
 Install development packages; see `packaging/deps.env` for versions. For a non-system Qt installation, set `-DCMAKE_PREFIX_PATH=...` in CMake.
 
@@ -89,3 +89,7 @@ Install `Python`, then run from the repository root in **PowerShell**:
 ```powershell
 py scripts/build-dist.py windows
 ```
+
+### Audio review
+
+Audio review retains waveform visualization, seeking, original/candidate playback, request fetching, search, and manual replacement. It does not detect silence/beep censorship or reference restorations, and does not display censorship intervals or counts. Replacement review still uses full-recording alignment, spectral similarity and optional Chromaprint matching to verify recording identity, not to infer whether audio is censored.

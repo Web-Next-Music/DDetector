@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,7 +102,7 @@ func TestFFmpegEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(result.DurationSeconds-4) > .01 || result.Comparison == nil || len(result.Warnings) < 1 {
+	if math.Abs(result.DurationSeconds-4) > .01 || result.Comparison == nil || len(result.Warnings) != 0 || len(result.Waveform) == 0 {
 		t.Fatalf("result %+v", result)
 	}
 	e, _ = NewEngine(Config{MaxDuration: time.Second})
@@ -359,6 +361,42 @@ func TestQueueProcessorPanicAndDeadline(t *testing.T) {
 		q.Close()
 		if got.Status != Failed || got.Error == "" {
 			t.Fatal(got)
+		}
+	}
+}
+
+func TestWaveformReviewDoesNotDetectCensorship(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	reference := makeWAV(t, pcm(12, 16000, musicSignal))
+	source := makeWAV(t, pcm(12, 16000, func(s float64) float64 {
+		if s > 3 && s < 3.5 {
+			return 0
+		}
+		if (s > 6 && s < 6.3) || (s > 9 && s < 9.3) {
+			return .3 * math.Sin(2*math.Pi*1000*s)
+		}
+		return musicSignal(s)
+	}))
+	engine, err := NewEngine(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []*Source{nil, {Path: reference}} {
+		result, err := engine.Analyze(context.Background(), Request{Source: Source{Path: source}, Reference: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Waveform) == 0 || len(result.Warnings) != 0 {
+			t.Fatalf("unexpected waveform review: %+v", result)
+		}
+		data, err := json.Marshal(result)
+		if err != nil || strings.Contains(string(data), "suspicious_intervals") || strings.Contains(string(data), "restoration") {
+			t.Fatalf("obsolete detection output: %s %v", data, err)
+		}
+		if ref != nil && result.Comparison == nil {
+			t.Fatal("recording comparison lost")
 		}
 	}
 }

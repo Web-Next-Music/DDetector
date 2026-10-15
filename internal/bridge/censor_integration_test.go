@@ -26,7 +26,7 @@ type orchestrationProcessor struct {
 }
 
 func strongFixture() censor.Result {
-	return censor.Result{DurationSeconds: 30, Comparison: &censor.Comparison{Comparable: true, ConfidenceClass: "strong_match", Confidence: .9, Correlation: .95, SpectralSimilarity: .98, SpectralMatchFraction: .95, OverlapSeconds: 30}, SuspiciousIntervals: []censor.SuspiciousInterval{{StartSeconds: 10, EndSeconds: 10.5, Status: "reference_restoration_candidate", Restoration: &censor.RestorationEvidence{ReferenceStartSeconds: 10, ReferenceEndSeconds: 10.5, Confidence: .8}}}}
+	return censor.Result{DurationSeconds: 30, Comparison: &censor.Comparison{Comparable: true, ConfidenceClass: "strong_match", Confidence: .9, Correlation: .95, SpectralSimilarity: .98, SpectralMatchFraction: .95, OverlapSeconds: 30}}
 }
 func (p *orchestrationProcessor) Analyze(ctx context.Context, r censor.Request) (censor.Result, error) {
 	p.mu.Lock()
@@ -46,7 +46,6 @@ func (p *orchestrationProcessor) Analyze(ctx context.Context, r censor.Request) 
 	result := strongFixture()
 	if r.Reference == nil {
 		result.Comparison = nil
-		result.SuspiciousIntervals = nil
 	}
 	if weak && result.Comparison != nil {
 		result.Comparison.Comparable = false

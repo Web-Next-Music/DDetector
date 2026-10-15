@@ -187,24 +187,6 @@ func censorAudioCandidate(c CensorCandidate) bool {
 func (rt *censorRuntime) suitableCandidate(c CensorCandidate) bool {
 	return censorAudioCandidate(c) && strongCensorComparison(c.Result) && c.Result.Comparison.Confidence >= rt.settings().MinConfidence
 }
-func censorEvidence(r *censor.Result, minimum float64) bool {
-	if r == nil {
-		return false
-	}
-	for _, interval := range r.SuspiciousIntervals {
-		if interval.EndSeconds <= interval.StartSeconds {
-			continue
-		}
-		confidence := interval.Confidence
-		if interval.Restoration != nil {
-			confidence = math.Max(confidence, interval.Restoration.Confidence)
-		}
-		if !math.IsNaN(confidence) && !math.IsInf(confidence, 0) && confidence >= minimum {
-			return true
-		}
-	}
-	return false
-}
 func censorSettingsError(err error) (string, bool) {
 	var resource *censorResourceError
 	if errors.As(err, &resource) {

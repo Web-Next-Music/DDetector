@@ -77,7 +77,7 @@ func (s *Server) currentCensorRuntime(ctx context.Context, uid string) (*censorR
 	return rt, nil
 }
 func unconfiguredCensorState(msg string) CensorState {
-	return CensorState{Settings: defaultCensorSettings(), Jobs: []CensorJob{}, Stats: map[string]int{"total": 0, "censorship_found": 0, "suitable_mp3": 0}, Error: msg}
+	return CensorState{Settings: defaultCensorSettings(), Jobs: []CensorJob{}, Stats: map[string]int{"total": 0, "suitable_mp3": 0}, Error: msg}
 }
 func (s *Server) handleCensorUI(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodGet

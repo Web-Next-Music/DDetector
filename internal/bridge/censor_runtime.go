@@ -200,21 +200,14 @@ func (rt *censorRuntime) snapshot() CensorState {
 		jobs[n].Candidates = append([]CensorCandidate{}, jobs[n].Candidates...)
 		jobs[n].StageProgress = cloneStageProgress(jobs[n].StageProgress)
 	}
-	stats := map[string]int{"total": len(jobs), "censorship_found": 0, "suitable_mp3": 0}
+	stats := map[string]int{"total": len(jobs), "suitable_mp3": 0}
 	for _, j := range jobs {
 		stats[j.Status]++
-		found := censorEvidence(j.Result, rt.disk.Settings.MinConfidence)
 		suitable := false
 		for _, c := range j.Candidates {
-			if censorAudioCandidate(c) {
-				found = found || censorEvidence(c.Result, rt.disk.Settings.MinConfidence)
-			}
 			if censorAudioCandidate(c) && strongCensorComparison(c.Result) && c.Result.Comparison.Confidence >= rt.disk.Settings.MinConfidence {
 				suitable = true
 			}
-		}
-		if found {
-			stats["censorship_found"]++
 		}
 		if suitable {
 			stats["suitable_mp3"]++
@@ -265,14 +258,6 @@ func cloneCensorResult(result *censor.Result) *censor.Result {
 	}
 	cloned := *result
 	cloned.Waveform = append([]censor.WaveformPoint(nil), result.Waveform...)
-	cloned.SuspiciousIntervals = append([]censor.SuspiciousInterval(nil), result.SuspiciousIntervals...)
-	for n := range cloned.SuspiciousIntervals {
-		if restoration := result.SuspiciousIntervals[n].Restoration; restoration != nil {
-			copy := *restoration
-			cloned.SuspiciousIntervals[n].Restoration = &copy
-		}
-	}
-	cloned.ExcerptTranscripts = append([]censor.ExcerptTranscript(nil), result.ExcerptTranscripts...)
 	cloned.Warnings = append([]string(nil), result.Warnings...)
 	if result.Fingerprint != nil {
 		fingerprint := *result.Fingerprint
@@ -919,10 +904,9 @@ func comparisonScore(r *censor.Result) float64 {
 	return r.Comparison.Confidence
 }
 
-// A global recording match is insufficient: require a localized restoration
-// candidate too. This remains heuristic evidence; publication is always manual.
+// Require a full-recording match for manual replacement, not censorship evidence.
 func strongCensorComparison(r *censor.Result) bool {
-	if r == nil || r.Comparison == nil || r.IntervalsTruncated {
+	if r == nil || r.Comparison == nil {
 		return false
 	}
 	c := r.Comparison
@@ -936,11 +920,5 @@ func strongCensorComparison(r *censor.Result) bool {
 	if c.FingerprintSimilarity != nil && (!finite(*c.FingerprintSimilarity) || *c.FingerprintSimilarity < .85) {
 		return false
 	}
-	for _, interval := range r.SuspiciousIntervals {
-		restoration := interval.Restoration
-		if interval.Status == "reference_restoration_candidate" && restoration != nil && finite(restoration.Confidence) && restoration.Confidence >= .65 && finite(restoration.ReferenceStartSeconds) && finite(restoration.ReferenceEndSeconds) && restoration.ReferenceStartSeconds >= 0 && restoration.ReferenceEndSeconds > restoration.ReferenceStartSeconds {
-			return true
-		}
-	}
-	return false
+	return true
 }

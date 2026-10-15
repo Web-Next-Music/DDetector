@@ -127,8 +127,8 @@ func TestCensorOversizedLegacyDetailProjection(t *testing.T) {
 	if w.Code != 200 || w.Body.Len() > 16<<20 {
 		t.Fatal(w.Code, w.Body.Len())
 	}
-	if !strings.Contains(w.Body.String(), "details_omitted\":true") || !strings.Contains(w.Body.String(), "reference_restoration_candidate") {
-		t.Fatal("missing omission/evidence")
+	if !strings.Contains(w.Body.String(), "details_omitted\":true") || strings.Contains(w.Body.String(), "reference_restoration_candidate") {
+		t.Fatal("missing omission or leaked obsolete detection evidence")
 	}
 	if result.Transcript == "" {
 		t.Fatal("projection mutated stored transcript")

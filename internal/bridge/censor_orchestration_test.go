@@ -211,19 +211,15 @@ func TestCensorStorageOwnershipAndUnsafeRecoveredSources(t *testing.T) {
 		t.Fatal(e)
 	}
 }
-func TestCensorComparisonRequiresFullRestorationEvidence(t *testing.T) {
-	for _, mode := range []string{"preview", "no_restoration", "weak", "truncated"} {
+func TestCensorComparisonRequiresFullRecordingMatch(t *testing.T) {
+	for _, mode := range []string{"preview", "weak"} {
 		t.Run(mode, func(t *testing.T) {
 			result := strongFixture()
 			switch mode {
 			case "preview":
 				result.Comparison.OverlapSeconds = 10
-			case "no_restoration":
-				result.SuspiciousIntervals = nil
 			case "weak":
 				result.Comparison.ConfidenceClass = "possible_match"
-			case "truncated":
-				result.IntervalsTruncated = true
 			}
 			if strongCensorComparison(&result) {
 				t.Fatal("unsafe comparison passed")

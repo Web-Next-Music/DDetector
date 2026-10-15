@@ -13,12 +13,10 @@ const spectralBands = 32
 const frameSamples = 1024
 
 type frame struct {
-	energy            float64
-	min, max          float64
-	count             int
-	spectrum          [spectralBands]float32
-	fineEnergy        [8]float32
-	toneRatio, toneHz float64
+	energy   float64
+	min, max float64
+	count    int
+	spectrum [spectralBands]float32
 }
 type features struct {
 	frames  []frame
@@ -58,7 +56,6 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 	buf := make([]byte, n*2)
 	x := make([]float64, n)
 	spec := make([]complex128, n)
-	powers := make([]float64, n/2)
 	var window [n]float64
 	var bandForBin [n / 2]int
 	bandScale := math.Log2(float64(rate) / 2 / 60)
@@ -102,15 +99,8 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 			v := float64(int16(binary.LittleEndian.Uint16(buf[2*i:]))) / 32768
 			x[i] = v
 			energy += v * v
-			fr.fineEnergy[i/128] += float32(v * v)
 			fr.min = math.Min(fr.min, v)
 			fr.max = math.Max(fr.max, v)
-		}
-		for j := range fr.fineEnergy {
-			samples := min(128, fr.count-j*128)
-			if samples > 0 {
-				fr.fineEnergy[j] /= float32(samples)
-			}
 		}
 		f.samples += int64(count / 2)
 
@@ -120,16 +110,11 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 		}
 		fft(spec)
 		total := 0.0
-		peak, peakBin := 0.0, 0
 		var bands [spectralBands]float64
 		for k := 1; k < n/2; k++ {
 			p := cmplx.Abs(spec[k])
 			p *= p
 			total += p
-			powers[k] = p
-			if p > peak {
-				peak, peakBin = p, k
-			}
 			// Log-frequency bands distinguish recordings even with identical envelopes.
 			bands[bandForBin[k]] += p
 		}
@@ -138,12 +123,6 @@ func extract(ctx context.Context, r io.Reader, rate int, maxSamples int64, wav i
 			for i, p := range bands {
 				fr.spectrum[i] = float32(math.Sqrt(p / total))
 			}
-			for k := peakBin - 1; k <= peakBin+1; k++ {
-				if k > 0 && k < len(powers) {
-					fr.toneRatio += powers[k] / total
-				}
-			}
-			fr.toneHz = float64(peakBin*rate) / n
 		}
 		f.frames = append(f.frames, fr)
 		if err == io.ErrUnexpectedEOF {

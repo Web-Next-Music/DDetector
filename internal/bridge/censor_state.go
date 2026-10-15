@@ -10,19 +10,14 @@ import (
 const censorUIPageSize = 100
 const censorUISummaryBytes = 64 << 10
 
-type censorUIInterval struct {
-	censor.SuspiciousInterval
-	Label string `json:"label"`
-}
 type censorUIWaveform struct {
 	Samples []float64              `json:"samples"`
 	Points  []censor.WaveformPoint `json:"points"`
 }
 type censorUIResult struct {
 	*censor.Result
-	Waveform            any                `json:"waveform"`
-	SuspiciousIntervals []censorUIInterval `json:"suspicious_intervals"`
-	OmittedFields       []string           `json:"omitted_fields,omitempty"`
+	Waveform      any      `json:"waveform"`
+	OmittedFields []string `json:"omitted_fields,omitempty"`
 }
 type censorUIJob struct {
 	CensorJob
@@ -38,7 +33,7 @@ type censorUIState struct {
 }
 
 // Projection never alters stored evidence or approval inputs. Large optional
-// media/text fields are omitted explicitly; comparisons and intervals survive.
+// media/text fields are omitted explicitly; recording comparisons survive.
 func censorResultView(r *censor.Result, compact bool) *censorUIResult {
 	if r == nil {
 		return nil
@@ -63,10 +58,6 @@ func censorResultView(r *censor.Result, compact bool) *censorUIResult {
 			omitted = append(omitted, "waveform")
 		}
 	}
-	intervals := []censorUIInterval{}
-	for _, interval := range copy.SuspiciousIntervals {
-		intervals = append(intervals, censorUIInterval{interval, interval.Reason})
-	}
 	var waveform any
 	if len(copy.Waveform) > 0 {
 		samples := make([]float64, len(copy.Waveform))
@@ -75,7 +66,7 @@ func censorResultView(r *censor.Result, compact bool) *censorUIResult {
 		}
 		waveform = censorUIWaveform{samples, copy.Waveform}
 	}
-	return &censorUIResult{Result: &copy, Waveform: waveform, SuspiciousIntervals: intervals, OmittedFields: omitted}
+	return &censorUIResult{Result: &copy, Waveform: waveform, OmittedFields: omitted}
 }
 func censorJobView(job CensorJob, summary bool) censorUIJob {
 	// Skip optional heavy projections before allocating/serializing them.
@@ -126,7 +117,7 @@ func censorResultSizeHint(r *censor.Result) int {
 	if r == nil {
 		return 0
 	}
-	size := len(r.Transcript)*6 + len(r.Waveform)*256 + len(r.SuspiciousIntervals)*1024
+	size := len(r.Transcript)*6 + len(r.Waveform)*256
 	for _, excerpt := range r.ExcerptTranscripts {
 		size += len(excerpt.Text)*6 + 256
 	}

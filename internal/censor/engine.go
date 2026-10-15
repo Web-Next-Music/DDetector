@@ -312,8 +312,7 @@ func (e *Engine) Analyze(ctx context.Context, r Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	intervals, truncated := detectIntervals(f, e.config.MaxSuspiciousIntervals)
-	result := Result{DurationSeconds: float64(f.samples) / float64(f.rate), Waveform: waveform(f, e.config.MaxWaveformPoints), SuspiciousIntervals: intervals, IntervalsTruncated: truncated, Warnings: []string{"Silence/beep intervals are heuristic candidates, not confirmed censorship"}}
+	result := Result{DurationSeconds: float64(f.samples) / float64(f.rate), Waveform: waveform(f, e.config.MaxWaveformPoints)}
 	if e.config.FPcalcCommand != "" {
 		result.Fingerprint, err = e.fingerprint(ctx, source, dir)
 		if ctx.Err() != nil {
@@ -350,7 +349,6 @@ func (e *Engine) Analyze(ctx context.Context, r Request) (Result, error) {
 			}
 		}
 		result.Comparison = &c
-		localRestoration(f, ref, c, result.SuspiciousIntervals)
 	}
 
 	return result, nil

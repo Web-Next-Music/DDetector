@@ -61,12 +61,12 @@ func TestCensorMixedCandidatesPreservedAndNeverAnalyzedOrApproved(t *testing.T) 
 		t.Fatal("pages/previews/streams reached engine", calls)
 	}
 	state := s.censorRuntime.snapshot()
-	if state.Stats["censorship_found"] != 1 || state.Stats["suitable_mp3"] != 1 {
+	if state.Stats["suitable_mp3"] != 1 {
 		t.Fatal(state.Stats)
 	}
 	controlAPI(t, s, map[string]any{"action": "settings", "settings": map[string]any{"min_confidence": .95}}, 200)
 	state = s.censorRuntime.snapshot()
-	if state.Stats["censorship_found"] != 0 || state.Stats["suitable_mp3"] != 0 {
+	if state.Stats["suitable_mp3"] != 0 {
 		t.Fatal("threshold not applied to stats", state.Stats)
 	}
 	controlAPI(t, s, map[string]any{"action": "approve", "id": j.ID, "candidate_id": "full"}, 409)
@@ -103,10 +103,9 @@ func TestCensorRemoteAcceptsBoundedReviewCandidates(t *testing.T) {
 		}
 	}
 }
-func TestCensorStatsCountJobsNotMultipleIntervalsOrCandidates(t *testing.T) {
+func TestCensorStatsCountJobsNotMultipleCandidates(t *testing.T) {
 	settings := defaultCensorSettings()
 	result := strongFixture()
-	result.SuspiciousIntervals = append(result.SuspiciousIntervals, result.SuspiciousIntervals[0])
 	rt := &censorRuntime{disk: censorDiskState{Settings: settings, Jobs: []CensorJob{
 		{ID: "found", Status: "review_required", Result: &result, Candidates: []CensorCandidate{{ID: "c1", URL: "https://audio.example/a.mp3", FullAudio: true, Downloadable: true, Result: &result}, {ID: "c2", URL: "https://audio.example/b.mp3", FullAudio: true, Downloadable: true, Result: &result}}},
 		{ID: "page-only", Status: "review_required", Candidates: []CensorCandidate{{ID: "page", URL: "https://provider.example/page", Result: &result}}},
@@ -117,8 +116,8 @@ func TestCensorStatsCountJobsNotMultipleIntervalsOrCandidates(t *testing.T) {
 	if state.Stats["total"] != 3 || state.Stats["suitable_mp3"] != 1 {
 		t.Fatal(state.Stats)
 	}
-	if state.Stats["censorship_found"] != 1 {
-		t.Fatal("page evidence counted as censorship", state.Stats)
+	if _, exists := state.Stats["censorship_found"]; exists {
+		t.Fatal("obsolete censorship statistic exposed", state.Stats)
 	}
 }
 func TestCensorCandidateLimitAppliesToGeneratedVariants(t *testing.T) {

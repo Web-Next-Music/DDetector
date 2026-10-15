@@ -103,18 +103,12 @@ func (rt *censorRuntime) manualSearch(ctx context.Context, i CensorIdentity, j C
 	if e := rt.search(ctx, i, &j, []string{query}); e != nil {
 		return e
 	}
-	// Preserve original DSP evidence for page-only searches, but discard the
-	// previous candidate's alignment, restoration and reference transcripts.
+	// Preserve the original waveform for page-only searches, but discard the
+	// previous candidate's alignment and reference transcripts.
 	if j.Result != nil && j.Result.Comparison != nil {
 		j.Result.Comparison = nil
 		j.Result.Transcript = ""
 		j.Result.ExcerptTranscripts = nil
-		for n := range j.Result.SuspiciousIntervals {
-			if j.Result.SuspiciousIntervals[n].Restoration != nil {
-				j.Result.SuspiciousIntervals[n].Restoration = nil
-				j.Result.SuspiciousIntervals[n].Status = "unverified"
-			}
-		}
 	}
 	if e := rt.update(j); e != nil {
 		return e
