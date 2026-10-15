@@ -30,7 +30,7 @@ func openSQLiteCache(ctx context.Context, path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if !info.IsDir() || !storagePrivate(dir, info, false) {
 		return nil, fmt.Errorf("cache directory must be private and non-symlink")
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
@@ -38,7 +38,7 @@ func openSQLiteCache(ctx context.Context, path string) (*sql.DB, error) {
 		err = f.Close()
 	} else if os.IsExist(err) {
 		info, err = os.Lstat(path)
-		if err == nil && (!info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > maxSQLiteCacheBytes) {
+		if err == nil && (!info.Mode().IsRegular() || !storagePrivate(path, info, true) || info.Size() > maxSQLiteCacheBytes) {
 			err = fmt.Errorf("invalid private SQLite cache")
 		}
 	}
@@ -47,7 +47,7 @@ func openSQLiteCache(ctx context.Context, path string) (*sql.DB, error) {
 	}
 	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
 		info, err := os.Lstat(path + suffix)
-		if err == nil && (!info.Mode().IsRegular() || info.Mode().Perm() != 0600) {
+		if err == nil && (!info.Mode().IsRegular() || !storagePrivate(path+suffix, info, true)) {
 			return nil, fmt.Errorf("invalid private SQLite sidecar")
 		}
 		if err != nil && !os.IsNotExist(err) {
@@ -80,7 +80,7 @@ func saveSQLiteCache(ctx context.Context, path string, cache tracksCache) error 
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return statErr
 	}
-	if statErr == nil && (!info.Mode().IsRegular() || info.Mode().Perm() != 0600) {
+	if statErr == nil && (!info.Mode().IsRegular() || !storagePrivate(path, info, true)) {
 		return fmt.Errorf("invalid private SQLite cache")
 	}
 	if os.IsNotExist(statErr) || cache.Rebuild || info.Size() > maxSQLiteCacheBytes {

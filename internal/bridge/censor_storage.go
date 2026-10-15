@@ -77,7 +77,7 @@ func checkCensorDir(dir string, create bool) error {
 	if e != nil {
 		return e
 	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if !info.IsDir() || !storagePrivate(dir, info, false) {
 		return errors.New("censor directory must be private and non-symlink")
 	}
 	return nil

@@ -47,7 +47,7 @@ func ensureMigrationParent(path string) error {
 				if err != nil {
 					return err
 				}
-				if info.Mode().Perm()&0077 != 0 {
+				if !storagePrivate(p, info, false) {
 					return fmt.Errorf("storage parent must be private: %s", p)
 				}
 				if p == ancestor {
@@ -61,7 +61,7 @@ func ensureMigrationParent(path string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode().Perm()&0077 != 0 {
+	if !storagePrivate(path, info, false) {
 		return fmt.Errorf("storage parent must be private: %s", path)
 	}
 	return nil
@@ -106,10 +106,10 @@ func migrateManagedStorage(preferred, legacy string, directory bool, companions 
 	if err != nil {
 		return "", err
 	}
-	if parent.Mode().Perm()&0077 != 0 {
+	if !storagePrivate(filepath.Dir(legacy), parent, false) {
 		return "", errors.New("legacy storage parent must be private")
 	}
-	if (directory && !info.IsDir()) || (!directory && !info.Mode().IsRegular()) || info.Mode().Perm()&0077 != 0 {
+	if (directory && !info.IsDir()) || (!directory && !info.Mode().IsRegular()) || !storagePrivate(legacy, info, false) {
 		return "", fmt.Errorf("unsafe legacy storage: %s", legacy)
 	}
 	if err := migrationParent(filepath.Dir(preferred), false); err != nil && !os.IsNotExist(err) {
@@ -125,7 +125,7 @@ func migrateManagedStorage(preferred, legacy string, directory bool, companions 
 		if err != nil {
 			return "", err
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		if !info.Mode().IsRegular() || !storagePrivate(move.old, info, true) {
 			return "", fmt.Errorf("unsafe legacy companion: %s", move.old)
 		}
 		if exists, err := storageExists(move.next); err != nil {
@@ -156,7 +156,7 @@ func migrateManagedStorage(preferred, legacy string, directory bool, companions 
 			// Tool-generated work files may be 0644; their private parent
 			// directories are the boundary. Preserve bytes and modes rather
 			// than deleting interrupted audio work during migration.
-			if (!stat.IsDir() && !stat.Mode().IsRegular()) || (stat.IsDir() && stat.Mode().Perm()&0077 != 0) {
+			if (!stat.IsDir() && !stat.Mode().IsRegular()) || (stat.IsDir() && !storagePrivate(path, stat, false)) {
 				return fmt.Errorf("unsafe censor storage entry: %s", path)
 			}
 			return nil

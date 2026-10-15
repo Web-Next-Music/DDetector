@@ -81,7 +81,7 @@ func NewNativePublisher(repo, runtime string) (*nativePublisher, error) {
 		return nil, errors.New("configured directory must be a repository root")
 	}
 	info, err := os.Stat(runtime)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.IsDir() || !storagePrivate(runtime, info, false) {
 		return nil, errors.New("runtime must be a private directory (0700)")
 	}
 	h := sha256.Sum256([]byte(repo))
@@ -91,7 +91,7 @@ func NewNativePublisher(repo, runtime string) (*nativePublisher, error) {
 	}
 	real, err := filepath.EvalSymlinks(history)
 	st, statErr := os.Stat(history)
-	if err != nil || statErr != nil || real != history || !st.IsDir() || st.Mode().Perm()&0077 != 0 {
+	if err != nil || statErr != nil || real != history || !st.IsDir() || !storagePrivate(history, st, false) {
 		return nil, errors.New("history must be a private nonsymlink directory")
 	}
 	p := &nativePublisher{repo: repo, history: history, client: &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
