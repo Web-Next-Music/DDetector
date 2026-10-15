@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -157,6 +158,50 @@ func TestSiteSearchStartsAllSitesTogetherAndReportsRealProgress(t *testing.T) {
 	}
 	if len(progress) != len(directSites) || len(sites) != len(directSites) || progress[0] != 1 || progress[len(progress)-1] != len(directSites) {
 		t.Fatalf("real progress not reported per site: %v sites=%v", progress, sites)
+	}
+}
+
+func TestHitmosPlaybackFallback(t *testing.T) {
+	for _, download := range []string{"", "https://dwc1.hitmos.fm/unavailable.mp3"} {
+		t.Run(download, func(t *testing.T) {
+			payload := `0:{"tracks":[{"id":999,"title":"Other","artist":"Other","play":"https://plc1.hitmos.fm/wrong.mp3"},{"id":14377458,"title":"Виновата скорость (2025)","artist":"Расстройство","download":"` + download + `","play":"https://plc1.hitmos.fm/track.mp3"}]}`
+			encoded, _ := json.Marshal(payload)
+			body := `<script>self.__next_f.push([1,` + string(encoded) + `])</script>`
+			n := &nativeSource{webHTTP: &http.Client{Transport: siteTestTransport(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Hostname() {
+				case "rus.hitmos.fm":
+					return siteTestResponse(r, "text/html", body), nil
+				case "dwc1.hitmos.fm":
+					return nil, errors.New("download unavailable")
+				case "plc1.hitmos.fm":
+					if r.URL.Path != "/track.mp3" {
+						t.Errorf("requested recommendation: %s", r.URL)
+					}
+					return siteTestResponse(r, "audio/mpeg", "audio"), nil
+				default:
+					t.Fatalf("unexpected request: %s", r.URL)
+					return nil, errors.New("unexpected host")
+				}
+			})}}
+			got, err := n.webDiscover(context.Background(), "https://rus.hitmos.fm/song/14377458")
+			if err != nil || len(got) != 1 {
+				t.Fatalf("candidates = %+v, error = %v", got, err)
+			}
+			if got[0].URL != "https://plc1.hitmos.fm/track.mp3" || !got[0].Downloadable || !trackMatch("Расстройство Виновата скорость", got[0]) {
+				t.Fatalf("invalid playback candidate: %+v", got[0])
+			}
+			if _, err := n.webResolve(context.Background(), got[0].ID); err != nil {
+				t.Fatalf("cannot resolve playback candidate: %v", err)
+			}
+		})
+	}
+}
+
+func TestHitmosSearchParameter(t *testing.T) {
+	for _, site := range directSites {
+		if site.host == "hitmos.fm" && site.searchURL("Artist Song") != "https://hitmos.fm/search?q=Artist+Song" {
+			t.Fatalf("incorrect Hitmos search: %s", site.searchURL("Artist Song"))
+		}
 	}
 }
 

@@ -192,7 +192,7 @@ func nativeDirectSiteFixture(t *testing.T, n *nativeSource) {
 		}
 		switch {
 		case r.Method == http.MethodGet && !strings.HasSuffix(r.URL.Path, ".mp3"):
-			name := strings.ReplaceAll(strings.ToLower(r.URL.Query().Get("query")), " ", "-")
+			name := strings.ReplaceAll(strings.ToLower(r.URL.Query().Get("q")), " ", "-")
 			return siteTestResponse(r, "text/html", `<audio src="/`+name+`.mp3"></audio>`), nil
 		case (r.Method == http.MethodHead || r.Method == http.MethodGet) && strings.HasSuffix(r.URL.Path, ".mp3"):
 			return siteTestResponse(r, "audio/mpeg", "full-mp3"), nil

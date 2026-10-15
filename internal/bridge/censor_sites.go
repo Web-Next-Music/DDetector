@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"html"
 	"io"
@@ -287,6 +288,9 @@ func (n *nativeSource) webDiscover(ctx context.Context, source string) ([]Censor
 		body := string(b)
 		pageText = webPageText(body)
 		links = webLinks(res.Request.URL, body)
+		if audio, title, ok := hitmosTrackAudio(res.Request.URL, body); ok {
+			links, pageText = audio, title
+		}
 	} else {
 		return nil, errors.New("unsupported web discovery content type")
 	}
@@ -354,6 +358,49 @@ func (n *nativeSource) webResolve(ctx context.Context, id string) (CensorCandida
 	return CensorCandidate{}, ErrCensorConflict
 }
 
+var hitmosTrackStart = regexp.MustCompile(`\{"id":\s*[0-9]+,\s*"title":`)
+var hitmosFlightData = regexp.MustCompile(`self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)`)
+
+// Read only the requested track, not recommendations. The playback URL is a
+// public MP3 fallback when the separately hosted download is unavailable.
+func hitmosTrackAudio(page *url.URL, body string) ([]string, string, bool) {
+	host := strings.TrimPrefix(strings.ToLower(page.Hostname()), "www.")
+	if host != "hitmos.fm" && host != "rus.hitmos.fm" {
+		return nil, "", false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(page.Path, "/song/"), 10, 64)
+	if err != nil || !strings.HasPrefix(page.Path, "/song/") {
+		return nil, "", false
+	}
+	data := body
+	for _, match := range hitmosFlightData.FindAllStringSubmatch(body, -1) {
+		var payload string
+		if json.Unmarshal([]byte(match[1]), &payload) == nil {
+			data += "\n" + payload
+		}
+	}
+	for _, loc := range hitmosTrackStart.FindAllStringIndex(data, -1) {
+		var track struct {
+			ID       int64  `json:"id"`
+			Title    string `json:"title"`
+			Artist   string `json:"artist"`
+			Download string `json:"download"`
+			Play     string `json:"play"`
+		}
+		if json.NewDecoder(strings.NewReader(data[loc[0]:])).Decode(&track) != nil || track.ID != id {
+			continue
+		}
+		links := []string{}
+		for _, raw := range []string{track.Download, track.Play} {
+			if u, err := url.Parse(raw); err == nil && webURL(u) {
+				links = append(links, raw)
+			}
+		}
+		return links, strings.TrimSpace(track.Artist + " — " + track.Title), true
+	}
+	return nil, "", false
+}
+
 type siteDefinition struct {
 	host     string
 	template string
@@ -361,7 +408,7 @@ type siteDefinition struct {
 }
 
 var directSites = []siteDefinition{
-	{"hitmos.fm", "https://hitmos.fm/search?query=%s", false},
+	{"hitmos.fm", "https://hitmos.fm/search?q=%s", false},
 	{"hitmos.me", "https://hitmos.me/search?q=%s", false},
 	{"hitmo.net", "https://hitmo.net/search?q=%s", false},
 	{"lightaudio.ru", "https://lightaudio.ru/mp3/%s", true},
@@ -402,8 +449,11 @@ func (s siteDefinition) searchURL(query string) string {
 
 var queryTokens = regexp.MustCompile(`[\p{L}\p{N}]{2,}`)
 
+// Hitmos supplies Cyrillic names with decomposed й/ё in its player data.
+var trackCyrillicComposition = strings.NewReplacer("и\u0306", "й", "е\u0308", "ё")
+
 func trackMatch(query string, c CensorCandidate) bool {
-	tokens := queryTokens.FindAllString(strings.ToLower(query), -1)
+	tokens := queryTokens.FindAllString(trackCyrillicComposition.Replace(strings.ToLower(query)), -1)
 	if len(tokens) == 0 {
 		return false
 	}
@@ -420,7 +470,7 @@ func trackMatch(query string, c CensorCandidate) bool {
 		}
 	}
 	for _, raw := range []string{audioEvidence, c.Metadata["page_title"], sourceEvidence} {
-		value := strings.ToLower(raw)
+		value := trackCyrillicComposition.Replace(strings.ToLower(raw))
 		matched := true
 		for _, token := range tokens {
 			if !strings.Contains(value, token) {
