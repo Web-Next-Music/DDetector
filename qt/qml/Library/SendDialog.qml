@@ -16,6 +16,7 @@ SiteDialog {
     property bool showUrlFields: true
     property bool sending: false
     property bool approveSoundEnabled: false
+        property real volume: 0.5
     property var initialMetadata: ({})
     property string initialArtistsText: ""
     property var metadataBaseline: ({})
@@ -99,7 +100,7 @@ SiteDialog {
     MediaPlayer {
         id: approveSound
         objectName: "approveSoundPlayer"
-        audioOutput: AudioOutput {}
+        audioOutput: AudioOutput { volume: dialog.volume }
     }
 
     component Field: SiteTextField {

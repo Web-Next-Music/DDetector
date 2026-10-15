@@ -1079,6 +1079,7 @@ ApplicationWindow {
                         bridge: appUi.backendBridge
                         uploadBackend: !!appUi.uploader ? appUi.uploader : null
                         approveSoundEnabled: appUi.config.approveSoundEnabled
+                        volume: appUi.config.volume
                     }
                 }
             }
@@ -1372,6 +1373,7 @@ ApplicationWindow {
         id: sendDialog
         uploadBackend: !!appUi.uploader ? appUi.uploader : null
         approveSoundEnabled: appUi.config.approveSoundEnabled
+        volume: appUi.config.volume
         onSent: function(action) { appUi.notify("Send: " + action); }
     }
     SiteView {

@@ -10,6 +10,7 @@ Rectangle {
     property var bridge: null
     property var uploadBackend: null
     property bool approveSoundEnabled: false
+        property real volume: 0.5
     property bool pageActive: true
     property var censorState: bridge ? bridge.censorState : ({})
     property var jobs: censorState.jobs || []
@@ -362,7 +363,7 @@ Rectangle {
         id: original
         objectName: "censorOriginalPlayer"
         source: root.originalAudioUrl
-        audioOutput: AudioOutput { muted: root.listenCandidate }
+        audioOutput: AudioOutput { volume: root.volume; muted: root.listenCandidate }
         onDurationChanged: if (duration > 0) position = Math.min(duration, root.pendingPosition)
         onPlaybackStateChanged: if (playbackState === MediaPlayer.PlayingState) root.pauseMainPlayer()
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && !root.listenCandidate) root.playing = false
@@ -372,7 +373,7 @@ Rectangle {
         id: replacement
         objectName: "censorCandidatePlayer"
         source: root.candidateAudioUrl
-        audioOutput: AudioOutput { muted: !root.listenCandidate }
+        audioOutput: AudioOutput { volume: root.volume; muted: !root.listenCandidate }
         onDurationChanged: if (duration > 0) position = Math.min(duration, root.candidatePosition(root.pendingPosition))
         onPlaybackStateChanged: if (playbackState === MediaPlayer.PlayingState) root.pauseMainPlayer()
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && root.listenCandidate && !root.resolvingPlayback) root.playing = false
@@ -752,6 +753,7 @@ Rectangle {
         id: approveDialog
         uploadBackend: root.uploadBackend
         approveSoundEnabled: root.approveSoundEnabled
+                volume: root.volume
     }
 
 }
