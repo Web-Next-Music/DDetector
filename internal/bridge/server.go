@@ -618,9 +618,11 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		r.Ignored = im[id]
 		if !ok {
 			r = Result{Track: t, Ignored: im[id], Status: "pending"}
-			pending = append(pending, len(results))
+			if fetch {
+				pending = append(pending, len(results))
+			}
 			stats.Added++
-		} else if needsLyricsAcquisition(r, cache) {
+		} else if fetch && needsLyricsAcquisition(r, cache) {
 			pending = append(pending, len(results))
 		}
 		results = append(results, r)
@@ -743,7 +745,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 func Listen() (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") }
 
-// Start maintains restored sessions and loads newly authenticated accounts.
+// Start maintains sessions and checks access without loading tracks automatically.
 func (s *Server) Start(ctx context.Context) {
 	s.mu.Lock()
 	if s.closing || s.maintenanceDone != nil {
@@ -775,10 +777,10 @@ func (s *Server) Start(ctx context.Context) {
 			}
 			s.mu.Lock()
 			sess := s.session
-			needsLoad := sess != nil && !s.state.AccessChecked
+			needsAuthorization := sess != nil && !s.state.AccessChecked
 			needsRefresh := sess != nil && sess.ExpiresAt <= time.Now().Add(60*time.Second).Unix()
 			s.mu.Unlock()
-			if needsLoad || needsRefresh {
+			if needsAuthorization || needsRefresh {
 				work, cancel := context.WithTimeout(ctx, 2*time.Minute)
 				s.mu.Lock()
 				s.jobCancel = cancel
@@ -786,15 +788,7 @@ func (s *Server) Start(ctx context.Context) {
 					cancel()
 				}
 				s.mu.Unlock()
-				var err error
-				if needsLoad {
-					s.mu.Lock()
-					s.state.Loading = true
-					s.mu.Unlock()
-					err = s.load(work, false)
-				} else {
-					_, err = s.authorize(work)
-				}
+				_, err := s.authorize(work)
 				cancel()
 				s.mu.Lock()
 				s.jobCancel = nil

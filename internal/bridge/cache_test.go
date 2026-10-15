@@ -125,18 +125,10 @@ func TestYandexIncrementalCache(t *testing.T) {
 	if !s.state.Tracks[0].Ignored || s.state.Tracks[0].AddedAt == nil || *s.state.Tracks[0].AddedAt != "updated" {
 		t.Fatal("Supabase preferences/date not reconciled", s.state.Tracks)
 	}
-	if lyricsCalls != 1 || metadataCalls != 1 || s.state.Tracks[0].Status != "found" {
+	if lyricsCalls != 0 || lrclibCalls != 0 || metadataCalls != 2 || s.state.Tracks[0].Status != "pending" {
 		t.Fatal("not incremental", lyricsCalls, metadataCalls)
 	}
-	path := s.path + ".yandex-123.tracks-cache.sqlite"
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatal("cache permissions", err)
-	}
-	data, _ := os.ReadFile(path)
-	if strings.Contains(string(data), "secret-") {
-		t.Fatal("credential persisted")
-	}
+
 	restarted, err := NewServer(s.client, s.key, s.base, s.path)
 	if err != nil {
 		t.Fatal(err)
@@ -145,8 +137,8 @@ func TestYandexIncrementalCache(t *testing.T) {
 	restarted.yandex = c
 	s = restarted
 	load(false)
-	if lyricsCalls != 1 {
-		t.Fatal("restart refetched lyrics")
+	if lyricsCalls != 0 || lrclibCalls != 0 {
+		t.Fatal("normal load fetched lyrics")
 	}
 	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return response(200, `{"tracks":{}}`), nil
@@ -158,8 +150,17 @@ func TestYandexIncrementalCache(t *testing.T) {
 	if syncCalls != 1 {
 		t.Fatal("fetch did not synchronize server track list")
 	}
-	if metadataCalls != 2 || lyricsCalls != 1 || lrclibCalls != 1 {
+	if metadataCalls != 4 || lyricsCalls != 1 || lrclibCalls != 1 || s.state.Tracks[0].Status != "found" {
 		t.Fatal("refresh not incremental")
+	}
+	path := s.path + ".yandex-123.tracks-cache.sqlite"
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("cache permissions", err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "secret-") {
+		t.Fatal("credential persisted")
 	}
 	library = `[]`
 	load(false)

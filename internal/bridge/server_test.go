@@ -43,6 +43,44 @@ func install(s *Server) {
 	s.state.Authenticated = true
 	s.state.User = &s.session.User
 }
+func TestStartChecksAccessWithoutLoadingTracks(t *testing.T) {
+	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/v1/user":
+			fmt.Fprint(w, `{"id":"user-1"}`)
+		case "/rest/v1/bans":
+			fmt.Fprint(w, `[]`)
+		case "/rest/v1/ddetector_users":
+			fmt.Fprint(w, `[{"user_id":"user-1"}]`)
+		default:
+			t.Error("startup must not load tracks", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	install(s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		checked := s.state.AccessChecked && s.state.HasAccess
+		s.mu.Unlock()
+		if checked {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("startup did not check access")
+}
+
 func TestIgnoreUsesCompositeConflictKey(t *testing.T) {
 	writes := 0
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {

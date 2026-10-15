@@ -119,7 +119,10 @@ func TestMissingLyricsCached(t *testing.T) {
 		return response(500, ""), nil
 	})
 	s.yandex = c
-	if err := s.load(context.Background(), false); err != nil {
+	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"tracks":{}}`), nil
+	})
+	if err := s.load(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
 	if s.state.Tracks[0].Status != "none" || s.state.Tracks[0].Lyrics == nil {
@@ -131,7 +134,7 @@ func TestMissingLyricsCached(t *testing.T) {
 	}
 	install(restarted)
 	restarted.yandex = c
-	if err := restarted.load(context.Background(), true); err != nil {
+	if err := restarted.load(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 3 {
