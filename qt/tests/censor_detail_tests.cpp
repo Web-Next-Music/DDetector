@@ -29,6 +29,8 @@ int main(int argc, char **argv) {
     QTcpServer server;
     if (!server.listen(QHostAddress::LocalHost)) return 1;
     bool sawEncodedId = false;
+    int detailReplies = 0;
+    QString jobStatus = "review_required";
     QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
         while (auto socket = server.nextPendingConnection()) {
             auto buffer = std::make_shared<QByteArray>();
@@ -46,7 +48,8 @@ int main(int argc, char **argv) {
                 if (url.path() == "/api/censor/job") {
                     const auto id = query.queryItemValue("id", QUrl::FullyDecoded);
                     sawEncodedId = sawEncodedId || target.contains("B%20%2F%3F");
-                    body = {{"job", QJsonObject{{"id", id}, {"status", "review_required"},
+                    ++detailReplies;
+                    body = {{"job", QJsonObject{{"id", id}, {"status", jobStatus},
                         {"request", QJsonObject{{"id", "request"}, {"track_id", 42}}},
                         {"candidates", QJsonArray{QJsonObject{{"id", "correct-candidate"}}}}}}};
                     if (id == "A") delay = 250;
@@ -84,6 +87,23 @@ int main(int argc, char **argv) {
     bridge.censorPage(100);
     if (!waitFor([&] { return bridge.censorState().value("offset").toInt() == 100; })) return 7;
     if (view->property("job").toMap().value("id") != "B /?") return 8;
+    // Identical state/detail polls must not replace QML snapshots. A changed
+    // detail must still update the selected job without changing its selection.
+    int stateChanges = 0, detailChanges = 0;
+    QObject::connect(&bridge, &Bridge::censorStateChanged, &app, [&] { ++stateChanges; });
+    QObject::connect(&bridge, &Bridge::censorSelectedJobChanged, &app, [&] { ++detailChanges; });
+    int previousReplies = detailReplies;
+    bridge.censorPage(100);
+    if (!waitFor([&] { return detailReplies > previousReplies; })) return 10;
+    QElapsedTimer settle;
+    settle.start();
+    while (settle.elapsed() < 100) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    if (stateChanges != 0 || detailChanges != 0) return 11;
+    jobStatus = "running";
+    bridge.censorPage(100);
+    if (!waitFor([&] { return bridge.censorSelectedJob().value("status") == "running"; })) return 12;
+    if (detailChanges != 1 || stateChanges != 0) return 13;
+    if (view->property("candidateId").toString() != "correct-candidate") return 14;
     bridge.censorSelectJob("A");
     QCoreApplication::processEvents();
     bridge.logout();
@@ -91,6 +111,6 @@ int main(int argc, char **argv) {
     elapsed.start();
     while (elapsed.elapsed() < 500) { QCoreApplication::processEvents(); QThread::msleep(5); }
     if (!bridge.censorSelectedJob().isEmpty()) return 9;
-    qInfo("Censor detail selection, encoded IDs, paging and logout regressions passed");
+    qInfo("Censor detail selection, encoded IDs, paging, unchanged polling, live updates and logout regressions passed");
     return 0;
 }

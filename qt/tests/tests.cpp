@@ -1768,7 +1768,11 @@ private slots:
         for (const auto &root : {a.path(), b.path()}) {
             QVERIFY(git(root, {"init", "-q"}));
             QFile file(root + "/README.md"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("# Tracks\n"); file.close();
-            QVERIFY(git(root, {"add", "README.md"}));
+            for (const auto &name : {QString("list_v2.json"), QString("list.json")}) {
+                QFile list(root + "/" + name); QVERIFY(list.open(QIODevice::WriteOnly));
+                list.write(name == "list_v2.json" ? "{\"sources\":[]}" : "legacy bytes");
+            }
+            QVERIFY(git(root, {"add", "README.md", "list_v2.json", "list.json"}));
             QVERIFY(git(root, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"}));
             QVERIFY(git(root, {"config", "user.name", "Test"}));
             QVERIFY(git(root, {"config", "user.email", "test@example.invalid"}));
@@ -1787,6 +1791,16 @@ private slots:
         local.uploader.send("1", "song", "artist"); QVERIFY(!local.uploader.busy());
         QVERIFY(local.uploader.error().contains("edits"));
         local.workspace.setText("# Tracks\n");
+        local.workspace.openFile("list_v2.json"); local.workspace.setText("unsaved v2 edits");
+        local.uploader.send("1", "song", "artist"); QVERIFY(!local.uploader.busy());
+        QVERIFY(local.uploader.error().contains("edits"));
+        local.workspace.setText("{\"sources\":[]}");
+        local.workspace.openFile("list.json"); local.workspace.setText("unsaved legacy edits");
+        local.uploader.send("invalid-id", "song", "artist"); QVERIFY(local.uploader.busy());
+        QTRY_VERIFY_WITH_TIMEOUT(!local.uploader.busy(), 20000);
+        QVERIFY(local.uploader.error().contains("ASCII digits"));
+        QVERIFY(local.workspace.dirty()); QCOMPARE(local.workspace.text(), QString("unsaved legacy edits"));
+        local.workspace.setText("legacy bytes"); local.workspace.openFile("README.md");
         local.workspace.startTerminal(); QVERIFY(local.workspace.terminalRunning());
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         local.workspace.stopTerminal();
@@ -2281,7 +2295,8 @@ private slots:
                                          Q_ARG(QVariant, snapshot.value("id")),
                                          Q_ARG(QVariant, snapshot.value("title")),
                                          Q_ARG(QVariant, snapshot.value("artist")),
-                                         Q_ARG(QVariant, QVariant(QString()))));
+                                         Q_ARG(QVariant, QVariant(QString())),
+                                         Q_ARG(QVariant, QVariant(QVariantMap()))));
         QTRY_VERIFY(sendDialog->property("visible").toBool());
         QCOMPARE(sendDialog->property("trackId").toString(), snapshot.value("id").toString());
         QCOMPARE(sendDialog->property("originalTitle").toString(), snapshot.value("title").toString());

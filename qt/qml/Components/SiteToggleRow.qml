@@ -5,6 +5,7 @@ import QtQuick.Layouts
 
 CheckBox {
     id: control
+    property bool indicatorOnLeft: false
     property string glyph: ""
     property url iconSource: ""
     property color iconColor: "transparent"
@@ -20,7 +21,7 @@ CheckBox {
     indicator: Rectangle {
         implicitWidth: 40
         implicitHeight: 22
-        x: control.width - width - control.rightPadding
+        x: control.indicatorOnLeft ? control.leftPadding : control.width - width - control.rightPadding
         y: (control.height - height) / 2
         radius: 11
         color: control.checked ? "#142bfef5" : "#0c0c0e"
@@ -41,6 +42,11 @@ CheckBox {
     }
     contentItem: RowLayout {
         spacing: 12
+        Item {
+            visible: control.indicatorOnLeft
+            Layout.minimumWidth: control.indicator.width
+            Layout.preferredWidth: control.indicator.width
+        }
         SiteIcon {
             visible: control.hasIconSource || !!control.glyph
             Layout.preferredWidth: visible ? control.iconWidth : 0
@@ -53,8 +59,9 @@ CheckBox {
             tintColor: control.hasIconSource ? control.iconColor : (control.enabled ? "#999999" : "#666666")
         }
         Text {
+            objectName: "toggleLabel"
             Layout.fillWidth: true
-            Layout.rightMargin: 52
+            Layout.rightMargin: control.indicatorOnLeft ? 0 : 52
             text: control.text
             textFormat: Text.PlainText
             font: control.font

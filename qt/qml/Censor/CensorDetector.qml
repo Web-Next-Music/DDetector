@@ -613,7 +613,9 @@ Rectangle {
                                 && root.normalPlayer.cover ? "image://trackcovers/" + encodeURIComponent(root.normalPlayer.cover) : "";
                             approveDialog.openCandidate(request.track_id, request.title || root.currentTitle,
                                                         request.artist || root.currentArtist, cover,
-                                                        root.candidate.url);
+                                                        root.candidate.url,
+                                                        root.normalPlayer && String(root.normalPlayer.trackId || "") === String(request.track_id)
+                                                            ? root.normalPlayer.metadata : ({}));
                         }
                     }
                     SiteToolTip {

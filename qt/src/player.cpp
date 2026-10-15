@@ -271,6 +271,7 @@ void MusicPlayer::setToken(QString token) {
     m_player.stop();
     m_player.setSource({});
     m_title.clear(); m_artist.clear(); m_cover.clear(); m_error.clear();
+    m_metadata.clear();
     m_duration = 0;
     emit durationChanged();
     m_history.clear(); m_historyIndex = -1;
@@ -337,6 +338,7 @@ void MusicPlayer::loadTrack(const QString &id) {
     cancelRequests();
     m_player.stop(); m_player.setSource({});
     m_title.clear(); m_artist.clear(); m_cover.clear(); m_error.clear(); m_duration = 0;
+    m_metadata.clear();
     m_trackId = id;
     m_busy = true;
     emit durationChanged();
@@ -351,6 +353,10 @@ void MusicPlayer::loadTrack(const QString &id) {
         if (track.value("id").toVariant().toString() != id || track.value("available").toBool(true) == false) {
             fail(QStringLiteral("Track is unavailable for this account")); return;
         }
+        m_metadata = {{"title", track.value("title").toVariant()},
+                      {"artists", track.value("artists").toArray().toVariantList()},
+                      {"coverUri", track.value("coverUri").toVariant()},
+                      {"durationMs", track.value("durationMs").toVariant()}};
         m_title = track.value("title").toString();
         QStringList artists;
         for (const auto &artist : track.value("artists").toArray()) artists.append(artist.toObject().value("name").toString());

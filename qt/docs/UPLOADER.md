@@ -31,6 +31,13 @@ Original operations, in order:
 
 The server uses `git add --sparse .` and shell-interpolated commit text, catches Git failures and still returns the list action. The local backend intentionally does not copy these unsafe behaviors. Neither implementation pushes. The addon shows success then removes its modal after 1500 ms.
 
+The local backend follows the v2-only publication rules used by
+`internal/bridge/censor_native_replacement.go`, rather than the legacy list write
+in step 3 above. Send never reads, creates, writes, stages, or commits `list.json`;
+existing legacy bytes and staged/unstaged legacy edits are left untouched. A
+legacy-only checkout gets a new `list_v2.json` for the sent track; Send does not
+migrate the legacy catalog.
+
 ## Local API and exact rules
 
 ```cpp
@@ -38,7 +45,7 @@ Uploader uploader; // No default checkout: configure explicitly.
 uploader.setDirectory("/absolute/canonical/path/to/FckCensorData");
 ```
 
-QML entry point: `send(id, title, artist, mp3Url = "")`. `busy`, `status`, `error`, and `action` notify via `stateChanged`; `completed(action)` is emitted only after successful completion. Actions are `added`, `updated`, `skipped`. A Git failure can leave `action` populated: check `error`, not `action`, for success. While busy, additional sends are ignored. There is no cancellation API; destruction waits for the worker to finish, so shutdown can wait for bounded download/Git operations.
+QML entry point: `send(id, title, artist, mp3Url = "", metadata = {})`. `busy`, `status`, `error`, and `action` notify via `stateChanged`; `completed(action)` is emitted only after successful completion. Actions are `added`, `updated`, `skipped`. A Git failure can leave `action` populated: check `error`, not `action`, for success. While busy, additional sends are ignored. There is no cancellation API; destruction waits for the worker to finish, so shutdown can wait for bounded download/Git operations.
 
 - IDs must be 1–32 ASCII digits, passed as strings. This prevents traversal and option/path injection.
 - Title is trimmed, falling back to ID if empty. To match the addon UI, pass the original title when the edited title is blank.
@@ -46,9 +53,11 @@ QML entry point: `send(id, title, artist, mp3Url = "")`. `busy`, `status`, `erro
 - HTTP/HTTPS only, with no URL user credentials. Normal TLS verification and no-less-safe redirects apply. The whole download has a 30-second deadline and a 128 MiB limit. Empty bodies and non-2xx responses fail. As in the reference, bytes are not transcoded or checked for MP3 encoding; the caller must supply the intended audio, not an HTML download page.
 - Each filesystem write uses QSaveFile without direct-write fallback. The operation is **not a multi-file transaction**: later filesystem/Git failures leave earlier changes available for inspection. No automatic reset, rollback, cleanup, or retry discards user work.
 - The checkout must exist, be the canonical repository root, and have HEAD. Symlink targets and a symlink `tracks` directory are rejected. A cooperative `.ddetector-upload.lock` prevents other instances of this backend from writing concurrently.
-- Rejects preexisting staged, unstaged, or untracked changes in `list.json`, `README.md`, or this track's audio path, and rejects merge/rebase/cherry-pick/revert state. Other paths may be dirty or staged.
-- Parses/validates list JSON before saving audio. Existing canonical formatting is preserved with surgical edits; unsupported edits fail instead of reformatting or corrupting the file. Missing list is created using the reference indentation; an existing empty/invalid list fails. For a matching URL, no textual edit is needed.
-- Only `list.json`, `README.md`, and audio saved by this call are passed to `git add --sparse -- <paths>`, then `git commit --only -m <message> -- <paths>`. Unrelated staged work remains staged and is not included in the upload commit. Skipped entries do not stage audio.
+- Rejects preexisting staged, unstaged, or untracked changes in `list_v2.json`, `README.md`, or this track's audio path, and rejects merge/rebase/cherry-pick/revert state. Other paths, including `list.json`, may be dirty or staged. Unsaved workspace edits to these same upload targets also block Send.
+- Parses/validates v2 JSON before downloading or saving audio. The root must contain a `sources` array. Reads each source's `tracksStorages`, resolving explicit `tracks` entries (strings, numeric template values, or objects with `url`) and templated `trackIds` (strings, numbers, or objects with `id`). Templates must contain `%%`; HTTP(S) URLs without user credentials are required. Malformed relevant structures or conflicting URLs for the same ID fail without changing files.
+- New tracks always target the unique source with exactly `supportedVersions: ">=2.0.0"`, creating it if absent; duplicate matching sources fail closed. Reuse its compatible template storage, appending a numeric `trackIds` entry (or `tracks[id] = id` for template-map storage). If absent, create a storage there using a compatible existing URL template, without copying its IDs or changing legacy sources. Without a compatible template, create a direct canonical URL mapping in the target source. Conflicting compatible templates or multiple compatible storages within one source fail without writing. Plain sends never create source-level metadata entities. Existing replacements remain in their original sources/version gates: matching entries are removed from their old storage and an explicit `{ "url": "..." }` entry is appended to that source's storages. Unknown entry fields are retained; stale `id` and `durationMs` are removed from the replacement.
+- Unknown root/source/storage fields and unrelated tracks are retained. Surgical JSON edits preserve unchanged subtrees, BOM, surrounding whitespace, and existing line endings; changed containers may be compactly serialized. A missing v2 list is created; an existing empty/invalid list fails. If all existing mappings already resolve to the canonical URL, the original list bytes, README and HEAD remain unchanged (the existing skipped-audio behavior still applies).
+- Only `list_v2.json`, `README.md`, and audio saved by this call are passed to `git add --sparse -- <paths>`, then `git commit --only -m <message> -- <paths>`. Unrelated staged work remains staged and is not included in the upload commit. Skipped entries do not stage audio.
 - Git uses QProcess argument arrays, never a shell; inherited `GIT_*` repository/index overrides are removed. Git startup is limited to 3 seconds and each command to 15 seconds; timed-out processes are killed. Hooks and automatic commit signing are disabled to avoid interactive/arbitrary hook execution. Git author identity must already be configured. Errors are surfaced, not silently reported as success.
 - Use a trusted checkout: Git configuration/attributes can configure external filters. The cooperative lock does not stop manual Git or filesystem changes by other processes. Do not edit this checkout concurrently with a send. Downloading contacts only the supplied URL/its redirects; it may reveal the client's IP and any query-string credentials to those hosts.
 
@@ -107,4 +116,69 @@ cmake --build /tmp/ddetector-uploader-build -j2
 ctest --test-dir /tmp/ddetector-uploader-build --output-on-failure
 ```
 
-Tests use temporary repositories and loopback HTTP, never the real FckCensorData checkout. They cover add/update/skip, exact commit text containing shell metacharacters, unrelated staged-index preservation, dirty target rejection, traversal/symlink rejection, surfaced commit failure, audio save/overwrite on skipped entries without a commit, committing audio for new entries, and non-HTTP URL rejection.
+Tests use temporary repositories and loopback HTTP, never the real FckCensorData checkout. They cover v2 add/update/skip, explicit/template/object mappings, version-gate and unknown-field preservation, unchanged legacy bytes/index (and no legacy creation), malformed/conflicting v2 rejection before download, BOM/newline preservation, exact commit paths/text containing shell metacharacters, unrelated staged-index preservation, dirty/concurrently changed target rejection, traversal/symlink rejection, surfaced commit failure, audio save/overwrite on skipped entries without a commit, committing audio for new entries, and non-HTTP URL rejection.
+
+## Optional Send metadata (Qt)
+
+The Send dialog keeps **README / commit labels** separate from entity metadata.
+Expand **Edit metadata · optional**, check individual overrides, then change their
+values. Prefilled, unchanged inputs and unchecked fields are omitted; disabling
+the section sends an empty patch. Opening another track resets all opt-ins.
+Existing source-level metadata is prefilled where available; display labels and
+thumbnail URLs are never automatically copied into overrides.
+
+Supported overrides:
+
+- `title`: nonempty, single-line text, at most 4096 characters.
+- `artists`: 1–100 real artist IDs plus names. Enter `123: Name; 456: Other name`.
+  IDs use WebHost's `[A-Za-z0-9_-]{1,128}` contract and must be unique. This is
+  manual ID entry, not an artist lookup service; the app cannot verify identity.
+  Artist objects already present on the track are matched by ID and retain their
+  other fields. An existing `__fckCensor.insertionIndex` is preserved; otherwise
+  artist edits set it to `null` to prevent automatic artist-profile insertion.
+- `coverUri`: HTTP(S) address, or scheme-less host/path. HTTPS prefixes are
+  explicitly removed on save to match the schema; `%%` image-size placeholders
+  are supported. No cover uploads or downloads are performed.
+- `durationMs`: non-negative integer milliseconds, up to JavaScript's maximum
+  safe integer. Consumer WebHost metadata projection may not expose duration in
+  every view; the source entity stores it without changing audio duration.
+
+Structured API example (the final argument is a QVariantMap / QML object):
+
+```js
+uploader.send("123", "README title", "README artist", "", {
+    title: "Custom title",
+    artists: [{id: "42", name: "Artist"}],
+    coverUri: "example.org/art/%%",
+    durationMs: 180000
+})
+```
+
+An empty patch preserves the original audio/list-only path exactly. Nonempty
+patches merge only supplied fields into `sources[i].tracks["originalId"]`, never
+storage `tracks`. Null, empty text, empty artists, unknown patch keys and invalid
+values fail validation before downloads or target-file writes. There is no
+metadata deletion/reset API. `trackMetadata(id)` is a read-only best-effort
+prefill from the first source-level track object, not a full version-aware
+consumer simulation.
+
+Placement deliberately fails closed: edits require a unique source with an
+compatible audio mapping after routing (which may create its storage). Multiple matching sources, metadata for that
+ID in any other source, or **any storage duration for the ID** are rejected, even
+when some configurations might work. Source version gates are accepted only
+when absent, `>0.0.0`, or `>=2.0.0`; other gates require manual review. New IDs use the same `>=2.0.0` routing with or without metadata; an existing legacy mapping is not automatically migrated. Sources are never reordered and
+existing metadata is never relocated. These restrictions protect against the
+installed PulseSync consumer's first-source-wins **whole-object** selection and
+storage-duration-created entries shadowing later source metadata.
+
+Changed metadata is committed even when the audio URL is unchanged. Such a send
+returns `updated` and follows the existing README/commit path using only the
+separate labels. JSON patching preserves untouched properties, unknown data,
+indentation, line endings and BOM. Existing legacy isolation, dirty-target,
+concurrency and failure handling remain unchanged; this does not add automatic
+rollback or turn the existing write sequence into a transaction. The Go bridge
+is a separate publication flow and has no new metadata API in this change.
+
+Read-only consumer/schema references for this contract:
+`/home/admin/.config/PulseSync/addons/fckcensor/script.js` and
+`/run/media/admin/DATA/FckCensorData/list_v2.schema.json`.

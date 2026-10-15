@@ -49,7 +49,7 @@ public:
                 || m_uploader->directory() != m_workspace->rootPath())
                 return QString("Wait for the configured repository to be ready before sending");
             const QString file = m_workspace->filePath();
-            if (m_workspace->dirty() && (file == "list.json" || file == "README.md" || file == "tracks/" + id))
+            if (m_workspace->dirty() && (file == "list_v2.json" || file == "README.md" || file == "tracks/" + id))
                 return QString("Save or discard edits to the upload target before sending");
             return QString();
         });

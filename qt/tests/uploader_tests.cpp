@@ -8,6 +8,9 @@
 #include <QTcpSocket>
 #include <QPointer>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 class UploaderTests final : public QObject {
     Q_OBJECT
@@ -31,6 +34,160 @@ class UploaderTests final : public QObject {
         git(root, {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "initial"});
     }
 private slots:
+    void sourceRouting_data() {
+        QTest::addColumn<bool>("metadata");
+        QTest::newRow("plain") << false;
+        QTest::newRow("metadata") << true;
+    }
+    void sourceRouting() {
+        QFETCH(bool, metadata);
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray legacy = R"({"supportedVersions":">0.0.0","tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[456]}]})";
+        put(dir.path() + "/list_v2.json", "{\"sources\":[{\"supportedVersions\":\">=2.0.0\",\"tracks\":{\"1\":{\"title\":\"Keep\"}}}," + legacy + "]}");
+        git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Label", "Artist", {}, metadata ? QVariantMap{{"title", "Custom"}} : QVariantMap{});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto bytes = get(dir.path() + "/list_v2.json");
+        QVERIFY(bytes.contains(legacy));
+        const auto sources = QJsonDocument::fromJson(bytes).object()["sources"].toArray();
+        QCOMPARE(sources.size(), 2);
+        const auto source = sources[0].toObject();
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray()[0].toInt(), 123);
+        QCOMPARE(source["tracks"].toObject().contains("123"), metadata);
+        if (metadata) QCOMPARE(source["tracks"].toObject()["123"].toObject()["title"].toString(), "Custom");
+    }
+    void optionalMetadata() {
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray before = R"({"sources":[{"supportedVersions":">0.0.0","tracks":{"123":{"title":"Old","unknown":{"keep":true},"artists":[{"id":"42","name":"Old artist","coverUri":"keep"}]}},"tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[123]}]}]})";
+        put(dir.path() + "/list_v2.json", before);
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"commit", "-qm", "list"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Display label", "Display artist", {}, {{"title", "Custom"}, {"coverUri", "https://example.org/cover/%%"}, {"durationMs", 123000}, {"artists", QVariantList{QVariantMap{{"id", "42"}, {"name", "New artist"}}}}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
+        const auto source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
+        const auto track = source["tracks"].toObject()["123"].toObject();
+        QCOMPARE(track["title"].toString(), "Custom");
+        QCOMPARE(track["coverUri"].toString(), "example.org/cover/%%");
+        QCOMPARE(track["durationMs"].toInt(), 123000);
+        QVERIFY(track["unknown"].toObject()["keep"].toBool());
+        QCOMPARE(track["artists"].toArray()[0].toObject()["coverUri"].toString(), "keep");
+        QVERIFY(track["__fckCensor"].toObject()["insertionIndex"].isNull());
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray()[0].toInt(), 123);
+        const auto bytes = get(dir.path() + "/list_v2.json");
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        uploader.send("123", "Other display", "Other artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "skipped");
+        QCOMPARE(get(dir.path() + "/list_v2.json"), bytes);
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", {{"durationMs", -1}});
+        QVERIFY(!uploader.busy()); QVERIFY(!uploader.error().isEmpty());
+        QCOMPARE(get(dir.path() + "/list_v2.json"), bytes);
+    }
+    void metadataPartialAndIntentionalInsertion() {
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray before = R"({"sources":[{"supportedVersions":">=2.0.0","tracks":{"123":{"title":"Keep","coverUri":"keep.example/art","__fckCensor":{"insertionIndex":0,"unknown":"keep"},"artists":[{"id":42,"name":"Before","various":true}]}},"tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[]}]}]})";
+        put(dir.path() + "/list_v2.json", before);
+        git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Display", "Display", {}, {{"artists", QVariantList{QVariantMap{{"id", "42"}, {"name", "After"}}}}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "added");
+        const auto source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
+        const auto track = source["tracks"].toObject()["123"].toObject();
+        QCOMPARE(track["title"].toString(), "Keep"); QCOMPARE(track["coverUri"].toString(), "keep.example/art");
+        QCOMPARE(track["__fckCensor"].toObject()["insertionIndex"].toInt(-1), 0);
+        QCOMPARE(track["__fckCensor"].toObject()["unknown"].toString(), "keep");
+        QVERIFY(track["artists"].toArray()[0].toObject()["various"].toBool());
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray()[0].toInt(), 123);
+        const auto after = get(dir.path() + "/list_v2.json");
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        uploader.send("123", "Display", "Display", {}, {{"title", "Keep"}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "skipped");
+        QCOMPARE(get(dir.path() + "/list_v2.json"), after); QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+    }
+    void invalidMetadata_data() {
+        QTest::addColumn<QVariantMap>("patch");
+        QTest::newRow("empty-title") << QVariantMap{{"title", " "}};
+        QTest::newRow("null-title") << QVariantMap{{"title", QVariant()}};
+        QTest::newRow("fraction-duration") << QVariantMap{{"durationMs", 1.5}};
+        QTest::newRow("unknown") << QVariantMap{{"albums", QVariantList{}}};
+        QTest::newRow("invalid-cover") << QVariantMap{{"coverUri", "file:///tmp/cover"}};
+        QTest::newRow("empty-artists") << QVariantMap{{"artists", QVariantList{}}};
+        QTest::newRow("missing-id") << QVariantMap{{"artists", QVariantList{QVariantMap{{"name", "Name"}}}}};
+        QTest::newRow("bad-id") << QVariantMap{{"artists", QVariantList{QVariantMap{{"id", "../42"}, {"name", "Name"}}}}};
+        QTest::newRow("bad-name") << QVariantMap{{"artists", QVariantList{QVariantMap{{"id", "42"}, {"name", "Name\nOther"}}}}};
+    }
+    void invalidMetadata() {
+        QFETCH(QVariantMap, patch);
+        QTemporaryDir dir; init(dir.path());
+        Uploader uploader(dir.path());
+        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", patch);
+        QVERIFY(!uploader.busy()); QVERIFY(!uploader.error().isEmpty());
+        QVERIFY(!QFile::exists(dir.path() + "/list_v2.json"));
+        QVERIFY(!QFile::exists(dir.path() + "/tracks"));
+        QCOMPARE(get(dir.path() + "/README.md"), QByteArray("# Tracks\n"));
+    }
+    void metadataShadowing_data() {
+        QTest::addColumn<QByteArray>("sources");
+        const QByteArray store = R"({"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[123]})";
+        QTest::newRow("ambiguous modern gate") << QByteArray(R"({"supportedVersions":">=2.0.0"},{"supportedVersions":">=2.0.0"})");
+        QTest::newRow("earlier metadata") << QByteArray(R"({"tracks":{"123":{"title":"first"}}},{"tracksStorages":[)") + store + "]}";
+        QTest::newRow("duration") << QByteArray(R"({"tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[{"id":123,"durationMs":10}]}]})");
+        QTest::newRow("ambiguous") << QByteArray("{\"tracksStorages\":[") + store + "]},{\"tracksStorages\":[" + store + "]}";
+    }
+    void metadataShadowing() {
+        QFETCH(QByteArray, sources);
+        QTemporaryDir dir; init(dir.path());
+        const auto before = "{\"sources\":[" + sources + "]}";
+        put(dir.path() + "/list_v2.json", before);
+        git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", {{"title", "Custom"}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY(!uploader.error().isEmpty()); QVERIFY(!uploader.error().contains("Download"));
+        QCOMPARE(get(dir.path() + "/list_v2.json"), before);
+        QVERIFY(!QFile::exists(dir.path() + "/tracks/123"));
+    }
+    void reuseGitHubList() {
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray storage = R"({"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[{"id":119689460,"durationMs":110838},152396542],"tracks":{"149360077":149665384,"155807913":151855578},"unknown":9007199254740993})";
+        const QByteArray before = R"({"sources":[{"supportedVersions":">=2.0.0","tracks":{"1":{"title":"keep"}}},{"supportedVersions":">0.0.0","tracksStorages":[)" + storage + "]}]}";
+        put(dir.path() + "/list_v2.json", before);
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "list"});
+        Uploader uploader(dir.path());
+        uploader.send("126984723", "Title", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        auto want = before;
+                want.replace("\"tracks\":{\"1\":{\"title\":\"keep\"}}", "\"tracks\":{\"1\":{\"title\":\"keep\"}},\"tracksStorages\":[{\"trackIds\":[126984723],\"urlTemplate\":\"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%\"}]");
+        QCOMPARE(get(dir.path() + "/list_v2.json"), want);
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        uploader.send("126984723", "Title", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "skipped");
+        QCOMPARE(get(dir.path() + "/list_v2.json"), want);
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        for (const auto &alias : {QString("149360077"), QString("155807913")}) {
+            uploader.send(alias, "Title", "Artist");
+            QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+            QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
+        }
+        const QByteArray ambiguous = "{\"sources\":[{\"tracksStorages\":[" + storage + "," + storage + "]}]}";
+        put(dir.path() + "/list_v2.json", ambiguous);
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "ambiguous"});
+        uploader.send("126984723", "Title", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY(uploader.error().contains("Ambiguous"));
+        QCOMPARE(get(dir.path() + "/list_v2.json"), ambiguous);
+    }
     void addSkipUpdateAndUnrelatedIndex() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); init(dir.path());
         put(dir.path() + "/unrelated", "staged user work\n");
@@ -50,10 +207,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "skipped");
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head); QCOMPARE(get(dir.path() + "/README.md"), readme);
-        put(dir.path() + "/list.json", "{\n    \"tracks\": {\n        \"123\": \"old\"\n    }\n}\n");
-        git(dir.path(), {"add", "--", "list.json"});
+        put(dir.path() + "/list_v2.json", "{\"sources\":[{\"supportedVersions\":\">0.0.0\",\"tracksStorages\":[{\"tracks\":{\"123\":\"https://old.example/123\"}}]}]}");
+        git(dir.path(), {"add", "--", "list_v2.json"});
 
-        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "--only", "-qm", "old URL", "--", "list.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "--only", "-qm", "old URL", "--", "list_v2.json"});
         uploader.send("123", "Updated", "C");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
@@ -73,30 +230,168 @@ private slots:
         QFETCH(QByteArray, eol); QFETCH(QByteArray, bom);
         QTemporaryDir dir; init(dir.path());
         git(dir.path(), {"config", "core.autocrlf", "false"});
-        const QByteArray prefix = bom + "{" + eol + "    \"tracks\": {" + eol + "        \"1\": \"old\"";
-        const QByteArray suffix = " \t" + eol + "    }" + eol + "}" + eol + " \t";
+        const QByteArray prefix = bom + "{" + eol + "    \"unknown\": {\"keep\": 123}," + eol + "    \"sources\": [" + eol
+            + "{\"supportedVersions\":\">0.0.0\",\"tracksStorages\":[{\"tracks\":{\"1\":\"https://old.example/1\"}}]}";
+        const QByteArray suffix = " \t" + eol + "    ]" + eol + "}" + eol + " \t";
         const QByteArray readme = bom + "# Tracks  " + eol + eol + "trailing spaces \t";
-        put(dir.path() + "/list.json", prefix + suffix);
+        put(dir.path() + "/list_v2.json", prefix + suffix);
         put(dir.path() + "/README.md", readme);
-        git(dir.path(), {"add", "--", "list.json", "README.md"});
+        git(dir.path(), {"add", "--", "list_v2.json", "README.md"});
         git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "format fixture"});
         Uploader uploader(dir.path()); uploader.send("2", "Song", "Artist");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
-        const QByteArray entry = "        \"2\": \"https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/2\"";
-        QCOMPARE(get(dir.path() + "/list.json"), prefix + ", \t" + eol + entry + suffix.mid(2));
+        const auto result = get(dir.path() + "/list_v2.json");
+        QVERIFY(result.startsWith(prefix + "," + eol));
+                QVERIFY(result.endsWith(suffix));
+        QVERIFY(result.endsWith("]" + eol + "}" + eol + " \t"));
+        const auto sources = QJsonDocument::fromJson(result).object().value("sources").toArray();
+        QCOMPARE(sources.size(), 2);
+        QCOMPARE(sources[1].toObject().value("supportedVersions").toString(), ">=2.0.0");
+        QCOMPARE(sources[1].toObject().value("tracksStorages").toArray()[0].toObject().value("tracks").toObject().value("2").toString(),
+                 QString("https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/2"));
         QCOMPARE(get(dir.path() + "/README.md"), readme + eol + "- [Song - Artist](https://music.yandex.ru/track/2)" + eol);
         QVERIFY(get(dir.path() + "/README.md").startsWith(readme));
-        QVERIFY(get(dir.path() + "/list.json").startsWith(prefix));
+        QVERIFY(get(dir.path() + "/list_v2.json").startsWith(prefix));
         uploader.send("1", "Updated", "Artist");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
-        QVERIFY(get(dir.path() + "/list.json").startsWith(bom + "{" + eol));
+        QVERIFY(get(dir.path() + "/list_v2.json").startsWith(bom + "{" + eol));
+    }
+    void prettyV2Insertion_data() {
+        QTest::addColumn<bool>("storage");
+        QTest::addColumn<QByteArray>("unit");
+        QTest::addColumn<QByteArray>("eol");
+        QTest::newRow("source-spaces") << false << QByteArray("  ") << QByteArray("\n");
+        QTest::newRow("source-tabs-crlf") << false << QByteArray("\t") << QByteArray("\r\n");
+        QTest::newRow("storage-spaces") << true << QByteArray("  ") << QByteArray("\n");
+        QTest::newRow("storage-tabs-crlf") << true << QByteArray("\t") << QByteArray("\r\n");
+    }
+    void prettyV2Insertion() {
+        QFETCH(bool, storage); QFETCH(QByteArray, unit); QFETCH(QByteArray, eol);
+        QTemporaryDir dir; init(dir.path());
+        git(dir.path(), {"config", "core.autocrlf", "false"});
+        QByteArray input = "{\n  \"unknown\" : {\"number\":1e+03,\"escaped\":\"\\u0061\"},\n  \"sources\": [\n    {\n      \"supportedVersions\": \">0.0.0\",\n      \"tracksStorages\": [\n        {\n          \"tracks\": {\n            \"1\": \"https://old.example/1\",\n            \"99\": \"https://old.example/99\", \n\n            \"100\" : \"https://old.example/100\"\n          }\n        }\n      ]\n    }\n  ]\n}\n";
+        const QByteArray url = "https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/";
+        QByteArray expected = input;
+        if (storage) {
+            expected.replace("            \"1\": \"https://old.example/1\",\n", "");
+            expected.replace("        }\n      ]", "        },\n        {\n          \"tracks\": {\n            \"1\": {\n              \"url\": \"" + url + "1\"\n            }\n          }\n        }\n      ]");
+        } else {
+            expected.replace("    }\n  ]", "    },\n    {\n      \"supportedVersions\": \">=2.0.0\",\n      \"tracksStorages\": [\n        {\n          \"tracks\": {\n            \"2\": \"" + url + "2\"\n          }\n        }\n      ]\n    }\n  ]");
+        }
+        const auto layout = [&](QByteArray bytes) {
+            auto lines = bytes.split('\n');
+            for (auto &line : lines) {
+                int spaces = 0;
+                while (spaces < line.size() && line[spaces] == ' ') ++spaces;
+                line = unit.repeated(spaces / 2) + line.mid(spaces);
+            }
+            return QByteArray::fromHex("efbbbf") + lines.join(eol);
+        };
+        put(dir.path() + "/list_v2.json", layout(input));
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "pretty fixture"});
+        Uploader uploader(dir.path()); uploader.send(storage ? "1" : "2", "Song", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        QCOMPARE(get(dir.path() + "/list_v2.json"), layout(expected));
+    }
+    void legacyIsNeverTouched_data() {
+        QTest::addColumn<bool>("legacyExists");
+        QTest::newRow("absent") << false;
+        QTest::newRow("dirty-and-staged") << true;
+    }
+    void legacyIsNeverTouched() {
+        QFETCH(bool, legacyExists);
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray staged = "legacy staged bytes\xff";
+        const QByteArray working = QByteArray("legacy working bytes") + QByteArray::fromHex("00ff");
+        if (legacyExists) {
+            put(dir.path() + "/list.json", staged);
+            git(dir.path(), {"add", "--", "list.json"});
+            put(dir.path() + "/list.json", working);
+        }
+        const auto index = git(dir.path(), {"diff", "--cached", "--binary", "--", "list.json"});
+        Uploader uploader(dir.path()); uploader.send("123", "Song", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "added");
+        QCOMPARE(QFile::exists(dir.path() + "/list.json"), legacyExists);
+        if (legacyExists) QCOMPARE(get(dir.path() + "/list.json"), working);
+        QCOMPARE(git(dir.path(), {"diff", "--cached", "--binary", "--", "list.json"}), index);
+        QCOMPARE(git(dir.path(), {"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}), QByteArray("README.md\nlist_v2.json\n"));
+    }
+    void v2Mappings_data() {
+        QTest::addColumn<QByteArray>("store");
+        QTest::addColumn<QString>("action");
+        QTest::newRow("explicit") << QByteArray("{\"tracks\":{\"123\":{\"url\":\"https://old.example/123\",\"durationMs\":100,\"unknown\":{\"keep\":true}},\"456\":\"https://keep.example/456\"},\"storeMetadata\":true}") << QString("updated");
+        QTest::newRow("template-map") << QByteArray("{\"urlTemplate\":\"old.example/%%\",\"tracks\":{\"123\":{\"url\":\"123\",\"unknown\":{\"keep\":true},\"durationMs\":100},\"456\":\"456\"}}") << QString("updated");
+        QTest::newRow("template-ids") << QByteArray("{\"urlTemplate\":\"https://old.example/%%\",\"trackIds\":[{\"id\":123,\"unknown\":{\"keep\":true},\"durationMs\":100},456]}") << QString("updated");
+        QTest::newRow("skip-template") << QByteArray("{\"urlTemplate\":\"https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%\",\"trackIds\":[123,456]}") << QString("skipped");
+    }
+    void v2Mappings() {
+        QFETCH(QByteArray, store); QFETCH(QString, action);
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray original = "{\"unknown\": {\"text\": \"preserve\"}, \"sources\":[{\"supportedVersions\":\">=1.2.3 <2.0.0\",\"sourceMetadata\":true,\"tracksStorages\":[" + store + "]},{\"supportedVersions\":\">0.0.0\",\"metadataOnly\":true}]}";
+        put(dir.path() + "/list_v2.json", original);
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "v2 fixture"});
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        Uploader uploader(dir.path()); uploader.send("123", "Song", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), action);
+        const auto bytes = get(dir.path() + "/list_v2.json");
+        QVERIFY(bytes.startsWith("{\"unknown\": {\"text\": \"preserve\"}"));
+        if (action == "skipped") {
+            QCOMPARE(bytes, original); QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        } else {
+            const auto sources = QJsonDocument::fromJson(bytes).object().value("sources").toArray();
+            QCOMPARE(sources.size(), 2);
+            const auto source = sources[0].toObject();
+            QCOMPARE(source.value("supportedVersions").toString(), ">=1.2.3 <2.0.0");
+            QVERIFY(source.value("sourceMetadata").toBool());
+            const auto stores = source.value("tracksStorages").toArray();
+            QCOMPARE(stores.size(), 2);
+            const auto entry = stores[1].toObject().value("tracks").toObject().value("123").toObject();
+            QCOMPARE(entry.value("url").toString(), QString("https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/123"));
+            QVERIFY(entry.value("unknown").toObject().value("keep").toBool());
+            QVERIFY(!entry.contains("durationMs"));
+            const auto oldStore = stores[0].toObject();
+            QVERIFY(!oldStore.value("tracks").toObject().contains("123"));
+            if (oldStore.contains("trackIds")) QCOMPARE(oldStore.value("trackIds").toArray(), QJsonArray{456});
+            else QVERIFY(oldStore.value("tracks").toObject().contains("456"));
+            QCOMPARE(sources[1].toObject().value("metadataOnly").toBool(), true);
+        }
+        QVERIFY(!QFile::exists(dir.path() + "/list.json"));
+    }
+    void invalidV2_data() {
+        QTest::addColumn<QByteArray>("bytes");
+        QTest::newRow("empty") << QByteArray();
+        QTest::newRow("legacy-shape") << QByteArray("{\"tracks\":{}}");
+        QTest::newRow("malformed") << QByteArray("{");
+        QTest::newRow("bad-storage") << QByteArray("{\"sources\":[{\"tracksStorages\":{}}]}");
+        QTest::newRow("bad-template") << QByteArray("{\"sources\":[{\"tracksStorages\":[{\"urlTemplate\":\"bad\",\"trackIds\":[123]}]}]}");
+        QTest::newRow("conflict") << QByteArray("{\"sources\":[{\"tracksStorages\":[{\"tracks\":{\"123\":\"https://one.example/123\"}},{\"tracks\":{\"123\":\"https://two.example/123\"}}]}]}");
+    }
+    void invalidV2() {
+        QFETCH(QByteArray, bytes);
+        QTemporaryDir dir; init(dir.path());
+        put(dir.path() + "/list_v2.json", bytes);
+        git(dir.path(), {"add", "--", "list_v2.json"});
+        git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "invalid v2"});
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        Uploader uploader(dir.path()); uploader.send("123", "Song", "Artist", "http://127.0.0.1:1/not-requested");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY(uploader.error().contains("original preserved"));
+        QCOMPARE(get(dir.path() + "/list_v2.json"), bytes);
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        QVERIFY(!QFile::exists(dir.path() + "/tracks/123"));
+        QVERIFY(!QFile::exists(dir.path() + "/list.json"));
     }
     void invalidUtf8_data() {
         QTest::addColumn<QString>("target");
         QTest::addColumn<QByteArray>("invalid");
-        for (const auto &target : {QString("list.json"), QString("README.md")}) {
+        for (const auto &target : {QString("list_v2.json"), QString("README.md")}) {
             for (const auto &invalid : {QByteArray::fromHex("ff"), QByteArray::fromHex("c080"),
                                         QByteArray::fromHex("eda080"), QByteArray::fromHex("e282")}) {
                 QTest::newRow((target.toUtf8() + invalid.toHex()).constData()) << target << invalid;
@@ -106,16 +401,16 @@ private slots:
     void invalidUtf8() {
         QFETCH(QString, target); QFETCH(QByteArray, invalid);
         QTemporaryDir dir; init(dir.path());
-        const QByteArray list = "{\n    \"tracks\": {\n        \"1\": \"old" + (target == "list.json" ? invalid : QByteArray()) + "\"\n    }\n}\n";
+        const QByteArray list = "{\"sources\": [], \"unknown\": \"" + (target == "list_v2.json" ? invalid : QByteArray()) + "\"}";
         const QByteArray readme = "# Tracks\n" + (target == "README.md" ? invalid : QByteArray());
-        put(dir.path() + "/list.json", list); put(dir.path() + "/README.md", readme);
-        git(dir.path(), {"add", "--", "list.json", "README.md"});
+        put(dir.path() + "/list_v2.json", list); put(dir.path() + "/README.md", readme);
+        git(dir.path(), {"add", "--", "list_v2.json", "README.md"});
         git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "invalid fixture"});
         const auto head = git(dir.path(), {"rev-parse", "HEAD"});
         Uploader uploader(dir.path()); uploader.send("2", "Song", "Artist");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QVERIFY2(uploader.error().contains("Invalid UTF-8"), qPrintable(uploader.error()));
-        QCOMPARE(get(dir.path() + "/list.json"), list); QCOMPARE(get(dir.path() + "/README.md"), readme);
+        QCOMPARE(get(dir.path() + "/list_v2.json"), list); QCOMPARE(get(dir.path() + "/README.md"), readme);
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
         QVERIFY(git(dir.path(), {"status", "--porcelain"}).isEmpty());
     }
@@ -123,7 +418,7 @@ private slots:
         QTemporaryDir dir; init(dir.path()); Uploader uploader(dir.path());
         uploader.send("../escape", "x", "y");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000); QVERIFY(!uploader.error().isEmpty());
-        QVERIFY(!QFile::exists(dir.path() + "/list.json"));
+        QVERIFY(!QFile::exists(dir.path() + "/list_v2.json"));
         uploader.send("12\n", "x", "y");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000); QVERIFY(uploader.error().contains("ASCII digits"));
         put(dir.path() + "/README.md", "user edits");
@@ -135,12 +430,12 @@ private slots:
         QTemporaryDir dir; init(dir.path()); Uploader uploader(dir.path());
         QTemporaryDir outside;
         put(outside.path() + "/list", "do not touch");
-        QVERIFY(QFile::link(outside.path() + "/list", dir.path() + "/list.json"));
+        QVERIFY(QFile::link(outside.path() + "/list", dir.path() + "/list_v2.json"));
         uploader.send("12", "x", "y");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QVERIFY(uploader.error().contains("symlink"));
         QCOMPARE(get(outside.path() + "/list"), QByteArray("do not touch"));
-        QVERIFY(QFile::remove(dir.path() + "/list.json"));
+        QVERIFY(QFile::remove(dir.path() + "/list_v2.json"));
         git(dir.path(), {"config", "user.name", ""});
         const auto head = git(dir.path(), {"rev-parse", "HEAD"});
         QSignalSpy done(&uploader, &Uploader::completed);
@@ -148,11 +443,11 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QVERIFY2(uploader.error().contains("Git failed"), qPrintable(uploader.error())); QCOMPARE(done.count(), 0);
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
-        QVERIFY(QFile::exists(dir.path() + "/list.json"));
+        QVERIFY(QFile::exists(dir.path() + "/list_v2.json"));
     }
     void concurrentEditsDuringDownload_data() {
         QTest::addColumn<QString>("change");
-        for (const auto &change : {"README.md", "list.json", "tracks/99", "index", "HEAD", "symlink", "tracks-symlink", "operation"})
+        for (const auto &change : {"README.md", "list_v2.json", "tracks/99", "index", "HEAD", "symlink", "tracks-symlink", "operation"})
             QTest::newRow(change) << QString(change);
     }
     void concurrentEditsDuringDownload() {
@@ -199,7 +494,7 @@ private slots:
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), expectedHead);
         QCOMPARE(git(dir.path(), {"diff", "--cached", "--binary"}), expectedIndex);
         if (change == "symlink") QCOMPARE(get(outside.path() + "/README.md"), QByteArray("outside work"));
-        else if (change == "index") QVERIFY(!QFile::exists(dir.path() + "/list.json"));
+        else if (change == "index") QVERIFY(!QFile::exists(dir.path() + "/list_v2.json"));
         else if (change == "operation") QCOMPARE(get(dir.path() + "/.git/MERGE_HEAD"), originalHead);
         else if (change == "tracks-symlink") QVERIFY(!QFile::exists(outside.path() + "/99"));
         else if (change != "HEAD") QCOMPARE(get(dir.path() + "/" + change), QByteArray("external edits"));

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -495,13 +496,6 @@ func (p *nativePublisher) Mapping(ctx context.Context, trackID int64) (string, e
 	if err = p.recover(); err != nil {
 		return "", err
 	}
-	legacy, exists, err := p.read("list.json")
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return "", ErrCensorNotFound
-	}
 	v2, exists, err := p.read("list_v2.json")
 	if err != nil {
 		return "", err
@@ -509,29 +503,292 @@ func (p *nativePublisher) Mapping(ctx context.Context, trackID int64) (string, e
 	if !exists {
 		return "", ErrCensorNotFound
 	}
-	doc, err := nativeObject(legacy)
+	return nativeMapping(v2, strconv.FormatInt(trackID, 10))
+}
+
+// nativeMapping rejects ambiguous mappings across version gates rather than
+// approving a replacement using evidence from an unrelated legacy list.
+func nativeMapping(data []byte, id string) (string, error) {
+	doc, err := nativeObject(data)
 	if err != nil {
 		return "", err
 	}
-	tracks, ok := doc["tracks"].(map[string]any)
+	sources, ok := doc["sources"].([]any)
 	if !ok {
 		return "", ErrCensorConflict
 	}
-	id := strconv.FormatInt(trackID, 10)
-	expected := ""
-	if value, exists := tracks[id]; exists {
-		expected, ok = value.(string)
+	result := ""
+	accept := func(value string, err error) error {
+		if err != nil {
+			return err
+		}
+		if result != "" && result != value {
+			return ErrCensorConflict
+		}
+		result = value
+		return nil
+	}
+	for _, raw := range sources {
+		source, ok := raw.(map[string]any)
 		if !ok {
 			return "", ErrCensorConflict
 		}
-		if _, err = nativeURL("", expected); err != nil {
-			return "", err
+		rawStores, has := source["tracksStorages"]
+		if !has {
+			continue
+		}
+		stores, ok := rawStores.([]any)
+		if !ok {
+			return "", ErrCensorConflict
+		}
+		for _, raw := range stores {
+			store, ok := raw.(map[string]any)
+			if !ok {
+				return "", ErrCensorConflict
+			}
+			template := ""
+			if raw, has := store["urlTemplate"]; has {
+				template, ok = raw.(string)
+				if !ok || !strings.Contains(template, "%%") {
+					return "", ErrCensorConflict
+				}
+			}
+			if raw, has := store["trackIds"]; has {
+				ids, ok := raw.([]any)
+				if !ok || template == "" {
+					return "", ErrCensorConflict
+				}
+				for _, entry := range ids {
+					if nativeID(entry) == id {
+						if err := accept(nativeURL(template, json.Number(id))); err != nil {
+							return "", err
+						}
+					}
+				}
+			}
+			if raw, has := store["tracks"]; has {
+				tracks, ok := raw.(map[string]any)
+				if !ok {
+					return "", ErrCensorConflict
+				}
+				if entry, has := tracks[id]; has {
+					if err := accept(nativeURL(template, entry)); err != nil {
+						return "", err
+					}
+				}
+			}
 		}
 	}
-	if _, _, err = nativeLists(legacy, v2, id, expected, "https://validation.invalid/"+id); err != nil {
-		return "", err
+	return result, nil
+}
+
+// Patch only changed JSON values. Unchanged values retain their original bytes,
+// including key order, numeric spelling, escaping, indentation and line endings.
+func nativePatchJSON(data []byte, value any) ([]byte, error) {
+	return nativePatchJSONLayout(data, value, "", "", "")
+}
+
+func nativePatchJSONLayout(data []byte, value any, base, indent, newline string) ([]byte, error) {
+	bom := []byte{239, 187, 191}
+	if bytes.HasPrefix(data, bom) {
+		patched, err := nativePatchJSONLayout(data[len(bom):], value, base, indent, newline)
+		return append(append([]byte{}, bom...), patched...), err
 	}
-	return expected, nil
+	if newline == "" {
+		newline = "\n"
+		if bytes.Contains(data, []byte("\r\n")) {
+			newline = "\r\n"
+		} else if bytes.Contains(data, []byte("\r")) {
+			newline = "\r"
+		}
+		if line := bytes.Index(data, []byte(newline)); line >= 0 {
+			for p := line + len(newline); p < len(data) && (data[p] == ' ' || data[p] == '\t'); p++ {
+				indent += string(data[p])
+			}
+		}
+		if indent == "" {
+			indent = "    "
+		}
+	}
+	multiline := bytes.Contains(data, []byte(newline))
+	serialize := func(v any, prefix string) ([]byte, error) {
+		raw, err := json.Marshal(v)
+		if err != nil || !multiline {
+			return raw, err
+		}
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, raw, prefix, indent); err != nil {
+			return nil, err
+		}
+		return bytes.ReplaceAll(pretty.Bytes(), []byte("\n"), []byte(newline)), nil
+	}
+	compact, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var a, b bytes.Buffer
+	if json.Compact(&a, data) == nil && json.Compact(&b, compact) == nil {
+		var original any
+		d := json.NewDecoder(bytes.NewReader(data))
+		d.UseNumber()
+		if err := d.Decode(&original); err != nil {
+			return nil, err
+		}
+		canonical, err := json.Marshal(original)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(canonical, compact) {
+			return data, nil
+		}
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, ErrCensorConflict
+	}
+	object, isObject := value.(map[string]any)
+	array, isArray := value.([]any)
+	if !(isObject && trimmed[0] == '{') && !(isArray && trimmed[0] == '[') {
+		return compact, nil
+	}
+	type part struct {
+		key               string
+		start, value, end int
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
+	if _, err := d.Token(); err != nil {
+		return nil, err
+	}
+	opening := int(d.InputOffset())
+	parts := []part{}
+	for d.More() {
+		start := int(d.InputOffset())
+		for start < len(data) && strings.ContainsRune(" \t\r\n,", rune(data[start])) {
+			start++
+		}
+		p := part{start: start}
+		if isObject {
+			token, err := d.Token()
+			if err != nil {
+				return nil, err
+			}
+			p.key = token.(string)
+		}
+		p.value = int(d.InputOffset())
+		if !isObject {
+			p.value = start
+		}
+		for p.value < len(data) && strings.ContainsRune(" \t\r\n:", rune(data[p.value])) {
+			p.value++
+		}
+		var raw json.RawMessage
+		if err := d.Decode(&raw); err != nil {
+			return nil, err
+		}
+		p.end = int(d.InputOffset())
+		parts = append(parts, p)
+	}
+	closing := int(d.InputOffset())
+	for closing < len(data) && strings.ContainsRune(" \t\r\n", rune(data[closing])) {
+		closing++
+	}
+	prefix, suffix, separator := "", "", ","
+	if len(parts) > 0 {
+		prefix = string(data[opening:parts[0].start])
+		suffix = string(data[parts[len(parts)-1].end:closing])
+		separator += prefix
+		if len(parts) > 1 {
+			separator = string(data[parts[0].end:parts[1].start])
+		}
+	} else {
+		prefix = string(data[opening:closing])
+	}
+	entryIndent := base + indent
+	if len(parts) > 0 {
+		if line := bytes.LastIndex(data[:parts[0].start], []byte(newline)); line >= 0 {
+			padding := string(data[line+len(newline) : parts[0].start])
+			if strings.Trim(padding, " \t") == "" {
+				entryIndent = padding
+			}
+		}
+	} else if multiline {
+		suffix = prefix
+		prefix = newline + entryIndent
+		separator = "," + prefix
+	}
+	entries := [][]byte{}
+	seen := map[string]bool{}
+	for n, p := range parts {
+		var next any
+		if isObject {
+			var exists bool
+			next, exists = object[p.key]
+			if !exists {
+				continue
+			}
+			seen[p.key] = true
+		} else {
+			if n >= len(array) {
+				continue
+			}
+			next = array[n]
+		}
+		patched, err := nativePatchJSONLayout(data[p.value:p.end], next, entryIndent, indent, newline)
+		if err != nil {
+			return nil, err
+		}
+		entry := []byte{}
+		if len(entries) > 0 {
+			entry = append(entry, data[parts[n-1].end:p.start]...)
+		}
+		entry = append(entry, data[p.start:p.value]...)
+		entries = append(entries, append(entry, patched...))
+	}
+	if isObject {
+		// New keys are rare here; use the encoder's deterministic key ordering.
+
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			if !seen[key] {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			name, _ := json.Marshal(key)
+			raw, err := serialize(object[key], entryIndent)
+			if err != nil {
+				return nil, err
+			}
+			colon := ":"
+			if multiline {
+				colon = ": "
+			}
+			entry := []byte{}
+			if len(entries) > 0 {
+				entry = append(entry, separator...)
+			}
+			entry = append(entry, name...)
+			entry = append(entry, colon...)
+			entries = append(entries, append(entry, raw...))
+		}
+	} else {
+		for n := len(parts); n < len(array); n++ {
+			raw, err := serialize(array[n], entryIndent)
+			if err != nil {
+				return nil, err
+			}
+			if len(entries) > 0 {
+				raw = append([]byte(separator), raw...)
+			}
+			entries = append(entries, raw)
+		}
+	}
+	out := append([]byte{}, data[:opening]...)
+	out = append(out, prefix...)
+	out = append(out, bytes.Join(entries, nil)...)
+	out = append(out, suffix...)
+	return append(out, data[closing:]...), nil
 }
 
 func nativeID(v any) string {
@@ -568,21 +825,17 @@ func nativeURL(template string, v any) (string, error) {
 
 // Metadata source.tracks is not an audio mapping. Only tracksStorages is edited.
 func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, error) {
-	l, e := nativeObject(legacy)
+	expected, e := nativeMapping(v2, id)
 	if e != nil {
 		return nil, nil, e
 	}
-	tracks, ok := l["tracks"].(map[string]any)
-	if !ok {
+	if expected != old {
 		return nil, nil, ErrCensorConflict
 	}
-	existing, exists := tracks[id]
-	if exists && existing != old {
-		return nil, nil, ErrCensorConflict
+	if expected == published {
+		return legacy, v2, nil
 	}
-	if !exists && old != "" {
-		return nil, nil, ErrCensorConflict
-	}
+	exists := expected != ""
 	v, e := nativeObject(v2)
 	if e != nil {
 		return nil, nil, e
@@ -605,7 +858,7 @@ func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, 
 		if !ok {
 			return nil, nil, ErrCensorConflict
 		}
-		updatedStores := make([]any, 0, len(stores))
+		updatedStores := append([]any{}, stores...)
 		for _, rawStore := range stores {
 			sourceFound := false
 			replacement := map[string]any{"url": published}
@@ -665,7 +918,6 @@ func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, 
 					delete(mapping, id)
 				}
 			}
-			updatedStores = append(updatedStores, store)
 			if sourceFound {
 				updatedStores = append(updatedStores, map[string]any{"tracks": map[string]any{id: replacement}})
 			}
@@ -678,19 +930,85 @@ func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, 
 	if !exists && found {
 		return nil, nil, ErrCensorConflict
 	}
-	// Existing replacements stay within their original version gates. New tracks
-	// get a separate catch-all source; metadata sources are never repurposed.
 	if !found {
-		sources = append(sources, map[string]any{"supportedVersions": ">0.0.0", "tracksStorages": []any{map[string]any{"tracks": map[string]any{id: published}}}})
+		var targetSource map[string]any
+		for _, raw := range sources {
+			source := raw.(map[string]any)
+			if source["supportedVersions"] != ">=2.0.0" {
+				continue
+			}
+			if targetSource != nil {
+				return nil, nil, fmt.Errorf("ambiguous >=2.0.0 source: %w", ErrCensorConflict)
+			}
+			targetSource = source
+		}
+		if targetSource == nil {
+			targetSource = map[string]any{"supportedVersions": ">=2.0.0"}
+			sources = append(sources, targetSource)
+		}
+		var target map[string]any
+		compatibleTemplate := ""
+		for _, raw := range sources {
+			matchedTemplate := false
+			source := raw.(map[string]any)
+			stores, _ := source["tracksStorages"].([]any)
+			for _, rawStore := range stores {
+				store := rawStore.(map[string]any)
+				template, _ := store["urlTemplate"].(string)
+				if template == "" {
+					continue
+				}
+				resolved, err := nativeURL(template, id)
+				if err != nil {
+					return nil, nil, err
+				}
+				if resolved != published {
+					continue
+				}
+				if compatibleTemplate != "" && compatibleTemplate != template {
+					return nil, nil, fmt.Errorf("ambiguous compatible v2 templates: %w", ErrCensorConflict)
+				}
+				if matchedTemplate {
+					return nil, nil, fmt.Errorf("ambiguous compatible v2 storages: %w", ErrCensorConflict)
+				}
+				matchedTemplate = true
+				compatibleTemplate = template
+				if source["supportedVersions"] != ">=2.0.0" {
+					continue
+				}
+				if target != nil {
+					return nil, nil, fmt.Errorf("ambiguous compatible v2 storages: %w", ErrCensorConflict)
+				}
+				target = store
+			}
+		}
+		if target == nil {
+			target = map[string]any{"tracks": map[string]any{}}
+			if compatibleTemplate != "" {
+				target = map[string]any{"urlTemplate": compatibleTemplate, "trackIds": []any{}}
+			}
+			stores, _ := targetSource["tracksStorages"].([]any)
+			targetSource["tracksStorages"] = append(stores, target)
+		}
+		{
+			if ids, has := target["trackIds"]; has {
+				target["trackIds"] = append(ids.([]any), json.Number(id))
+			} else {
+				tracks, _ := target["tracks"].(map[string]any)
+				if tracks == nil {
+					return nil, nil, ErrCensorConflict
+				}
+				if _, templated := target["urlTemplate"]; templated {
+					tracks[id] = id
+				} else {
+					tracks[id] = published
+				}
+			}
+		}
 	}
 	v["sources"] = sources
-	tracks[id] = published
-	a, e := json.MarshalIndent(l, "", "    ")
-	if e != nil {
-		return nil, nil, e
-	}
-	b, e := json.MarshalIndent(v, "", "    ")
-	return append(a, '\n'), append(b, '\n'), e
+	b, e := nativePatchJSON(v2, v)
+	return legacy, b, e
 }
 
 // Replace takes independently refreshed source and candidate evidence plus the
@@ -728,19 +1046,19 @@ func (p *nativePublisher) Replace(ctx context.Context, i CensorIdentity, s Censo
 	}
 	id := strconv.FormatInt(s.TrackID, 10)
 	published := "https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/" + id
-	paths := []string{"tracks/" + id, "list.json", "list_v2.json"}
-	before := make([][]byte, 3)
-	existed := make([]bool, 3)
+	paths := []string{"tracks/" + id, "list_v2.json"}
+	before := make([][]byte, len(paths))
+	existed := make([]bool, len(paths))
 	for n, path := range paths {
 		before[n], existed[n], e = p.read(path)
 		if e != nil {
 			return zero, e
 		}
 	}
-	if !existed[1] || !existed[2] {
-		return zero, errors.New("both repository lists must exist")
+	if !existed[1] {
+		return zero, errors.New("repository list_v2.json must exist")
 	}
-	a, b, e := nativeLists(before[1], before[2], id, r.ExpectedMapping, published)
+	_, b, e := nativeLists(nil, before[1], id, r.ExpectedMapping, published)
 	if e != nil {
 		return zero, e
 	}
@@ -794,7 +1112,7 @@ func (p *nativePublisher) Replace(ctx context.Context, i CensorIdentity, s Censo
 	if e != nil {
 		return zero, e
 	}
-	after := [][]byte{audio, a, b}
+	after := [][]byte{audio, b}
 	j := nativeJournal{Receipt: NativePublicationReceipt{Selection: s, UserID: i.UserID, Status: "local_only", LocalPath: paths[0], PublicationURL: published, Durable: true}}
 	if strings.HasPrefix(c.ID, archiveCandidatePrefix) || strings.HasPrefix(c.ID, webCandidatePrefix) {
 		j.Provenance = c.Metadata

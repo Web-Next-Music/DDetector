@@ -83,7 +83,13 @@ Item {
         property string status: "List: added · committed"
         signal completed(string action)
         signal stateChanged()
-        function send(id, title, artist, url) { busy = true; stateChanged(); }
+        property var metadata: ({title: "Existing", artists: [{id: "42", name: "Artist"}], coverUri: "example.org/cover", durationMs: 123000})
+        function trackMetadata(id) { return metadata }
+        property var lastSend: ({})
+        function send(id, title, artist, url, patch) {
+            lastSend = {id: id, title: title, artist: artist, url: url, patch: patch}
+            busy = true; stateChanged();
+        }
     }
     Component { id: sendFactory; UI.SendDialog { uploadBackend: fakeUploader } }
     Component { id: quoteFactory; UI.SiteQuote { width: 220; text: "A long warning that wraps across several lines without leaving the shared quote block" } }
@@ -177,6 +183,191 @@ Item {
             button.loading = false;
             compare(spinner.visible, false);
             compare(button.enabled, true);
+        }
+        function test_sendOriginalPrefills_data() {
+            return [{tag: "library", candidate: false}, {tag: "candidate", candidate: true}]
+        }
+        function test_sendOriginalPrefills(data) {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            const saved = fakeUploader.metadata
+            fakeUploader.metadata = ({})
+            const original = {title: "Original title", artists: [{id: 12, name: "First"}, {id: "34", name: "Second"}], coverUri: "https://avatars.yandex.net/real/%%", durationMs: 234567}
+            if (data.candidate)
+                dialog.openCandidate("123", "Display title", "Display artist", "", "https://example.org/audio.mp3", original)
+            else
+                dialog.openTrack("123", "Display title", "Display artist", "", original)
+            fakeUploader.metadata = saved
+            tryCompare(dialog, "opened", true)
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            compare(findChild(dialog, "metadataTitle").text, "Original title")
+            compare(findChild(dialog, "metadataArtists").text, "12: First; 34: Second")
+            compare(findChild(dialog, "metadataCover").text, "avatars.yandex.net/real/%%")
+            compare(findChild(dialog, "metadataDuration").text, "234567")
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(JSON.stringify(fakeUploader.lastSend.patch), "{}")
+            fakeUploader.busy = false
+            dialog.sending = false
+            findChild(dialog, "editMetadata").checked = true
+            for (const name of ["editTitle", "editArtists", "editCover", "editDuration"])
+                findChild(dialog, name).checked = true
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(JSON.stringify(fakeUploader.lastSend.patch), "{}")
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            findChild(dialog, "metadataTitle").text = "Edited original"
+            findChild(dialog, "metadataArtists").text = "12: Renamed"
+            findChild(dialog, "metadataCover").text = "example.org/edited"
+            findChild(dialog, "metadataDuration").text = "1000"
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(JSON.stringify(fakeUploader.lastSend.patch), JSON.stringify({title: "Edited original", coverUri: "example.org/edited", durationMs: 1000, artists: [{id: "12", name: "Renamed"}]}))
+            fakeUploader.busy = false
+            dialog.sending = false
+            findChild(dialog, "metadataTitle").text = "Discard this draft"
+            fakeUploader.metadata = ({})
+            if (data.candidate)
+                dialog.openCandidate("456", "Next title", "Unknown ID artist", "", "")
+            else
+                dialog.openTrack("456", "Next title", "Unknown ID artist", "")
+            fakeUploader.metadata = saved
+            compare(findChild(dialog, "metadataTitle").text, "Next title")
+            compare(findChild(dialog, "metadataArtists").text, "Unknown ID artist")
+            compare(findChild(dialog, "metadataCover").text, "")
+            compare(findChild(dialog, "metadataDuration").text, "")
+            verify(!findChild(dialog, "editMetadata").checked)
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            findChild(dialog, "editMetadata").checked = true
+            for (const name of ["editTitle", "editArtists", "editCover", "editDuration"])
+                findChild(dialog, name).checked = true
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            findChild(dialog, "metadataTitle").text = "New title"
+            findChild(dialog, "metadataArtists").text = "7: New artist"
+            findChild(dialog, "metadataCover").text = "example.org/new"
+            findChild(dialog, "metadataDuration").text = "4567"
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(JSON.stringify(fakeUploader.lastSend.patch), JSON.stringify({title: "New title", coverUri: "example.org/new", durationMs: 4567, artists: [{id: "7", name: "New artist"}]}))
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            fakeUploader.metadata = ({})
+            dialog.openTrack("789", "", "", "", {artists: [{name: "No ID"}], coverUri: "//example.org/cover", durationMs: 1234.4})
+            fakeUploader.metadata = saved
+            compare(findChild(dialog, "metadataTitle").text, "")
+            compare(findChild(dialog, "metadataArtists").text, "No ID")
+            compare(findChild(dialog, "metadataCover").text, "example.org/cover")
+            compare(findChild(dialog, "metadataDuration").text, "1234")
+            dialog.close()
+        }
+        function test_sendOptionalMetadataPatch() {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openTrack("123", "Display title", "Display artist", "")
+            tryCompare(dialog, "opened", true)
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            compare(findChild(dialog, "metadataTitle").text, "Existing")
+            compare(findChild(dialog, "metadataArtists").text, "42: Artist")
+            compare(findChild(dialog, "metadataCover").text, "example.org/cover")
+            compare(findChild(dialog, "metadataDuration").text, "123000")
+            findChild(dialog, "editMetadata").checked = true
+            findChild(dialog, "editTitle").checked = true
+            findChild(dialog, "editArtists").checked = true
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            findChild(dialog, "metadataTitle").text = "Custom"
+            compare(dialog.metadataPatch().title, "Custom")
+            verify(dialog.metadataPatch().artists === undefined)
+            findChild(dialog, "metadataArtists").text = "42: Renamed; 99: New"
+            compare(dialog.metadataPatch().artists[0].id, "42")
+            compare(dialog.metadataPatch().artists[1].name, "New")
+            findChild(dialog, "editTitle").checked = false
+            verify(dialog.metadataPatch().title === undefined)
+            findChild(dialog, "editMetadata").checked = false
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            dialog.close()
+            dialog.openTrack("456", "Other", "Other", "")
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            verify(!findChild(dialog, "editArtists").checked)
+            verify(dialog.height <= scene.height)
+            dialog.close()
+        }
+        function test_sendMetadataSwitchPreservesPanels_data() {
+            return [{tag: "track", candidate: false}, {tag: "candidate", candidate: true}]
+        }
+        function test_sendMetadataSwitchPreservesPanels(data) {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            if (data.candidate)
+                dialog.openCandidate("123", "Display title", "Display artist", "", "https://example.org/track.mp3")
+            else
+                dialog.openTrack("123", "Display title", "Display artist", "")
+            tryCompare(dialog, "opened", true)
+            const toggle = findChild(dialog, "editMetadata")
+            const summary = findChild(dialog, "trackSummaryCard")
+            const standard = findChild(dialog, "standardSendPanel")
+            const metadata = findChild(dialog, "metadataSendPanel")
+            const title = findChild(dialog, "sendTitle")
+            const artist = findChild(dialog, "sendArtist")
+            const url = findChild(dialog, "sendUrl")
+            verify(toggle instanceof UI.SiteToggleRow)
+            compare(toggle.Accessible.name, "Edit metadata")
+            const footer = findChild(dialog, "sendFooter")
+            const cancel = findChild(dialog, "cancelSendButton")
+            const send = findChild(dialog, "sendTrackButton")
+            const summaryTitle = findChild(dialog, "trackSummaryTitle")
+            compare(summaryTitle.font.pixelSize, 16)
+            verify(summaryTitle.font.pixelSize > title.font.pixelSize)
+            compare(toggle.parent, footer)
+            compare(toggle.indicatorOnLeft, true)
+
+            for (const width of [480, 320]) {
+                dialog.width = width
+                waitForRendering(dialog.contentItem)
+                const label = findChild(toggle, "toggleLabel")
+                verify(toggle.indicator.x + toggle.indicator.width <= label.mapToItem(toggle, 0, 0).x,
+                                       "Indicator right: " + (toggle.indicator.x + toggle.indicator.width) + ", label left: " + label.mapToItem(toggle, 0, 0).x)
+                verify(footer.mapToItem(summary, 0, 0).y >= summary.height)
+                verify(toggle.x < cancel.x)
+                verify(toggle.x + toggle.width <= cancel.x)
+                verify(cancel.x + cancel.width <= send.x)
+                verify(send.x + send.width <= footer.width + 1)
+                verify(Math.abs(toggle.y + toggle.height / 2 - send.y - send.height / 2) < 1)
+            }
+            compare(standard.visible, true)
+            compare(metadata.visible, false)
+            compare(url.visible, !data.candidate)
+            title.text = "Commit title"
+            artist.text = "Commit artist"
+            const expectedUrl = data.candidate ? url.text : "https://example.org/custom.mp3"
+            url.text = expectedUrl
+            toggle.forceActiveFocus(Qt.TabFocusReason)
+            keyClick(Qt.Key_Space)
+            compare(toggle.checked, true)
+            compare(standard.visible, false)
+            compare(title.visible, false)
+            compare(artist.visible, false)
+            compare(url.visible, false)
+            compare(metadata.visible, true)
+            findChild(dialog, "editTitle").checked = true
+            findChild(dialog, "metadataTitle").text = "Override title"
+            keyClick(Qt.Key_Space)
+            compare(toggle.checked, false)
+            compare(standard.visible, true)
+            compare(metadata.visible, false)
+            compare(title.text, "Commit title")
+            compare(artist.text, "Commit artist")
+            compare(url.text, expectedUrl)
+            compare(JSON.stringify(dialog.metadataPatch()), "{}")
+            keyClick(Qt.Key_Space)
+            compare(dialog.metadataPatch().title, "Override title")
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(fakeUploader.lastSend.title, "Commit title")
+            compare(fakeUploader.lastSend.artist, "Commit artist")
+            compare(fakeUploader.lastSend.url, expectedUrl)
+            compare(fakeUploader.lastSend.patch.title, "Override title")
+            compare(toggle.enabled, false)
+            fakeUploader.busy = false
+            dialog.close()
         }
         function test_sendUsesSharedLoader() {
             fakeUploader.busy = false;

@@ -1311,7 +1311,7 @@ ApplicationWindow {
                 Accessible.name: "Send"
                 SiteToolTip { text: "Send track" }
                 enabled: appUi.player.trackId !== "" && (!!appUi.uploader) && !appUi.uploader.busy
-                onClicked: sendDialog.openTrack(appUi.player.trackId, appUi.player.title, appUi.player.artist, appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : "")
+                onClicked: sendDialog.openTrack(appUi.player.trackId, appUi.player.title, appUi.player.artist, appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : "", appUi.player.metadata)
             }
             PlayerButton {
                 id: volumeButton

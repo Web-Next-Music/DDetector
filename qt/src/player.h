@@ -25,6 +25,7 @@ class MusicPlayer final : public QObject {
     Q_PROPERTY(bool enabled READ enabled NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap metadata READ metadata NOTIFY stateChanged)
     Q_PROPERTY(QString title READ title NOTIFY stateChanged)
     Q_PROPERTY(QString artist READ artist NOTIFY stateChanged)
     Q_PROPERTY(QString cover READ cover NOTIFY stateChanged)
@@ -48,6 +49,7 @@ public:
     bool playing() const { return m_player.playbackState() == QMediaPlayer::PlayingState; }
     QString trackId() const { return m_trackId; }
     QUrl streamUrl() const;
+    QVariantMap metadata() const { return m_metadata; }
     QString title() const { return m_title; }
     QString artist() const { return m_artist; }
     QString cover() const { return m_cover; }
@@ -103,6 +105,7 @@ private:
     QByteArray m_token;
     quint64 m_generation = 0;
     bool m_enabled = false, m_busy = false;
+    QVariantMap m_metadata;
     QString m_trackId, m_title, m_artist, m_cover, m_error;
     quint64 m_sourceGeneration = 0, m_pendingGeneration = 0;
     QUrl m_source;

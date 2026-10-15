@@ -109,9 +109,8 @@ func (n *nativeSource) reported(ctx context.Context) ([]int64, error) {
 		TrackID json.RawMessage `json:"track_id"`
 		Type    *string         `json:"type"`
 	}
-	// The original upstream reporting client writes tracks without a type.
-	// Accept those legacy null rows, but never album/artist report identifiers.
-	path := "/rest/v1/reported_tracks?select=track_id,type&or=(type.eq.track,type.is.null)&order=track_id.asc&limit=1000"
+	// Require an explicit track type; other report IDs must never reach track processing.
+	path := "/rest/v1/reported_tracks?select=track_id,type&type=eq.track&order=track_id.asc&limit=1000"
 	token := ""
 	if !strings.HasPrefix(n.source.Key, "sb_publishable_") {
 		token = n.source.Key
@@ -123,7 +122,7 @@ func (n *nativeSource) reported(ctx context.Context) ([]int64, error) {
 		return nil, errors.New("reported_tracks exceeded the 1000-row fetch bound")
 	}
 	for _, row := range rows {
-		if row.Type != nil && *row.Type != "track" {
+		if row.Type == nil || *row.Type != "track" {
 			continue
 		}
 		var trackID yandexID

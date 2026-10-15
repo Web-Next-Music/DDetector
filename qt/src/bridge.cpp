@@ -356,15 +356,19 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
         QString error;
         if (detail) {
             if (selectionGeneration == m_censorSelectionGeneration && generation == m_censorGeneration) {
-                m_censorSelectedJob = ok ? doc.object().value("job").toObject() : QJsonObject{};
-                if (!ok) m_censorSelectedJob.insert("detail_error", doc.object().value("error").toString("Unable to load selected job; retry selection"));
-                emit censorSelectedJobChanged();
+                auto nextJob = ok ? doc.object().value("job").toObject() : QJsonObject{};
+                if (!ok) nextJob.insert("detail_error", doc.object().value("error").toString("Unable to load selected job; retry selection"));
+                if (m_censorSelectedJob != nextJob) {
+                    m_censorSelectedJob = nextJob;
+                    emit censorSelectedJobChanged();
+                }
             }
             reply->deleteLater();
             if (selectionGeneration != m_censorSelectionGeneration && !m_censorSelectedId.isEmpty()) censorRequest("__detail");
             return;
         }
         if (generation == m_censorGeneration) {
+            const auto previousState = m_censorState;
             if (ok) {
                 m_censorState = doc.object();
                 m_nativeRecoveryPending = false;
@@ -386,7 +390,8 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
                     && error == "Censor settings are waiting for active processing to finish";
                 if (!get && !settingsDeferred) emit toast(error);
             }
-            emit censorStateChanged();
+            // Polling identical snapshots must not reset QML models and control state.
+            if (m_censorState != previousState) emit censorStateChanged();
             if (ok) {
                 if (!doc.object().value("configured").toBool()) censorSelectJob({});
                 m_censorOffset = doc.object().value("offset").toInt();

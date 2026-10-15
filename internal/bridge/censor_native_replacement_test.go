@@ -14,6 +14,67 @@ import (
 	"testing"
 )
 
+func TestNativeListsReuseGitHubList(t *testing.T) {
+	const id = "126984723"
+	const template = "raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%"
+	published := "https://" + strings.ReplaceAll(template, "%%", id)
+	storage := `{"urlTemplate":"` + template + `","trackIds":[{"id":119689460,"durationMs":110838},152396542],"tracks":{"149360077":149665384,"155807913":151855578},"unknown":9007199254740993}`
+	before := []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracks":{"1":{"title":"keep"}}},{"supportedVersions":">0.0.0","tracksStorages":[` + storage + `]}]}`)
+	_, out, err := nativeLists(nil, before, id, "", published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Replace(before, []byte(`"tracks":{"1":{"title":"keep"}}`), []byte(`"tracks":{"1":{"title":"keep"}},"tracksStorages":[{"trackIds":[126984723],"urlTemplate":"`+template+`"}]`), 1)
+	if !bytes.Equal(out, want) {
+		t.Fatalf("unexpected list edit: %s", out)
+	}
+	for track, target := range map[string]string{id: id, "149360077": "149665384", "155807913": "151855578"} {
+		got, err := nativeMapping(out, track)
+		if err != nil || got != "https://"+strings.ReplaceAll(template, "%%", target) {
+			t.Fatalf("mapping %s: %s %v", track, got, err)
+		}
+	}
+	_, again, err := nativeLists(nil, out, id, published, published)
+	if err != nil || !bytes.Equal(out, again) {
+		t.Fatal("not idempotent", err)
+	}
+	ambiguous := []byte(`{"sources":[{"tracksStorages":[` + storage + `,` + storage + `]}]}`)
+	if _, _, err := nativeLists(nil, ambiguous, id, "", published); err == nil {
+		t.Fatal("accepted ambiguous storage")
+	}
+}
+
+func TestNativeNewTrackSourceGate(t *testing.T) {
+	const published = "https://new.example/42"
+	for _, gate := range []string{`">0.0.0"`, `"<2.0.0"`, `[">=2.0.0"]`} {
+		input := []byte(`{"sources":[{"supportedVersions":` + gate + `,"tracks":{"1":{"title":"Keep"}}}]}`)
+		_, out, err := nativeLists(nil, input, "42", "", published)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, _ := nativeObject(out)
+		sources := doc["sources"].([]any)
+		if len(sources) != 2 || sources[1].(map[string]any)["supportedVersions"] != ">=2.0.0" {
+			t.Fatalf("wrong source: %s", out)
+		}
+		if !bytes.Contains(out, input[len(`{"sources":[`):len(input)-2]) {
+			t.Fatalf("existing source changed: %s", out)
+		}
+		if _, has := sources[1].(map[string]any)["tracks"]; has {
+			t.Fatal("plain publication created metadata")
+		}
+	}
+	ambiguous := []byte(`{"sources":[{"supportedVersions":">=2.0.0"},{"supportedVersions":">=2.0.0"}]}`)
+	if _, _, err := nativeLists(nil, ambiguous, "42", "", published); !errors.Is(err, ErrCensorConflict) {
+		t.Fatal("ambiguous gate accepted", err)
+	}
+	input := []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracksStorages":[{"urlTemplate":"new.example/%%","tracks":{"1":1}}]}]}`)
+	_, out, err := nativeLists(nil, input, "42", "", published)
+	if err != nil || !bytes.Contains(out, []byte(`"42":"42"`)) {
+		t.Fatalf("templated bare ID behavior: %s %v", out, err)
+	}
+}
+
 func nativePublisherFixture(t *testing.T) (*nativePublisher, CensorIdentity, CensorSelection, NativePublicationRequest, CensorCandidate, *httptest.Server) {
 	t.Helper()
 	repo := t.TempDir()
@@ -75,12 +136,8 @@ func TestNativePublicationLocalReceiptAndRollback(t *testing.T) {
 	if string(nativeReadTest(t, filepath.Join(p.repo, "tracks/42"))) != "full-mp3" {
 		t.Fatal("audio not persisted")
 	}
-	l, e := nativeObject(nativeReadTest(t, filepath.Join(p.repo, "list.json")))
-	if e != nil {
-		t.Fatal(e)
-	}
-	if l["tracks"].(map[string]any)["42"] != receipt.PublicationURL || l["unknown"].(map[string]any)["large"] != json.Number("9007199254740993") {
-		t.Fatal("legacy mapping/precision lost")
+	if !bytes.Equal(original["list.json"], nativeReadTest(t, filepath.Join(p.repo, "list.json"))) {
+		t.Fatal("legacy list changed")
 	}
 	v, _ := nativeObject(nativeReadTest(t, filepath.Join(p.repo, "list_v2.json")))
 	sources := v["sources"].([]any)
@@ -151,7 +208,7 @@ func TestNativePublicationFailurePreservesFiles(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			p, i, s, r, c, api := nativePublisherFixture(t)
 			ctx := context.Background()
-			before := nativeReadTest(t, filepath.Join(p.repo, "list.json"))
+			before := nativeReadTest(t, filepath.Join(p.repo, "list_v2.json"))
 			switch kind {
 			case "cas":
 				r.ExpectedMapping = "https://wrong.example/42"
@@ -168,7 +225,7 @@ func TestNativePublicationFailurePreservesFiles(t *testing.T) {
 				cancel()
 			case "external-edit":
 				p.validate = func(context.Context, string) error {
-					return os.WriteFile(filepath.Join(p.repo, "list.json"), []byte("external"), 0644)
+					return os.WriteFile(filepath.Join(p.repo, "list_v2.json"), []byte("external"), 0644)
 				}
 			case "download":
 				api.Close()
@@ -176,7 +233,7 @@ func TestNativePublicationFailurePreservesFiles(t *testing.T) {
 			if _, e := p.Replace(ctx, i, s, r, c); e == nil {
 				t.Fatal("accepted failure")
 			}
-			now := nativeReadTest(t, filepath.Join(p.repo, "list.json"))
+			now := nativeReadTest(t, filepath.Join(p.repo, "list_v2.json"))
 			if kind == "external-edit" {
 				if string(now) != "external" {
 					t.Fatal("external edit clobbered")
@@ -215,11 +272,11 @@ func TestNativePublicationCrashRecovery(t *testing.T) {
 	// Recovery never overwrites a third-party edit, even after a partial write.
 	j.Done = false
 	p.saveJournal(path, j)
-	os.WriteFile(filepath.Join(p.repo, "list.json"), []byte("external"), 0644)
+	os.WriteFile(filepath.Join(p.repo, "list_v2.json"), []byte("external"), 0644)
 	if e := p.Recover(context.Background()); !errors.Is(e, ErrCensorConflict) {
 		t.Fatal("recovery overwrote edit", e)
 	}
-	if string(nativeReadTest(t, filepath.Join(p.repo, "list.json"))) != "external" {
+	if string(nativeReadTest(t, filepath.Join(p.repo, "list_v2.json"))) != "external" {
 		t.Fatal("lost edit")
 	}
 }
@@ -247,7 +304,7 @@ func TestNativeListsTemplatedAndDirectMappings(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if !strings.Contains(string(out), `"custom": true`) {
+		if !strings.Contains(string(out), `"custom":true`) {
 			t.Fatal("unknown field lost")
 		}
 		if _, _, e = nativeLists(legacy, v2, "42", "https://wrong.example/42", "https://published.example/42"); !errors.Is(e, ErrCensorConflict) {
@@ -261,8 +318,8 @@ func TestNativeMappingAndMalformedLists(t *testing.T) {
 	if err != nil || mapping != r.ExpectedMapping {
 		t.Fatalf("mapping=%q err=%v", mapping, err)
 	}
-	for _, invalid := range []string{`{"tracks":{"42":"a","42":"b"}}`, `{"tracks":{}} {}`, `null`, `{"tracks":[]}`} {
-		os.WriteFile(filepath.Join(p.repo, "list.json"), []byte(invalid), 0644)
+	for _, invalid := range []string{`{"sources":[],"sources":[]}`, `{"sources":[]} {}`, `null`, `{"sources":{}}`} {
+		os.WriteFile(filepath.Join(p.repo, "list_v2.json"), []byte(invalid), 0644)
 		if _, err := p.Mapping(context.Background(), 42); err == nil {
 			t.Fatalf("accepted %s", invalid)
 		}
@@ -337,5 +394,122 @@ func TestNativeMP3Validator(t *testing.T) {
 	os.WriteFile(path, []byte("not audio"), 0600)
 	if e = real.validate(context.Background(), path); e == nil {
 		t.Fatal("invalid mp3 accepted")
+	}
+}
+
+func TestNativeV2OnlyPublication(t *testing.T) {
+	for _, legacy := range []string{"absent", "not JSON", `{"tracks":{"42":"https://unrelated.example/42"}}`} {
+		t.Run(legacy, func(t *testing.T) {
+			p, i, s, r, c, _ := nativePublisherFixture(t)
+			path := filepath.Join(p.repo, "list.json")
+			if legacy == "absent" {
+				os.Remove(path)
+			} else {
+				os.WriteFile(path, []byte(legacy), 0644)
+			}
+			mapping, err := p.Mapping(context.Background(), 42)
+			if err != nil || mapping != r.ExpectedMapping {
+				t.Fatalf("mapping %q: %v", mapping, err)
+			}
+			if _, err := p.Replace(context.Background(), i, s, r, c); err != nil {
+				t.Fatal(err)
+			}
+			if legacy == "absent" {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("created legacy list", err)
+				}
+			} else if string(nativeReadTest(t, path)) != legacy {
+				t.Fatal("legacy bytes changed")
+			}
+			var journal nativeJournal
+			if err := json.Unmarshal(nativeReadTest(t, filepath.Join(p.history, nativeScope(i, s)+".json")), &journal); err != nil {
+				t.Fatal(err)
+			}
+			for _, change := range journal.Changes {
+				if change.Path == "list.json" {
+					t.Fatal("legacy list journaled")
+				}
+			}
+		})
+	}
+}
+
+func TestNativeV2MappingStorages(t *testing.T) {
+	for _, storage := range []string{
+		`{"urlTemplate":"old.example/%%","trackIds":[{"id":42,"custom":true}]}`,
+		`{"urlTemplate":"old.example/%%","tracks":{"42":42}}`,
+		`{"tracks":{"42":"https://old.example/42"}}`,
+	} {
+		data := []byte(`{"sources":[{"tracks":{"99":{"url":"https://metadata.example/99"}},"tracksStorages":[` + storage + `]}]}`)
+		mapping, err := nativeMapping(data, "42")
+		if err != nil || mapping != "https://old.example/42" {
+			t.Fatalf("%s: %q %v", storage, mapping, err)
+		}
+		if mapping, err := nativeMapping(data, "99"); err != nil || mapping != "" {
+			t.Fatalf("metadata used as audio: %q %v", mapping, err)
+		}
+	}
+	if _, err := nativeMapping([]byte(`{"sources":[{"tracksStorages":[{"tracks":{"42":"https://a.example/42"}},{"tracks":{"42":"https://b.example/42"}}]}]}`), "42"); !errors.Is(err, ErrCensorConflict) {
+		t.Fatal("ambiguous mapping accepted", err)
+	}
+}
+
+func TestNativePatchPrettyInsertions(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, expected string
+		value                 any
+	}{
+		{"source", "{\n  \"sources\": [\n    { \"unknown\" : 1e+03 }\n  ]\n}\n", "{\n  \"sources\": [\n    { \"unknown\" : 1e+03 },\n    {\n      \"tracksStorages\": [\n        {\n          \"tracks\": {\n            \"42\": \"https://new.example/42\"\n          }\n        }\n      ]\n    }\n  ]\n}\n", map[string]any{"sources": []any{map[string]any{"unknown": json.Number("1e+03")}, map[string]any{"tracksStorages": []any{map[string]any{"tracks": map[string]any{"42": "https://new.example/42"}}}}}}},
+		{"storage", "{\n  \"tracksStorages\": [\n    { \"unknown\" : \"\\u0061\" }\n  ]\n}\n", "{\n  \"tracksStorages\": [\n    { \"unknown\" : \"\\u0061\" },\n    {\n      \"tracks\": {\n        \"42\": \"https://new.example/42\"\n      }\n    }\n  ]\n}\n", map[string]any{"tracksStorages": []any{map[string]any{"unknown": "a"}, map[string]any{"tracks": map[string]any{"42": "https://new.example/42"}}}}},
+		{"map", "{\n  \"tracks\": {\n    \"1\" : \"https://old.example/1\"\n  }\n}\n", "{\n  \"tracks\": {\n    \"1\" : \"https://old.example/1\",\n    \"42\": {\n      \"url\": \"https://new.example/42\"\n    }\n  }\n}\n", map[string]any{"tracks": map[string]any{"1": "https://old.example/1", "42": map[string]any{"url": "https://new.example/42"}}}},
+		{"empty", "{\n  \"sources\": [\n  ]\n}\n", "{\n  \"sources\": [\n    {\n      \"tracks\": {}\n    }\n  ]\n}\n", map[string]any{"sources": []any{map[string]any{"tracks": map[string]any{}}}}},
+		{"mixed-separators", "{\n  \"tracks\": {\n    \"1\" : \"one\", \n    \"2\":\"two\",\n\n    \"3\" : \"three\"\n  }\n}\n", "{\n  \"tracks\": {\n    \"1\" : \"one\", \n    \"2\":\"two\",\n\n    \"3\" : \"three\", \n    \"42\": \"new\"\n  }\n}\n", map[string]any{"tracks": map[string]any{"1": "one", "2": "two", "3": "three", "42": "new"}}},
+		{"compact", `{"sources":[{"unknown":true}]}`, `{"sources":[{"unknown":true},{"tracks":{"42":"https://new.example/42"}}]}`, map[string]any{"sources": []any{map[string]any{"unknown": true}, map[string]any{"tracks": map[string]any{"42": "https://new.example/42"}}}}},
+	} {
+		for _, layout := range []struct{ name, indent, eol, bom string }{
+			{"spaces", "  ", "\n", ""},
+			{"tabs-crlf-bom", "\t", "\r\n", "\xef\xbb\xbf"},
+		} {
+			t.Run(tc.name+"/"+layout.name, func(t *testing.T) {
+				format := func(s string) string {
+					lines := strings.Split(s, "\n")
+					for n, line := range lines {
+						spaces := len(line) - len(strings.TrimLeft(line, " "))
+						lines[n] = strings.Repeat(layout.indent, spaces/2) + line[spaces:]
+					}
+					return layout.bom + strings.Join(lines, layout.eol)
+				}
+				out, err := nativePatchJSON([]byte(format(tc.input)), tc.value)
+				if err != nil || string(out) != format(tc.expected) {
+					t.Fatalf("patch: %v\ngot: %s\nwant: %s", err, out, format(tc.expected))
+				}
+			})
+		}
+	}
+}
+
+func TestNativeV2FormattingPreserved(t *testing.T) {
+	// An existing direct mapping changes only its entry and the appended storage;
+	// unrelated metadata, escaping, key order, BOM and CRLF stay byte-identical.
+	input := "\xef\xbb\xbf{\r\n\t\"z\" : 9007199254740993,\r\n\t\"sources\" : [ { \"supportedVersions\" : \">=2.0.0\", \"tracks\":{\"42\":{\"title\":\"\\u006bеep\"}}, \"tracksStorages\" : [ { \"unknown\":true, \"tracks\":{\"42\":\"https://old.example/42\",\"99\":\"https://old.example/99\"} } ] } ],\r\n\t\"a\" : false\r\n}\r\n"
+	_, out, err := nativeLists(nil, []byte(input), "42", "https://old.example/42", "https://published.example/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := strings.Replace(input, `"42":"https://old.example/42",`, "", 1)
+	expected = strings.Replace(expected, ` } ] } ]`, ` }, {"tracks":{"42":{"url":"https://published.example/42"}}} ] } ]`, 1)
+	if string(out) != expected {
+		t.Fatalf("format changed\ngot: %s\nwant: %s", out, expected)
+	}
+	mapping, err := nativeMapping(out, "42")
+	if err != nil || mapping != "https://published.example/42" {
+		t.Fatalf("patched mapping %q %v", mapping, err)
+	}
+	// A no-op patch must preserve even noncanonical number and string spellings.
+	raw := []byte("{\"n\":1e+03, \"s\":\"\\u0061\"}\n")
+	doc, _ := nativeObject(raw)
+	patched, err := nativePatchJSON(raw, doc)
+	if err != nil || !bytes.Equal(raw, patched) {
+		t.Fatalf("no-op patch: %s %v", patched, err)
 	}
 }

@@ -16,31 +16,79 @@ SiteDialog {
     property bool showUrlFields: true
     property bool sending: false
     property bool approveSoundEnabled: false
+    property var initialMetadata: ({})
+    property string initialArtistsText: ""
+    property var metadataBaseline: ({})
+    property var originalMetadata: ({})
+    property string originalArtist: ""
+    readonly property string artistsPlaceholder: (originalMetadata.artists || []).map(function(a) {
+        const name = String(a.name || "")
+        return a.id === undefined || a.id === null || String(a.id) === "" ? name : String(a.id) + ": " + name
+    }).filter(function(a) { return a.length > 0 }).join("; ")
+    readonly property string coverPlaceholder: String(originalMetadata.coverUri || "").replace(/^https?:\/\//i, "").replace(/^\/\//, "")
+    readonly property string durationPlaceholder: originalMetadata.durationMs !== undefined && originalMetadata.durationMs !== null
+        && Number.isFinite(Number(originalMetadata.durationMs)) && Number(originalMetadata.durationMs) > 0
+        ? String(Math.round(Number(originalMetadata.durationMs))) : ""
+    function metadataPatch() {
+        const patch = {}
+        if (!editMetadata.checked) return patch
+        if (editTitle.checked && metadataTitle.text.trim() !== metadataBaseline.title)
+            patch.title = metadataTitle.text.trim()
+        if (editCover.checked && metadataCover.text.trim() !== metadataBaseline.coverUri)
+            patch.coverUri = metadataCover.text.trim()
+        if (editDuration.checked && metadataDuration.text.trim() !== metadataBaseline.durationMs)
+            patch.durationMs = metadataDuration.text.trim() === "" ? -1 : Number(metadataDuration.text)
+        if (editArtists.checked && metadataArtists.text !== initialArtistsText) {
+            patch.artists = metadataArtists.text.split(";").map(function(part) {
+                const split = part.indexOf(":")
+                return {id: split < 0 ? "" : part.slice(0, split).trim(), name: split < 0 ? part.trim() : part.slice(split + 1).trim()}
+            })
+        }
+        return patch
+    }
     signal sent(string action)
 
-    function configureTrack(id, title, artist, cover, mp3Url, showUrl) {
+    function configureTrack(id, title, artist, cover, mp3Url, showUrl, metadata) {
         if (busy || sending)
             return
         trackId = id === null || id === undefined ? "" : String(id)
         originalTitle = title ? String(title) : ""
+        originalMetadata = metadata || ({})
         titleInput.text = originalTitle
-        artistInput.text = Array.isArray(artist) ? artist.join(", ") : (artist ? String(artist) : "")
+        originalArtist = Array.isArray(artist) ? artist.join(", ") : (artist ? String(artist) : "")
+        artistInput.text = originalArtist
         urlInput.text = mp3Url ? String(mp3Url) : ""
+        initialMetadata = uploadBackend && typeof uploadBackend.trackMetadata === "function" ? uploadBackend.trackMetadata(trackId) : ({})
+        editMetadata.checked = false
+        editTitle.checked = false; editCover.checked = false
+        editDuration.checked = false; editArtists.checked = false
+        metadataBaseline = {
+            title: String(initialMetadata.title !== undefined ? initialMetadata.title : originalMetadata.title || originalTitle).trim(),
+            coverUri: String(initialMetadata.coverUri !== undefined ? initialMetadata.coverUri : coverPlaceholder).trim(),
+            durationMs: initialMetadata.durationMs !== undefined ? String(initialMetadata.durationMs).trim() : durationPlaceholder
+        }
+        metadataTitle.text = metadataBaseline.title
+        metadataCover.text = metadataBaseline.coverUri
+        metadataDuration.text = metadataBaseline.durationMs
+        initialArtistsText = initialMetadata.artists !== undefined
+            ? (initialMetadata.artists || []).map(function(a) { return String(a.id === undefined ? "" : a.id) + ": " + String(a.name || "") }).join("; ")
+            : artistsPlaceholder || originalArtist
+        metadataArtists.text = initialArtistsText
         showUrlFields = showUrl
         coverSource = cover || ""
         open()
     }
 
-    function openTrack(id, title, artist, cover) {
-        configureTrack(id, title, artist, cover, "", true)
+    function openTrack(id, title, artist, cover, metadata) {
+        configureTrack(id, title, artist, cover, "", true, metadata)
     }
 
-    function openCandidate(id, title, artist, cover, mp3Url) {
-        configureTrack(id, title, artist, cover, mp3Url, false)
+    function openCandidate(id, title, artist, cover, mp3Url, metadata) {
+        configureTrack(id, title, artist, cover, mp3Url, false, metadata)
     }
 
 
-    width: Math.min(400, parent ? parent.width - 32 : 400)
+    width: Math.min(480, parent ? parent.width - 32 : 480)
     icon: "qrc:/assets/lucide-music-standard.svg"
     title: "Send track"
     closeEnabled: !busy
@@ -58,6 +106,13 @@ SiteDialog {
         Layout.fillWidth: true
         enabled: !dialog.busy
         font.family: dialog.font.family
+    }
+
+    component MetadataToggle: RowLayout {
+        property alias checked: toggle.checked
+        property alias text: caption.text
+        SiteCheckBox { id: toggle; enabled: !dialog.busy; Accessible.name: caption.text }
+        Caption { id: caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
 
     component Caption: Label { textFormat: Text.PlainText;
@@ -81,10 +136,17 @@ SiteDialog {
         accentedColor: hovered ? "#292bfef5" : "#142bfef5"
     }
 
-    contentItem: ColumnLayout {
+    contentItem: ScrollView {
+        implicitHeight: Math.min(form.implicitHeight, dialog.parent ? dialog.parent.height - 120 : 600)
+        clip: true
+        contentWidth: availableWidth
+        ColumnLayout {
+        id: form
+        width: parent.width
         spacing: 8
 
         Rectangle {
+            objectName: "trackSummaryCard"
             Layout.fillWidth: true
             implicitHeight: 84
             radius: 14
@@ -122,7 +184,9 @@ SiteDialog {
                     Layout.fillWidth: true
                     Caption {
                         Layout.fillWidth: true
+                        objectName: "trackSummaryTitle"
                         text: dialog.originalTitle || "Track"
+                        font.pixelSize: 16
                         elide: Text.ElideRight
                         font.bold: true
                     }
@@ -133,18 +197,22 @@ SiteDialog {
                         elide: Text.ElideMiddle
                     }
                 }
+
             }
         }
 
         SiteSettingsCard {
+            objectName: "standardSendPanel"
+            visible: !editMetadata.checked
             Layout.fillWidth: true
-            Caption { text: "Artist" }
-            Field { id: artistInput; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
-            Caption { text: "Title" }
-            Field { id: titleInput; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
+            Caption { text: "Artist · README / commit label" }
+            Field { id: artistInput; objectName: "sendArtist"; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
+            Caption { text: "Title · README / commit label" }
+            Field { id: titleInput; objectName: "sendTitle"; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
             Caption { text: "MP3 URL · optional"; visible: dialog.showUrlFields }
             Field {
                 id: urlInput
+                objectName: "sendUrl"
                 visible: dialog.showUrlFields
                 placeholderText: "https://…"
                 Accessible.name: "MP3 URL"
@@ -159,6 +227,23 @@ SiteDialog {
                 font.pixelSize: 12
             }
         }
+        SiteSettingsCard {
+            objectName: "metadataSendPanel"
+            visible: editMetadata.checked
+            Layout.fillWidth: true
+            ColumnLayout {
+                visible: editMetadata.checked
+                Layout.fillWidth: true
+                MetadataToggle { id: editTitle; objectName: "editTitle"; text: "Override title"; enabled: !dialog.busy }
+                Field { id: metadataTitle; objectName: "metadataTitle"; enabled: editTitle.checked && !dialog.busy; Accessible.name: "Metadata title"; placeholderText: dialog.originalMetadata.title || dialog.originalTitle || "Track title" }
+                MetadataToggle { id: editArtists; objectName: "editArtists"; text: "Override artists"; enabled: !dialog.busy }
+                Field { id: metadataArtists; objectName: "metadataArtists"; enabled: editArtists.checked && !dialog.busy; Accessible.name: "Metadata artists with IDs"; placeholderText: dialog.artistsPlaceholder || dialog.originalArtist || "Artist ID: Name" }
+                MetadataToggle { id: editCover; objectName: "editCover"; text: "Override cover URI"; enabled: !dialog.busy }
+                Field { id: metadataCover; objectName: "metadataCover"; enabled: editCover.checked && !dialog.busy; Accessible.name: "Metadata cover URI"; placeholderText: dialog.coverPlaceholder || "Cover URI" }
+                MetadataToggle { id: editDuration; objectName: "editDuration"; text: "Override duration (milliseconds)"; enabled: !dialog.busy }
+                Field { id: metadataDuration; objectName: "metadataDuration"; enabled: editDuration.checked && !dialog.busy; Accessible.name: "Metadata duration milliseconds"; placeholderText: dialog.durationPlaceholder; inputMethodHints: Qt.ImhDigitsOnly }
+            }
+        }
         Caption {
             Layout.fillWidth: true
             visible: text.length > 0
@@ -170,9 +255,26 @@ SiteDialog {
         }
 
         RowLayout {
+            id: footer
+            objectName: "sendFooter"
             Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            ActionButton { text: "Cancel"; onClicked: dialog.close() }
+            SiteToggleRow {
+                id: editMetadata
+                objectName: "editMetadata"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 40
+                Layout.preferredWidth: 174
+                Layout.maximumWidth: 174
+                Layout.preferredHeight: cancelButton.implicitHeight
+                padding: 0
+                indicatorOnLeft: true
+                text: "Edit metadata"
+                font.family: dialog.font.family
+                font.pixelSize: 13
+                enabled: !dialog.busy
+            }
+            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            ActionButton { id: cancelButton; objectName: "cancelSendButton"; text: "Cancel"; onClicked: dialog.close() }
             ActionButton {
                 objectName: "sendTrackButton"
                 text: "Send"
@@ -183,12 +285,14 @@ SiteDialog {
                     dialog.sending = true
                     dialog.uploadBackend.send(dialog.trackId,
                                               titleInput.text.trim() || dialog.originalTitle || dialog.trackId,
-                                              artistInput.text, urlInput.text.trim())
+                                              artistInput.text, urlInput.text.trim(), dialog.metadataPatch())
                     if (!dialog.busy)
                         dialog.sending = false
                 }
             }
         }
+    }
+
     }
 
     Connections {

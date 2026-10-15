@@ -30,16 +30,16 @@ func TestNativeSourceReportedOnlyAndNoForeignJWT(t *testing.T) {
 		if r.Method != "GET" || r.URL.Path != "/rest/v1/reported_tracks" || r.Header.Get("Authorization") != "" || r.Header.Get("apikey") != "sb_publishable_test" {
 			t.Error("unexpected source request or credential forwarding")
 		}
-		if r.URL.Query().Get("limit") != "1000" || r.URL.Query().Get("or") != "(type.eq.track,type.is.null)" || r.URL.Query().Get("select") != "track_id,type" {
+		if r.URL.Query().Get("limit") != "1000" || r.URL.Query().Get("type") != "eq.track" || r.URL.Query().Get("or") != "" || r.URL.Query().Get("select") != "track_id,type" {
 			t.Error("missing report type filtering or count bound")
 		}
-		fmt.Fprint(w, `[{"track_id":42,"type":"track"},{"track_id":"42","type":null},{"track_id":123},{"track_id":"not-a-track","type":"album"},{"track_id":999,"type":"artist"}]`)
+		fmt.Fprint(w, `[{"track_id":42,"type":"track"},{"track_id":"42","type":"track"},{"track_id":"invalid","type":null},{"track_id":123},{"track_id":"not-a-track","type":"album"},{"track_id":999,"type":"artist"},{"track_id":456,"type":""}]`)
 	}))
 	defer srv.Close()
 	c, _ := NewClient(srv.URL, "sb_publishable_test")
 	n := &nativeSource{source: c}
 	ids, err := n.reported(context.Background())
-	if err != nil || len(ids) != 2 || ids[0] != 42 || calls != 1 {
+	if err != nil || len(ids) != 1 || ids[0] != 42 || calls != 1 {
 		t.Fatal(ids, err, calls)
 	}
 	_, err = n.Request(context.Background(), CensorIdentity{AccessToken: "foreign-secret"}, "request:yandex:999")
