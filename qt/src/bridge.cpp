@@ -704,6 +704,14 @@ void Bridge::logout() {
 }
 void Bridge::load() { request("/api/load"); }
 void Bridge::fetch() { request("/api/fetch"); }
+QVariantMap Bridge::trackById(const QString &id) const {
+    for (const auto &value : m_source) {
+        const auto track = value.toObject();
+        if (trackId(track) == id) return track.toVariantMap();
+    }
+    return {};
+}
+
 void Bridge::ignore(const QString &id, bool ignored) {
 
     bool ok = false; const qint64 number = id.toLongLong(&ok);

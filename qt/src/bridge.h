@@ -84,6 +84,7 @@ public:
     Q_INVOKABLE void logout();
     Q_INVOKABLE void load();
     Q_INVOKABLE void fetch();
+    Q_INVOKABLE QVariantMap trackById(const QString &id) const;
     Q_INVOKABLE void ignore(const QString &id, bool ignored);
     Q_INVOKABLE void copyId(const QString &id);
     Q_INVOKABLE void searchYandex(const QString &title, const QString &artist);

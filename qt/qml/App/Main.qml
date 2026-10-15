@@ -73,6 +73,7 @@ ApplicationWindow {
     property var expanded: ({})
     property var menuTrack: ({})
     property bool menuFullLyrics: false
+    property bool menuFromPlayer: false
     property var toastQueue: []
     property int nextToastId: 0
     property string stateError: state.error || ""
@@ -122,6 +123,7 @@ ApplicationWindow {
     function context(track, source, x, y, fullLyrics) {
         menuTrack = track;
         menuFullLyrics = fullLyrics;
+        menuFromPlayer = source === playerPanel;
         const p = source.mapToItem(appUi.contentItem, x, y);
         trackMenu.x = Math.min(p.x, appUi.width - trackMenu.width - 8);
         trackMenu.y = Math.min(p.y, appUi.height - trackMenu.height - 8);
@@ -237,13 +239,19 @@ ApplicationWindow {
             accentBackground: appUi.accentBg
             dangerColor: appUi.ignoredColor
             objectName: "playTrackEntry"
+            visible: !appUi.menuFromPlayer
+            height: visible ? implicitHeight : 0
             text: "Play"
             glyph: "play"
             green: true
             enabled: appUi.player.enabled && !appUi.player.busy
             onTriggered: appUi.player.playTrack(appUi.menuTrack.id)
         }
-        SiteMenuSeparator { borderColor: appUi.borderColor }
+        SiteMenuSeparator {
+            borderColor: appUi.borderColor
+            visible: !appUi.menuFromPlayer
+            height: visible ? implicitHeight : 0
+        }
         SiteMenuItem {
             textColor: appUi.ink
             mutedColor: appUi.muted
@@ -1216,6 +1224,18 @@ ApplicationWindow {
         height: 88
         color: appUi.playerSurface
         enabled: appUi.privileged && appUi.player.enabled
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            enabled: appUi.player.trackId !== ""
+            onTapped: point => {
+                const track = Object.assign({}, appUi.backendBridge.trackById(appUi.player.trackId), {
+                    id: appUi.player.trackId,
+                    title: appUi.player.title,
+                    artist: appUi.player.artist
+                });
+                appUi.context(track, playerPanel, point.position.x, point.position.y, false);
+            }
+        }
         SpectrumVisualizer {
             objectName: "spectrumVisualizer"
             anchors.fill: parent
