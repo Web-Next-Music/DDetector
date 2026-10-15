@@ -9,6 +9,7 @@ Button {
     property bool accented: false
     property bool iconOnly: false
     property int glyphSize: 14
+        property real glyphSpacing: 6
     property int textRenderType: Text.QtRendering
     property real cornerRadius: 8
     property color textColor: "#999999"
@@ -60,7 +61,7 @@ Button {
             id: contentRow
             visible: !control.loading
             anchors.centerIn: parent
-            spacing: control.glyph && !control.iconOnly ? 6 : 0
+            spacing: control.glyph && !control.iconOnly ? control.glyphSpacing : 0
             SiteIcon {
                 visible: !!control.glyph
                 width: visible ? control.glyphSize : 0

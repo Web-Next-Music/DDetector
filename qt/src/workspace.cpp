@@ -5,12 +5,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QProcessEnvironment>
 #include <QProcess>
 #include <QTimer>
 #include <QStringEncoder>
 #include <QLockFile>
 #include <memory>
+#include <algorithm>
+#ifdef Q_OS_UNIX
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <git2.h>
 #include <QtConcurrent>
 #include <QFutureWatcher>
@@ -25,6 +33,49 @@ bool validUnicode(const QString &text) {
     }
     return true;
 }
+QByteArray untrackedPreview(const QString &root, const QString &path, QString &error) {
+    QFile file;
+#ifdef Q_OS_UNIX
+    // Open every component relative to an already-open directory, so a concurrent
+    // symlink replacement cannot redirect the preview outside the working tree.
+    int fd = ::open(QFile::encodeName(root).constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    const auto parts = path.split('/');
+    for (qsizetype i = 0; fd >= 0 && i < parts.size(); ++i) {
+        const bool last = i + 1 == parts.size();
+        const int next = ::openat(fd, QFile::encodeName(parts[i]).constData(),
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (last ? O_NONBLOCK : O_DIRECTORY));
+        ::close(fd); fd = next;
+    }
+    struct stat info {};
+    if (fd < 0 || ::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+        if (fd >= 0) ::close(fd);
+        error = "Cannot safely preview this untracked file"; return {};
+    }
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd); error = "Cannot open untracked file"; return {};
+    }
+#else
+    Q_UNUSED(root);
+    Q_UNUSED(path);
+    error = "Safe untracked previews are unavailable on this platform"; return {};
+#endif
+    constexpr qint64 maximumPreviewBytes = GitWorkspace::MaximumTextBytes;
+    if (file.size() > maximumPreviewBytes) {
+        error = "Untracked file is too large to preview (maximum 2 MiB)"; return {};
+    }
+    const auto bytes = file.read(maximumPreviewBytes + 1);
+    if (file.error() != QFileDevice::NoError || bytes.size() > maximumPreviewBytes) {
+        error = "Cannot read untracked file within the preview limit"; return {};
+    }
+    QStringDecoder decoder(QStringConverter::Utf8);
+    const QString text = decoder.decode(bytes);
+    bool binary = decoder.hasError();
+    for (const auto ch : text)
+        if (ch.unicode() < 32 && ch != '\n' && ch != '\r' && ch != '\t') binary = true;
+    if (binary) { error = "Binary or non-UTF-8 untracked file cannot be previewed"; return {}; }
+    return QByteArray("Untracked file: ") + path.toUtf8() + "\n\n" + bytes;
+}
+
 QString editorText(QString text) {
     text.replace("\r\n", "\n");
     text.replace('\r', '\n');
@@ -58,6 +109,7 @@ GitWorkspace::~GitWorkspace() {
     }
 }
 void GitWorkspace::activate() {
+    refreshGit();
     if (m_activationRequested) return;
     m_activationRequested = true;
     emit activationRequested();
@@ -71,6 +123,15 @@ QString GitWorkspace::error() const {
 }
 void GitWorkspace::cancelGit() {
     ++m_gitGeneration;
+    if (m_gitOperation) {
+        auto *process = m_gitOperation; m_gitOperation = nullptr;
+        process->disconnect();
+        connect(process, &QProcess::finished, process, &QObject::deleteLater);
+        process->kill();
+        if (process->state() == QProcess::NotRunning) process->deleteLater();
+    }
+    m_gitBusy = m_gitActionActive = m_gitRefreshAgain = false;
+    m_commits.clear(); m_branch.clear(); m_aheadCount = 0; m_gitMessage.clear();
     if (!m_git) return;
     auto *process = m_git; m_git = nullptr;
     process->disconnect();
@@ -94,6 +155,10 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
         fail("Save or discard the current document before changing the repository");
         return;
     }
+    if (m_gitActionActive) {
+        fail("Wait for the Git action before changing the repository");
+        return;
+    }
     if (terminalRunning()) {
         fail("Stop the shell before changing the repository");
         return;
@@ -112,6 +177,12 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
     m_root.clear(); m_file.clear(); m_text.clear(); m_saved.clear();
     m_largeFileMode = false;
     m_diskBytes.clear(); m_tree.clear(); m_expanded.clear(); m_error.clear();
+    if (!m_changedFiles.isEmpty()) { m_changedFiles.clear(); emit changesChanged(); }
+    if (!m_stashes.isEmpty()) { m_stashes.clear(); emit stashesChanged(); }
+    if (!m_diffText.isEmpty()) { m_diffText.clear(); emit diffChanged(); }
+    emit gitChanged();
+    emit gitStateChanged();
+    emit treeChanged();
     emit documentChanged();
     m_loadingDocument = false;
     if (path.trimmed().isEmpty()) { emit changed(); return; }
@@ -129,7 +200,10 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
             m_resolving = false; m_gitError = "Git failed: no working tree found"; emit changed(); return;
         }
         m_root = result.root; m_gitDirectories = result.directories;
-        m_resolving = false; m_reconcile.start(); rebuildTree(); refreshTree();
+        m_resolving = false;
+        emit changed();
+        if (generation != m_gitGeneration) return;
+        m_reconcile.start(); rebuildTree(); refreshTree();
     });
     watcher->setFuture(QtConcurrent::run([directory] {
         Discovery result;
@@ -188,20 +262,28 @@ void GitWorkspace::appendTree(const QString &relativePath, int depth) {
         m_tree.append(QVariantMap{{"name", entry.fileName()}, {"path", rel},
                                 {"directory", entry.isDir()}, {"depth", depth}, {"expanded", expanded},
                                 {"status", status},
-                                {"statusColor", status == "new" ? "#008a4f" : status == "modified" ? "#ab910d" : ""}});
+                                {"statusColor", status == "new" ? "#00a682" : status == "modified" ? "#ab910d" : ""}});
         if (expanded) appendTree(rel, depth + 1);
     }
 }
 
-void GitWorkspace::runGit(const QString &directory, const QStringList &arguments, GitCallback callback) {
-    Q_ASSERT(!m_git);
+void GitWorkspace::runGit(const QString &directory, const QStringList &arguments, GitCallback callback, bool operations) {
+    Q_ASSERT(!(operations ? m_gitOperation : m_git));
     auto *process = new QProcess(this);
-    m_git = process;
+    (operations ? m_gitOperation : m_git) = process;
     const auto generation = m_gitGeneration;
     auto env = QProcessEnvironment::systemEnvironment();
     for (const QString &key : env.keys()) if (key.startsWith("GIT_")) env.remove(key);
     env.insert("GIT_OPTIONAL_LOCKS", "0");
     env.insert("GIT_TERMINAL_PROMPT", "0");
+    if (operations) {
+        env.insert("GIT_ASKPASS", "/bin/false");
+        env.insert("SSH_ASKPASS", "/bin/false");
+        env.insert("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=15 -oStrictHostKeyChecking=yes");
+        env.insert("GIT_EDITOR", "/bin/false");
+        env.insert("GIT_SEQUENCE_EDITOR", "/bin/false");
+        env.insert("GCM_INTERACTIVE", "Never");
+    }
     process->setProcessEnvironment(env);
     process->setWorkingDirectory(directory);
     struct Output { QByteArray out, err; QString failure; bool completed = false; };
@@ -217,13 +299,14 @@ void GitWorkspace::runGit(const QString &directory, const QStringList &arguments
             output->out.truncate(maximumOutput); output->err.truncate(64 * 1024); process->kill();
         }
     };
-    const auto complete = [this, process, deadline, output, generation, callback = std::move(callback), drain] {
+    const auto complete = [this, process, deadline, output, generation, operations, callback = std::move(callback), drain] {
         if (output->completed) return;
         output->completed = true;
         deadline->stop(); drain();
         if (output->failure.isEmpty() && (process->exitStatus() != QProcess::NormalExit || process->exitCode() != 0))
             output->failure = "Git failed: " + QString::fromUtf8(output->err).trimmed().left(1024);
-        if (m_git == process) m_git = nullptr;
+        auto &slot = operations ? m_gitOperation : m_git;
+        if (slot == process) slot = nullptr;
         process->deleteLater();
         if (generation == m_gitGeneration) callback(output->out, output->failure);
     };
@@ -233,15 +316,352 @@ void GitWorkspace::runGit(const QString &directory, const QStringList &arguments
     connect(process, &QProcess::errorOccurred, this, [output, complete](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) { output->failure = "Cannot start Git"; complete(); }
     });
-    connect(deadline, &QTimer::timeout, this, [process, output] {
-        output->failure = "Git timed out; previous status retained"; process->kill();
+    connect(deadline, &QTimer::timeout, this, [process, output, operations] {
+        output->failure = operations
+            ? "Git timed out; inspect repository and remote state before retrying"
+            : "Git timed out; previous status retained";
+        process->kill();
     });
-    deadline->start(m_gitDeadlineMs);
-    process->start("git", QStringList{"--no-pager", "-c", "core.fsmonitor=false"} + arguments);
+    deadline->start(operations ? 60000 : m_gitDeadlineMs);
+    QStringList options{"--no-pager", "-c", "core.fsmonitor=false"};
+    if (operations) options += QStringList{"-c", "credential.interactive=false"};
+    process->setStandardInputFile(QProcess::nullDevice());
+    process->start("git", options + arguments);
 }
-void GitWorkspace::updateGitStatus(const QByteArray &statusOutput) {
+void GitWorkspace::refreshGit() {
+    if (m_root.isEmpty() || m_resolving) return;
+    if (m_gitBusy) { m_gitRefreshAgain = true; return; }
+    m_gitBusy = true;
+    m_gitRefreshAgain = false;
+    const auto generation = m_gitGeneration;
+    if (generation != m_gitGeneration) return;
+    runGit(m_root, {"stash", "list", "--format=%gd%x00%H%x00%gs", "-z"},
+        [this](const QByteArray &out, const QString &error) {
+        if (error.isEmpty()) {
+            QVariantList stashes;
+            const auto fields = out.split('\0');
+            for (qsizetype i = 0; i + 2 < fields.size(); i += 3)
+                stashes.append(QVariantMap{{"ref", QString::fromUtf8(fields[i])},
+                    {"hash", QString::fromUtf8(fields[i + 1])}, {"subject", QString::fromUtf8(fields[i + 2])}});
+            if (m_stashes != stashes) { m_stashes = stashes; emit stashesChanged(); }
+        }
+    runGit(m_root, {"branch", "--show-current"}, [this](const QByteArray &out, const QString &error) {
+        if (!error.isEmpty()) {
+            m_gitBusy = false;
+            if (m_gitMessage != error) { m_gitMessage = error; emit gitStateChanged(); }
+            return;
+        }
+        const QString branch = QString::fromUtf8(out).trimmed();
+        // Missing upstream (or an unborn/detached HEAD) is normal: keep Fetch in that case.
+        runGit(m_root, {"rev-list", "--count", "@{upstream}..HEAD"},
+            [this, branch](const QByteArray &out, const QString &error) {
+        const int ahead = error.isEmpty() ? out.trimmed().toInt() : 0;
+        // --all also handles an unborn HEAD without treating a new repository as an error.
+        runGit(m_root, {"log", "--all", "-100", "--no-show-signature", "--decorate=short",
+                       "--format=%H%x00%h%x00%s%x00%an%x00%aI%x00%D", "-z"},
+            [this, branch, ahead, generation = m_gitGeneration](const QByteArray &out, const QString &error) {
+                const auto previousMessage = m_gitMessage;
+                bool historyChanged = false;
+                if (error.isEmpty()) {
+                    const auto fields = out.split('\0');
+                    QVariantList commits;
+                    for (qsizetype i = 0; i + 5 < fields.size(); i += 6) {
+                        commits.append(QVariantMap{{"hash", QString::fromUtf8(fields[i])},
+                            {"shortHash", QString::fromUtf8(fields[i + 1])},
+                            {"subject", QString::fromUtf8(fields[i + 2])},
+                            {"author", QString::fromUtf8(fields[i + 3])},
+                            {"date", QString::fromUtf8(fields[i + 4])},
+                            {"refs", QString::fromUtf8(fields[i + 5])}});
+                    }
+                    historyChanged = m_commits != commits || m_branch != branch || m_aheadCount != ahead;
+                    m_commits = commits; m_branch = branch; m_aheadCount = ahead;
+                } else m_gitMessage = error;
+                m_gitBusy = false;
+                const bool again = m_gitRefreshAgain;
+                m_gitRefreshAgain = false;
+                if (historyChanged) emit gitChanged();
+                if (m_gitMessage != previousMessage) emit gitStateChanged();
+                if (again && generation == m_gitGeneration) refreshGit();
+            }, true);
+        }, true);
+    }, true);
+    }, true);
+}
+
+void GitWorkspace::refreshStashes() { refreshGit(); }
+
+void GitWorkspace::viewDiff(QString path) { gitAction("viewDiff", path); }
+
+bool GitWorkspace::validGitPath(const QString &path) const {
+    if (path.isEmpty() || QDir::isAbsolutePath(path) || path.contains(QChar::Null)
+        || path.contains('\\')) return false;
+    for (const auto &part : path.split('/'))
+        if (part.isEmpty() || part == "." || part == ".." || part.contains(':')
+            || part.compare(".git", Qt::CaseInsensitive) == 0) return false;
+    // Deleted paths are allowed, but never traverse an existing symlink.
+    QString current = m_root;
+    for (const auto &part : path.split('/')) {
+        current = QDir(current).filePath(part);
+        if (QFileInfo(current).isSymLink()) return false;
+    }
+    return true;
+}
+
+void GitWorkspace::stageFile(const QString &path, bool staged) {
+    gitAction(staged ? "stageFile" : "unstageFile", path);
+}
+void GitWorkspace::stageAll(bool staged) { gitAction(staged ? "stageAll" : "unstageAll"); }
+
+void GitWorkspace::refreshChanges(const QStringList &tracked, quint64 revision) {
+    const auto finish = [this, revision](const QString &error) {
+        if (revision != m_actionRevision || m_gitActionActive) m_refreshAgain = true;
+        else if (m_gitError != error) { m_gitError = error; emit changed(); }
+        finishRefresh();
+    };
+    runGit(m_root, {"status", "--porcelain=v1", "-z", "--untracked-files=all"},
+        [this, tracked, revision, finish](const QByteArray &status, const QString &error) {
+        if (!error.isEmpty()) { finish(error); return; }
+        runGit(m_root, {"diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv"},
+            [this, tracked, revision, finish, status](const QByteArray &work, const QString &error) {
+            if (!error.isEmpty()) { finish(error); return; }
+            runGit(m_root, {"diff", "--cached", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv"},
+                [this, tracked, revision, finish, status, work](const QByteArray &index, const QString &error) {
+                if (!error.isEmpty()) { finish(error); return; }
+                if (revision != m_actionRevision || m_gitActionActive) { finish({}); return; }
+                QHash<QString, QPair<qint64, qint64>> counts;
+                QSet<QString> binaries;
+                for (const auto &data : {work, index}) for (const auto &record : data.split('\0')) {
+                    const auto first = record.indexOf('\t');
+                    const auto second = record.indexOf('\t', first + 1);
+                    if (first < 0 || second < 0) continue;
+                    const auto path = QFile::decodeName(record.mid(second + 1));
+                    if (record.left(first) == "-" || record.mid(first + 1, second - first - 1) == "-")
+                        binaries.insert(path);
+                    else {
+                        counts[path].first += record.left(first).toLongLong();
+                        counts[path].second += record.mid(first + 1, second - first - 1).toLongLong();
+                    }
+                }
+                QVariantList changes;
+                const auto records = status.split('\0');
+                for (qsizetype i = 0; i < records.size(); ++i) {
+                    const auto &record = records[i];
+                    if (record.size() < 4 || record[2] != ' ') continue;
+                    const auto xy = record.left(2);
+                    const auto path = QFile::decodeName(record.mid(3));
+                    const bool untracked = xy == "??";
+                    changes.append(QVariantMap{{"path", path}, {"status", QString::fromLatin1(xy)},
+                        {"untracked", untracked}, {"staged", !untracked && xy[0] != ' '},
+                        {"additions", binaries.contains(path) ? QVariant() : QVariant(counts.value(path).first)},
+                        {"deletions", binaries.contains(path) ? QVariant() : QVariant(counts.value(path).second)}});
+                    if (xy.contains('R') || xy.contains('C')) ++i;
+                }
+                std::stable_sort(changes.begin(), changes.end(), [](const QVariant &a, const QVariant &b) {
+                    return !a.toMap().value("untracked").toBool() && b.toMap().value("untracked").toBool();
+                });
+                updateGitStatus(status); m_trackedFiles = tracked;
+                if (m_changedFiles != changes) { m_changedFiles = changes; emit changesChanged(); }
+                finish({});
+            });
+        });
+    });
+}
+
+void GitWorkspace::gitAction(QString action, QString message) {
+    gitActionWithOptions(action, message, false, false, false);
+}
+
+void GitWorkspace::commitWithOptions(QString message, bool amend, bool signoff, bool skipHooks, bool stagedOnly) {
+    gitActionWithOptions(stagedOnly ? "commitStaged" : "commit", message, amend, signoff, skipHooks);
+}
+
+void GitWorkspace::gitActionWithOptions(QString action, QString message, bool amend, bool signoff, bool skipHooks) {
+    const auto reject = [this](const QString &error) {
+            if (m_gitMessage == error) return;
+            m_gitMessage = error; emit gitStateChanged();
+        };
+    if (m_gitActionActive) { reject("Wait for the current Git operation"); return; }
+    if (m_root.isEmpty() || m_resolving) { reject("No repository is ready"); return; }
+    if (action == "viewStash") { refreshStashes(); return; }
+    const QStringList supported{"fetch", "pull", "push", "commit", "commitStaged",
+        "stashAll", "stashTracked", "stashPop", "discardTracked", "trashUntracked",
+        "stageFile", "unstageFile", "stageAll", "unstageAll", "stageTracked", "unstageTracked", "viewDiff", "undoCommit"};
+    if (!supported.contains(action)) {
+        reject("Unknown Git action: " + action); return;
+    }
+    if ((action == "stageFile" || action == "unstageFile"
+         || (action == "viewDiff" && !message.isEmpty())) && !validGitPath(message)) {
+        reject("Invalid repository-relative file path"); return;
+    }
+    if ((action == "commit" || action == "commitStaged") && (message.trimmed().isEmpty() || message.contains(QChar::Null))) {
+        reject("Enter a non-empty commit message without NUL characters"); return;
+    }
+    if (action != "viewDiff" && m_writeValidator) {
+        const auto error = m_writeValidator();
+        if (!error.isEmpty()) { reject(error); return; }
+    }
+    QStringList commitArguments;
+    std::shared_ptr<QTemporaryDir> hooksDirectory;
+    if (action == "commit" || action == "commitStaged") {
+        if (skipHooks) {
+            hooksDirectory = std::make_shared<QTemporaryDir>();
+            if (!hooksDirectory->isValid()) { reject("Cannot create an empty hooks directory"); return; }
+            commitArguments << "-c" << ("core.hooksPath=" + hooksDirectory->path());
+        }
+        commitArguments << "commit";
+        if (amend) commitArguments << "--amend";
+        if (signoff) commitArguments << "--signoff";
+        commitArguments << "-m" << message;
+    }
+    // Actions take priority over disposable background history reads. Disconnect
+    // first so the cancelled read cannot launch its next stage or publish results.
+    if (m_gitOperation) {
+        auto *process = m_gitOperation; m_gitOperation = nullptr;
+        process->disconnect();
+        connect(process, &QProcess::finished, process, &QObject::deleteLater);
+        process->kill();
+        if (process->state() == QProcess::NotRunning) process->deleteLater();
+    }
+    m_gitRefreshAgain = false;
+    ++m_actionRevision;
+    m_gitBusy = m_gitActionActive = true;
+    m_gitMessage.clear(); emit gitStateChanged();
+    const auto complete = [this, action, hooksDirectory, generation = m_gitGeneration](const QByteArray &out, const QString &error) {
+        m_gitBusy = m_gitActionActive = false;
+        const bool quiet = action == "stageFile" || action == "unstageFile"
+            || action == "stageAll" || action == "unstageAll" || action == "viewDiff"
+                        || action == "stageTracked" || action == "unstageTracked";
+        m_gitMessage = error.isEmpty() ? (quiet ? QString() : action + " succeeded") : error;
+        if (action == "viewDiff") {
+            m_diffText = error.isEmpty()
+                ? (out.isEmpty() ? QString("No tracked differences from HEAD. Untracked files are not included.")
+                                 : QString::fromUtf8(out))
+                : error;
+            emit diffChanged();
+        } else if (!quiet && error.isEmpty() && !out.trimmed().isEmpty())
+            m_gitMessage += ": " + QString::fromUtf8(out).trimmed().left(1024);
+        emit gitStateChanged();
+        if (generation != m_gitGeneration) return;
+        if (error.isEmpty() && (action == "commit" || action == "commitStaged")) emit commitSucceeded();
+        if (generation != m_gitGeneration) return;
+        refreshTree();
+        if (generation == m_gitGeneration) refreshGit();
+    };
+    if (action == "commit") {
+        runGit(m_root, {"add", "-u"}, [this, commitArguments, complete](const QByteArray &out, const QString &error) {
+            if (!error.isEmpty()) { complete(out, error); return; }
+            if (m_writeValidator) {
+                const auto rejection = m_writeValidator();
+                if (!rejection.isEmpty()) { complete({}, rejection); return; }
+            }
+            runGit(m_root, commitArguments, complete, true);
+        }, true);
+    } else {
+        QStringList arguments{action};
+        if (action == "viewDiff") {
+            arguments = {"--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
+                         "--no-color", "HEAD", "--"};
+            if (!message.isEmpty()) {
+                arguments.append(message);
+                runGit(m_root, {"--literal-pathspecs", "status", "--porcelain=v1", "-z",
+                               "--untracked-files=all", "--", message},
+                    [this, message, arguments, complete](const QByteArray &status, const QString &error) {
+                    if (!error.isEmpty()) { complete({}, error); return; }
+                    const auto expected = QByteArray("?? ") + QFile::encodeName(message);
+                    if (status.split('\0').contains(expected)) {
+                        if (confined(message).isEmpty()) { complete({}, "Unsafe untracked file path"); return; }
+                        QString previewError;
+                        const auto preview = untrackedPreview(m_root, message, previewError);
+                        complete(preview, previewError);
+                    } else runGit(m_root, arguments, complete, true);
+                }, true);
+                return;
+            }
+        } else if (action == "undoCommit") arguments = {"reset", "--soft", "HEAD~1"};
+        else if (action == "commitStaged") arguments = commitArguments;
+        else if (action == "stashAll") arguments = {"stash", "push", "--include-untracked"};
+        else if (action == "stashTracked") arguments = {"stash", "push"};
+        else if (action == "stashPop") arguments = {"stash", "pop"};
+        else if (action == "discardTracked") arguments = {"restore", "--source=HEAD", "--staged", "--worktree", "--", "."};
+        else if (action == "stageFile") arguments = {"--literal-pathspecs", "add", "--", message};
+        else if (action == "stageAll") arguments = {"add", "--all", "--", "."};
+                else if (action == "stageTracked" || action == "unstageTracked") {
+                    QStringList paths;
+                    for (const auto &entry : m_changedFiles) {
+                        const auto file = entry.toMap();
+                        if (!file.value("untracked").toBool())
+                            paths.append(file.value("path").toString());
+                    }
+                    if (paths.isEmpty()) { complete({}, {}); return; }
+                    arguments = {"--literal-pathspecs", action == "stageTracked" ? "add" : "reset", "--"};
+                    arguments.append(paths);
+                }
+        else if (action == "unstageFile" || action == "unstageAll") {
+            // reset also supports an unborn branch, unlike restore --staged.
+            arguments = {"--literal-pathspecs", "reset", "--", action == "unstageAll" ? "." : message};
+        } else if (action == "trashUntracked") {
+            runGit(m_root, {"ls-files", "--others", "--exclude-standard", "-z"},
+                [this, complete](const QByteArray &out, const QString &error) {
+                    if (!error.isEmpty()) { complete({}, error); return; }
+                    QStringList paths;
+                    for (const auto &name : out.split('\0')) {
+                        if (name.isEmpty()) continue;
+                        const auto path = confined(QFile::decodeName(name));
+                        if (path.isEmpty()) { complete({}, "Unsafe untracked path; nothing was trashed"); return; }
+                        paths.append(path);
+                    }
+                    for (const auto &path : paths) {
+                        if (m_writeValidator) {
+                            const auto rejection = m_writeValidator();
+                            if (!rejection.isEmpty()) { complete({}, rejection); return; }
+                        }
+                        const auto relative = QDir(m_root).relativeFilePath(path);
+                        if (confined(relative) != path || !QFile::moveToTrash(path)) {
+                            complete({}, "Cannot safely trash " + relative + "; earlier files may have been trashed"); return;
+                        }
+                    }
+                    complete({}, {});
+                }, true);
+            return;
+        }
+        if (action == "pull") arguments += QStringList{"--ff-only", "--no-rebase", "--no-autostash"};
+        runGit(m_root, arguments, complete, true);
+    }
+}
+
+void GitWorkspace::openSystemTerminal() {
+    const auto reject = [this](const QString &message) {
+        m_gitMessage = message;
+        emit gitStateChanged();
+    };
+    if (m_root.isEmpty() || m_resolving) { reject("No repository is ready"); return; }
+    if (m_writeValidator) {
+        const auto error = m_writeValidator();
+        if (!error.isEmpty()) { reject(error); return; }
+    }
+    const auto launch = [this](const QString &name, const QStringList &arguments) {
+        const auto executable = QStandardPaths::findExecutable(name);
+        return !executable.isEmpty() && QProcess::startDetached(executable, arguments, m_root);
+    };
+#ifdef Q_OS_WIN
+    if (launch("wt.exe", {"-d", m_root}) || launch("cmd.exe", {"/K"})) return;
+#elif defined(Q_OS_LINUX)
+    if (launch("x-terminal-emulator", {})
+        || launch("konsole", {"--workdir", m_root})
+        || launch("gnome-terminal", {"--working-directory", m_root})
+        || launch("kitty", {"--directory", m_root})
+        || launch("alacritty", {"--working-directory", m_root})
+        || launch("xfce4-terminal", {"--working-directory", m_root})
+        || launch("foot", {"--working-directory", m_root})) return;
+#else
+    Q_UNUSED(launch);
+#endif
+    reject("Cannot launch a supported system terminal in " + m_root);
+}
+
+void GitWorkspace::updateGitStatus(const QByteArray &status) {
     m_gitStatus.clear();
-    const auto records = statusOutput.split('\0');
+    const auto records = status.split('\0');
     const auto mark = [this](QString path, const QString &status) {
         // Modified wins for directories containing a mixture of new and changed files.
         while (!path.isEmpty()) {
@@ -328,18 +748,24 @@ void GitWorkspace::updateWatches() {
 }
 
 void GitWorkspace::rebuildTree() {
+    const auto previousTree = m_tree;
+    const auto previousError = error();
     m_tree.clear();
     if (!m_root.isEmpty()) { appendTree({}, 0); updateWatches(); }
-    emit changed();
+    if (m_tree != previousTree) emit treeChanged();
+    if (error() != previousError) emit changed();
 }
 void GitWorkspace::finishRefresh() {
     m_refreshActive = false;
     rebuildTree();
+    // Periodic reconciliation must not perpetually queue another slow history read.
+    // Actions already refresh history when they finish.
+    if (!m_gitBusy) refreshGit();
     if (m_refreshAgain) { m_refreshAgain = false; m_refreshDebounce.start(); }
 }
 void GitWorkspace::refreshTree() {
     m_refreshDebounce.stop();
-    if (m_resolving || m_refreshActive) { m_refreshAgain = true; return; }
+    if (m_resolving || m_refreshActive || m_gitActionActive) { m_refreshAgain = true; return; }
     if (m_root.isEmpty()) {
         if (!m_repository.trimmed().isEmpty()) setRepositoryPath(m_repository);
         else rebuildTree();
@@ -349,25 +775,17 @@ void GitWorkspace::refreshTree() {
     m_refreshActive = true;
     const auto generation = m_gitGeneration;
     auto *watcher = new QFutureWatcher<Snapshot>(this);
-    connect(watcher, &QFutureWatcher<Snapshot>::finished, this, [this, watcher, generation] {
+    connect(watcher, &QFutureWatcher<Snapshot>::finished, this, [this, watcher, generation, revision = m_actionRevision] {
         const auto snapshot = watcher->result();
         watcher->deleteLater();
         if (generation != m_gitGeneration) return;
+        const auto previousGitError = m_gitError;
         if (!snapshot.error.isEmpty()) {
             m_gitError = snapshot.error; finishRefresh();
-        } else if (snapshot.filters) {
-            // libgit2 does not execute configured external clean/smudge drivers.
-            // Only status needs Git here; index paths always come from libgit2.
-            runGit(m_root, {"status", "--porcelain=v1", "-z", "--untracked-files=all"},
-                [this, tracked = snapshot.tracked](const QByteArray &status, const QString &error) {
-                    if (!error.isEmpty()) m_gitError = error;
-                    else { updateGitStatus(status); m_trackedFiles = tracked; m_gitError.clear(); }
-                    finishRefresh();
-                });
         } else {
-            m_gitStatus = snapshot.status; m_trackedFiles = snapshot.tracked;
-            m_gitError.clear(); finishRefresh();
+            refreshChanges(snapshot.tracked, revision);
         }
+        if (m_gitError != previousGitError) emit changed();
     });
     const auto root = QFile::encodeName(m_root);
     watcher->setFuture(QtConcurrent::run([root] {
@@ -686,6 +1104,8 @@ void GitWorkspace::clearTerminal() {
 #include <qqml.h>
 #include <QQmlComponent>
 #include <QQmlEngine>
+#include <QQmlExpression>
+#include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -717,6 +1137,216 @@ private slots:
         qmlRegisterUncreatableType<TerminalSession>(
             "DDetector.Terminal", 1, 0, "TerminalSession", "Owned by GitWorkspace");
 #endif
+    }
+    void outgoingCommitCount() {
+        QTemporaryDir temp, remote;
+        QVERIFY(temp.isValid());
+        QVERIFY(remote.isValid());
+        const auto git = [&](const QStringList &args) {
+            QProcess process;
+            process.setWorkingDirectory(temp.path());
+            process.start("git", args);
+            return process.waitForFinished(5000) && process.exitCode() == 0;
+        };
+        QVERIFY(git({"init", "--bare", "-q", remote.path()}));
+        QVERIFY(git({"init", "-q"}));
+        QVERIFY(git({"config", "user.name", "Test"}));
+        QVERIFY(git({"config", "user.email", "test@example.invalid"}));
+        QVERIFY(git({"commit", "--allow-empty", "-qm", "initial"}));
+        GitWorkspace workspace;
+        workspace.setRepositoryPath(temp.path());
+        QTRY_COMPARE(workspace.commits().size(), 1);
+        QCOMPARE(workspace.aheadCount(), 0);
+        QVERIFY(git({"remote", "add", "origin", remote.path()}));
+        QVERIFY(git({"push", "-qu", "origin", "HEAD"}));
+        QVERIFY(git({"commit", "--allow-empty", "-qm", "outgoing"}));
+        workspace.refreshGit();
+        QTRY_COMPARE(workspace.aheadCount(), 1);
+        workspace.gitAction("push");
+        QTRY_COMPARE(workspace.aheadCount(), 0);
+        QTRY_VERIFY(!workspace.gitBusy());
+        QVERIFY(git({"branch", "--unset-upstream"}));
+        QVERIFY(git({"commit", "--allow-empty", "-qm", "no upstream"}));
+        workspace.refreshGit();
+        QTRY_COMPARE(workspace.commits().size(), 3);
+        QCOMPARE(workspace.aheadCount(), 0);
+    }
+
+    void repositoryDiscoveryNotifiesReadyState() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QProcess git;
+        git.start("git", {"init", "-q", temp.path()});
+        QVERIFY(git.waitForFinished(5000));
+        QCOMPARE(git.exitCode(), 0);
+        GitWorkspace workspace;
+        bool readyNotified = false;
+        connect(&workspace, &GitWorkspace::changed, &workspace, [&] {
+            if (!workspace.resolving() && workspace.rootPath() == temp.path())
+                readyNotified = true;
+        });
+        workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving());
+        QCOMPARE(workspace.rootPath(), temp.path());
+        QVERIFY(readyNotified);
+    }
+    void expandedGitChanges() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto git = [&](const QStringList &args) {
+            QProcess process;
+            process.setWorkingDirectory(temp.path());
+            process.start("git", args);
+            return process.waitForFinished(5000) && process.exitCode() == 0;
+        };
+        QVERIFY(git({"init", "-q"}));
+        QVERIFY(git({"config", "user.name", "Test"}));
+        QVERIFY(git({"config", "user.email", "test@example.invalid"}));
+        QFile file(temp.filePath("literal[1].txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("one\n"); file.close();
+        GitWorkspace workspace;
+        workspace.setRepositoryPath(temp.path());
+        const auto change = [&](const QString &path) {
+            for (const auto &row : workspace.changedFiles()) {
+                const auto item = row.toMap();
+                if (item.value("path").toString() == path) return item;
+            }
+            return QVariantMap{};
+        };
+        QTRY_COMPARE(workspace.changedFiles().size(), 1);
+        QVERIFY(change("literal[1].txt").value("untracked").toBool());
+        workspace.viewDiff("literal[1].txt");
+        QTRY_VERIFY(!workspace.gitBusy());
+        QVERIFY(workspace.diffText().contains("one\n"));
+        workspace.stageFile("literal[1].txt", true);
+        QTRY_VERIFY(!workspace.gitBusy() && !workspace.m_refreshActive);
+        QTRY_VERIFY(change("literal[1].txt").value("staged").toBool());
+        QCOMPARE(change("literal[1].txt").value("additions").toInt(), 1);
+        workspace.gitAction("commitStaged", "initial");
+        QTRY_VERIFY(!workspace.gitBusy() && !workspace.m_refreshActive);
+        QTRY_VERIFY(workspace.changedFiles().isEmpty());
+        QVERIFY(file.open(QIODevice::Append));
+        file.write("two\n"); file.close();
+        workspace.refreshTree();
+        QTRY_COMPARE(workspace.changedFiles().size(), 1);
+        QTRY_COMPARE(change("literal[1].txt").value("additions").toInt(), 1);
+        QSignalSpy diffs(&workspace, &GitWorkspace::diffChanged);
+        // A diff takes priority over history reads without sharing their process slot.
+        workspace.refreshGit();
+        workspace.viewDiff("literal[1].txt");
+        QTRY_VERIFY(!workspace.gitBusy());
+        QCOMPARE(diffs.size(), 1);
+        QVERIFY(workspace.diffText().contains("+two"));
+        QVERIFY(git({"add", "--", "literal[1].txt"}));
+        QVERIFY(git({"commit", "-qm", "second"}));
+        workspace.gitAction("undoCommit");
+        QTRY_VERIFY(!workspace.gitBusy() && !workspace.m_refreshActive);
+        QVERIFY2(workspace.gitMessage().startsWith("undoCommit succeeded"), qPrintable(workspace.gitMessage()));
+        QTRY_COMPARE(workspace.changedFiles().size(), 1);
+        // A stale refresh can finish before its debounced replacement starts.
+        // Wait for the requested file state, not just an idle process lane.
+        QTRY_VERIFY(change("literal[1].txt").value("staged").toBool());
+        workspace.stageAll(false);
+        QTRY_VERIFY(!workspace.gitBusy() && !workspace.m_refreshActive);
+        QTRY_COMPARE(change("literal[1].txt").value("status").toString(), QString(" M"));
+        workspace.setWriteValidator([] { return QString("blocked"); });
+        workspace.stageAll(true);
+        QCOMPARE(workspace.gitMessage(), QString("blocked"));
+        QVERIFY(!change("literal[1].txt").value("staged").toBool());
+        QVERIFY(!workspace.validGitPath("../outside"));
+        QVERIFY(!workspace.validGitPath(".git/config"));
+        const auto writeUntracked = [&](const QString &name, const QByteArray &bytes) {
+            QFile extra(temp.filePath(name));
+            return extra.open(QIODevice::WriteOnly) && extra.write(bytes) == bytes.size();
+        };
+        QVERIFY(writeUntracked("aaa.txt", "plain text\n"));
+        QVERIFY(writeUntracked("binary.bin", QByteArray("a\0b", 3)));
+        QVERIFY(writeUntracked("huge.txt", QByteArray(GitWorkspace::MaximumTextBytes + 1, 'x')));
+        workspace.refreshTree();
+        QTRY_COMPARE(workspace.changedFiles().size(), 4);
+        bool sawUntracked = false;
+        for (const auto &row : workspace.changedFiles()) {
+            const bool untracked = row.toMap().value("untracked").toBool();
+            QVERIFY(!sawUntracked || untracked);
+            sawUntracked |= untracked;
+        }
+        workspace.viewDiff("aaa.txt");
+        QTRY_VERIFY(!workspace.gitBusy());
+        QVERIFY(workspace.diffText().contains("plain text"));
+        workspace.viewDiff("binary.bin");
+        QTRY_VERIFY(!workspace.gitBusy());
+        QVERIFY(workspace.diffText().contains("Binary"));
+        workspace.viewDiff("huge.txt");
+        QTRY_VERIFY(!workspace.gitBusy());
+        QVERIFY(workspace.diffText().contains("too large"));
+#ifdef Q_OS_UNIX
+        QVERIFY(QFile::link(temp.filePath("aaa.txt"), temp.filePath("link.txt")));
+        workspace.viewDiff("link.txt");
+        QVERIFY(workspace.gitMessage().contains("Invalid"));
+#endif
+    }
+    void unchangedPollingDoesNotResetModels() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto git = [&](const QStringList &arguments) {
+            QProcess process;
+            process.setWorkingDirectory(temp.path());
+            process.start("git", arguments);
+            return process.waitForFinished(5000) && process.exitCode() == 0;
+        };
+        QVERIFY(git({"init", "-q"}));
+        QFile file(temp.filePath("tracked.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("original\n"); file.close();
+        QVERIFY(git({"add", "."}));
+        QVERIFY(git({"-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                     "commit", "-qm", "initial"}));
+        GitWorkspace workspace;
+        workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving() && !workspace.m_refreshActive && !workspace.m_gitBusy);
+        QCOMPARE(workspace.commits().size(), 1);
+        const auto tree = workspace.tree();
+        const auto commits = workspace.commits();
+        QSignalSpy treeChanges(&workspace, &GitWorkspace::treeChanged);
+        QSignalSpy historyChanges(&workspace, &GitWorkspace::gitChanged);
+        QSignalSpy stateChanges(&workspace, &GitWorkspace::gitStateChanged);
+        QSignalSpy changes(&workspace, &GitWorkspace::changed);
+        // Exercise the actual reconciliation timer, not just a direct refresh.
+        workspace.m_refreshDebounce.stop();
+        workspace.m_reconcile.start(100);
+        QTest::qWait(450);
+        workspace.m_reconcile.stop();
+        QTRY_VERIFY(!workspace.m_refreshActive && !workspace.m_gitBusy);
+                QVERIFY(!workspace.gitBusy());
+                QCOMPARE(stateChanges.size(), 0);
+        QCOMPARE(workspace.tree(), tree);
+        QCOMPARE(workspace.commits(), commits);
+        QCOMPARE(treeChanges.size(), 0);
+        QCOMPARE(historyChanges.size(), 0);
+        QCOMPARE(changes.size(), 0);
+
+        // Real external changes must still reach both models.
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Append));
+        file.write("external\n"); file.close();
+        workspace.refreshTree();
+        QTRY_VERIFY(!treeChanges.isEmpty());
+        QVERIFY(git({"-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                     "commit", "-qam", "external"}));
+        workspace.refreshTree();
+        QTRY_COMPARE(workspace.commits().size(), 2);
+        QVERIFY(!historyChanges.isEmpty());
+
+        QTRY_VERIFY(!workspace.m_gitBusy);
+        workspace.refreshGit();
+        QVERIFY(workspace.m_gitBusy);
+        QVERIFY(!workspace.gitBusy());
+        // A click during a background read starts an action rather than rejecting it.
+        workspace.gitAction("commit", "action during polling");
+        QVERIFY(workspace.gitBusy());
+        QTRY_VERIFY(!workspace.m_gitActionActive);
+        QVERIFY(workspace.gitMessage() != "Wait for the current Git operation");
+        QTRY_VERIFY(!workspace.m_gitBusy);
     }
     void statusAndAutomaticRefresh() {
         QTemporaryDir temp;
@@ -758,7 +1388,7 @@ private slots:
         workspace.toggleDirectory("nested");
         QVERIFY(write(unusual, "new\n"));
         QTRY_COMPARE_WITH_TIMEOUT(metadata(unusual, "status"), QString("new"), 3000);
-        QCOMPARE(metadata(unusual, "statusColor"), QString("#008a4f"));
+        QCOMPARE(metadata(unusual, "statusColor"), QString("#00a682"));
         QCOMPARE(metadata("nested", "status"), QString("new"));
         QVERIFY(git({"add", "--", unusual}));
         QTest::qWait(150);
@@ -1181,6 +1811,73 @@ private slots:
         QCOMPARE(editor->property("text").toString(), QString());
     }
 
+    void qmlExpandedGeometry() {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        QProcess git; git.start("git", {"init", temp.path()});
+        QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        GitWorkspace backend;
+        backend.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!backend.resolving());
+        QVERIFY(!backend.rootPath().isEmpty());
+        QQmlEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        QQmlComponent component(&engine, QUrl("qrc:/GitWorkspace.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(1200, 800);
+        QScopedPointer<QObject> object(component.createWithInitialProperties({
+            {"workspaceBackend", QVariant::fromValue<QObject *>(&backend)},
+            {"expanded", true}
+        }));
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto *root = qobject_cast<QQuickItem *>(object.data()); QVERIFY(root);
+        root->setParentItem(window.contentItem());
+        root->setSize(QSizeF(1200, 800));
+        auto *mainSplit = root->findChild<QQuickItem *>("gitMainSplit"); QVERIFY(mainSplit);
+        auto *editorSplit = root->findChild<QQuickItem *>("gitEditorSplit"); QVERIFY(editorSplit);
+        auto *editorPane = root->findChild<QQuickItem *>("gitEditorPane"); QVERIFY(editorPane);
+        auto *actions = root->findChild<QQuickItem *>("gitActionsPanel"); QVERIFY(actions);
+        auto *tabs = root->findChild<QQuickItem *>("gitTabs"); QVERIFY(tabs);
+        auto *editorHeader = root->findChild<QQuickItem *>("gitEditorHeader"); QVERIFY(editorHeader);
+        window.show();
+        QTest::qWait(100);
+        for (auto *pane : {editorSplit, editorPane, actions}) {
+            QQmlExpression attached(QQmlEngine::contextForObject(pane), pane,
+                "JSON.stringify({fillWidth: SplitView.fillWidth, fillHeight: SplitView.fillHeight, "
+                "minimumWidth: SplitView.minimumWidth, preferredWidth: SplitView.preferredWidth, "
+                "maximumWidth: SplitView.maximumWidth, view: String(SplitView.view)})");
+            qInfo() << pane->objectName() << "position" << pane->mapToItem(root, QPointF())
+                    << "size" << pane->size() << "attached" << attached.evaluate()
+                    << attached.error();
+        }
+        for (int cycle = 0; cycle < 4; ++cycle) {
+            QVERIFY(root->setProperty("expanded", true));
+            QTest::qWait(100);
+            qInfo() << "cycle" << cycle << "root" << root->size()
+                    << "split" << editorSplit->size() << "editor" << editorPane->size()
+                    << "actions" << actions->size() << actions->mapToItem(root, QPointF());
+            QTRY_VERIFY(mainSplit->isVisible());
+            QTRY_VERIFY(qAbs(tabs->height() - 30) <= 1);
+            QTRY_VERIFY(qAbs(tabs->mapToItem(actions, QPointF()).y()) <= 1);
+            QVERIFY(root->setProperty("showingDiff", true));
+            QTRY_VERIFY(!editorHeader->isVisible());
+            QTRY_VERIFY(qAbs(mainSplit->width() - root->width()) <= 1);
+            // Allow the divider, but no unallocated space to the right of either pane.
+            QTRY_VERIFY(qAbs(editorSplit->width() + actions->width() - root->width()) <= 2);
+            QTRY_VERIFY(qAbs(actions->mapToItem(root, QPointF(actions->width(), 0)).x()
+                                - root->width()) <= 1);
+            QTRY_VERIFY(qAbs(editorSplit->mapToItem(root, QPointF()).x()) <= 1);
+            QTRY_VERIFY(editorPane->width() >= root->width() / 3);
+            QTRY_VERIFY(editorPane->width() < editorSplit->width());
+            QVERIFY(root->setProperty("expanded", false));
+            QTRY_VERIFY(qAbs(editorSplit->width() - root->width()) <= 1);
+            QTRY_VERIFY(qAbs(actions->width() - root->width()) <= 1);
+            QTRY_VERIFY(actions->mapToItem(root, QPointF()).y()
+                        >= editorSplit->mapToItem(root, QPointF(0, editorSplit->height())).y());
+        }
+        QCOMPARE(warnings.count(), 0);
+    }
+
     void qmlComponent() {
         QQmlEngine engine;
         QSignalSpy warnings(&engine, &QQmlEngine::warnings);
@@ -1202,7 +1899,14 @@ private slots:
         GitWorkspace backend;
         QVERIFY(object->setProperty("workspaceBackend", QVariant::fromValue<QObject *>(&backend)));
         backend.setRepositoryPath(temp.path()); QTRY_VERIFY(!backend.resolving()); backend.openFile("a.txt");
-        QTest::qWait(50); QCOMPARE(warnings.count(), 0);
+        QVERIFY(object->setProperty("expanded", true));
+        item->setSize(QSizeF(1200, 800));
+        window.resize(1200, 800);
+        QTRY_COMPARE(backend.changedFiles().size(), 1);
+        QTest::qWait(50);
+        QCOMPARE(item->size(), QSizeF(1200, 800));
+        QCOMPARE(object->property("expanded").toBool(), true);
+        QCOMPARE(warnings.count(), 0);
         backend.setText("edited"); backend.requestClose();
         QTest::qWait(50); QCOMPARE(warnings.count(), 0);
         backend.resolveUnsaved("cancel");

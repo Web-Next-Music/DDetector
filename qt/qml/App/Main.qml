@@ -31,6 +31,7 @@ ApplicationWindow {
     property bool developmentToolsEnabled: false
     property var updater: null
     property int rightPage: 0
+    property bool gitExpanded: false
     property bool workspaceCloseApproved: false
     property int activeModalCount: 0
     readonly property bool raiseWindowChrome: activeModalCount > 0
@@ -938,9 +939,10 @@ ApplicationWindow {
         }
         Rectangle {
             id: rightPanel
-            x: panels.leftPanelWidth + 1
+            z: 2
+            x: appUi.rightPage === 1 && appUi.gitExpanded ? 0 : panels.leftPanelWidth + 1
             y: 0
-            width: panels.width - panels.leftPanelWidth - 1
+            width: panels.width - x
             height: panels.height
             color: appUi.bg
             Rectangle {
@@ -1004,6 +1006,12 @@ ApplicationWindow {
                         SiteToolTip { text: activityButton.index === 0 ? "Lyrics" : activityButton.index === 1 ? "Git" : "Censor Detector" }
                         Accessible.name: index === 0 ? "Lyrics" : index === 1 ? "Git" : "Censor Detector"
                         onClicked: appUi.rightPage = index
+                        onDoubleClicked: {
+                            if (index === 1) {
+                                appUi.rightPage = 1
+                                appUi.gitExpanded = !appUi.gitExpanded
+                            }
+                        }
                     }
                 }
             }
@@ -1021,6 +1029,8 @@ ApplicationWindow {
                     GitWorkspace {
                         objectName: "gitWorkspaceView"
                         pageActive: workspaceLoader.visible
+                        expanded: appUi.gitExpanded
+                        bg: appUi.bg
                         workspaceBackend: appUi.workspace
                         onNotify: function(message) { appUi.notify(message); }
                     }

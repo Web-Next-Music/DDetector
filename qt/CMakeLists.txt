@@ -80,6 +80,7 @@ endforeach()
 # migrated together. A QML module must not silently change the engine entry URL.
 set(SHARED_QML
     qml/Components/SiteFocusRing.qml qml/Components/SiteIcon.qml qml/Components/SiteButton.qml
+    qml/Components/SiteCheckBox.qml qml/Components/SiteSplitButton.qml qml/Components/GitDiffView.qml
     qml/Components/SiteTextField.qml qml/Components/SiteComboBox.qml qml/Components/SiteSpinBox.qml
     qml/Components/SiteSettingsCard.qml qml/Components/SiteToggleRow.qml qml/Components/SiteSpinner.qml qml/Components/SiteProgressRing.qml
     qml/Components/FileIcon.qml qml/Components/SiteMenu.qml qml/Components/SiteMenuItem.qml

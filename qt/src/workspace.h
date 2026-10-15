@@ -24,7 +24,15 @@ class GitWorkspace : public QObject {
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(bool resolving READ resolving NOTIFY changed)
-    Q_PROPERTY(QVariantList tree READ tree NOTIFY changed)
+    Q_PROPERTY(QVariantList tree READ tree NOTIFY treeChanged)
+    Q_PROPERTY(QVariantList commits READ commits NOTIFY gitChanged)
+    Q_PROPERTY(QVariantList changedFiles READ changedFiles NOTIFY changesChanged)
+    Q_PROPERTY(QVariantList stashes READ stashes NOTIFY stashesChanged)
+    Q_PROPERTY(QString branch READ branch NOTIFY gitChanged)
+        Q_PROPERTY(int aheadCount READ aheadCount NOTIFY gitChanged)
+    Q_PROPERTY(QString diffText READ diffText NOTIFY diffChanged)
+    Q_PROPERTY(bool gitBusy READ gitBusy NOTIFY gitStateChanged)
+    Q_PROPERTY(QString gitMessage READ gitMessage NOTIFY gitStateChanged)
     Q_PROPERTY(QString terminalOutput READ terminalOutput NOTIFY terminalChanged)
     Q_PROPERTY(bool terminalRunning READ terminalRunning NOTIFY terminalChanged)
     Q_PROPERTY(TerminalSession *terminalSession READ terminalSession CONSTANT)
@@ -40,7 +48,7 @@ public:
     bool dirty() const { return m_text != m_saved; }
     QString error() const;
     bool resolving() const { return m_resolving; }
-    bool canChangeRepository() const { return !dirty() && !m_pending && !terminalRunning() && !m_resolving; }
+    bool canChangeRepository() const { return !dirty() && !m_pending && !terminalRunning() && !m_resolving && !m_gitActionActive; }
     void setRepositoryValidator(std::function<QString(const QString &)> validator) { m_repositoryValidator = std::move(validator); }
     void setWriteValidator(std::function<QString()> validator) { m_writeValidator = std::move(validator); }
         QVariantList tree() const { return m_tree; }
@@ -51,6 +59,22 @@ public:
     void setText(const QString &text);
     Q_INVOKABLE void activate();
     Q_INVOKABLE bool editDocument(int revision, const QString &text);
+    QVariantList commits() const { return m_commits; }
+    QString branch() const { return m_branch; }
+        int aheadCount() const { return m_aheadCount; }
+    bool gitBusy() const { return m_gitActionActive; }
+    QString gitMessage() const { return m_gitMessage; }
+    QVariantList changedFiles() const { return m_changedFiles; }
+    QVariantList stashes() const { return m_stashes; }
+    Q_INVOKABLE void stageFile(const QString &path, bool staged);
+    Q_INVOKABLE void stageAll(bool staged);
+    QString diffText() const { return m_diffText; }
+    Q_INVOKABLE void viewDiff(QString path = QString());
+    Q_INVOKABLE void refreshStashes();
+    Q_INVOKABLE void refreshGit();
+    Q_INVOKABLE void gitAction(QString action, QString message = QString());
+    Q_INVOKABLE void commitWithOptions(QString message, bool amend, bool signoff, bool skipHooks, bool stagedOnly = false);
+    Q_INVOKABLE void openSystemTerminal();
     Q_INVOKABLE void refreshTree();
     Q_INVOKABLE void toggleDirectory(const QString &relativePath);
     Q_INVOKABLE void openFile(const QString &relativePath);
@@ -71,6 +95,13 @@ signals:
     void documentAboutToChange();
     void documentChanged();
     void terminalChanged();
+    void gitChanged();
+    void changesChanged();
+    void stashesChanged();
+    void diffChanged();
+        void gitStateChanged();
+        void treeChanged();
+    void commitSucceeded();
     void unsavedPrompt();
     void closeApproved();
 private:
@@ -82,9 +113,12 @@ private:
     void rebuildTree();
     void updateWatches();
     using GitCallback = std::function<void(const QByteArray &, const QString &)>;
-    void runGit(const QString &directory, const QStringList &arguments, GitCallback callback);
+    void runGit(const QString &directory, const QStringList &arguments, GitCallback callback, bool operations = false);
     void cancelGit();
+    void gitActionWithOptions(QString action, QString message, bool amend, bool signoff, bool skipHooks);
     void finishRefresh();
+    void refreshChanges(const QStringList &tracked, quint64 revision);
+    bool validGitPath(const QString &path) const;
     void fail(const QString &message);
     void appendOutput(const QString &text);
     QString m_repository, m_root, m_file, m_text, m_saved, m_error, m_output;
@@ -103,6 +137,12 @@ private:
     QFileSystemWatcher m_watcher;
     QTimer m_refreshDebounce, m_reconcile;
     QProcess *m_git = nullptr;
+    QProcess *m_gitOperation = nullptr;
+    QVariantList m_commits, m_changedFiles, m_stashes;
+    quint64 m_actionRevision = 0;
+    QString m_branch, m_gitMessage, m_diffText;
+        int m_aheadCount = 0;
+    bool m_gitBusy = false, m_gitActionActive = false, m_gitRefreshAgain = false;
     quint64 m_gitGeneration = 0;
     bool m_resolving = false, m_refreshActive = false, m_refreshAgain = false;
     bool m_activationRequested = false;
