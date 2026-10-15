@@ -535,6 +535,10 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.maximumWidth: 300
                 Layout.preferredHeight: 30
+                focusRingEnabled: false
+                topPadding: 0
+                bottomPadding: 0
+                verticalAlignment: TextInput.AlignVCenter
                 placeholderText: "Search (Enter)"
                 color: appUi.ink
                 placeholderTextColor: "#999999"

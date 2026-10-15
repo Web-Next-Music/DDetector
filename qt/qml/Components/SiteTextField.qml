@@ -4,6 +4,7 @@ import QtQuick.Controls
 
 TextField {
     id: control
+    property bool focusRingEnabled: true
     implicitHeight: 36
     padding: 10
     leftPadding: 12
@@ -23,6 +24,6 @@ TextField {
         opacity: control.enabled ? 1 : 0.55
     }
     SiteFocusRing {
-        active: control.activeFocus
+        active: control.focusRingEnabled && control.activeFocus
     }
 }
