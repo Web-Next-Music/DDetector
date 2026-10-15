@@ -912,6 +912,7 @@ ApplicationWindow {
         clip: true
         ListView {
             id: trackList
+            visible: !(appUi.rightPage === 1 && appUi.gitExpanded)
             x: 10
             y: 10
             width: panels.leftPanelWidth - 20
@@ -957,6 +958,10 @@ ApplicationWindow {
             width: panels.width - x
             height: panels.height
             color: appUi.bg
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+            }
             Rectangle {
                 anchors.fill: activityBar
                 color: appUi.surface
