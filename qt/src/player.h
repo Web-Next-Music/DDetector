@@ -59,6 +59,7 @@ public:
     double volume() const { return m_audio.volume(); }
     Q_INVOKABLE void setToken(QString token);
     Q_INVOKABLE void playTrack(QString trackId);
+    Q_INVOKABLE void playFromClipboard();
     Q_INVOKABLE void playAt(QString trackId, QString timestamp);
     Q_INVOKABLE void toggle();
     Q_INVOKABLE void pause();

@@ -35,6 +35,15 @@ ApplicationWindow {
     property bool workspaceCloseApproved: false
     property int activeModalCount: 0
     readonly property bool raiseWindowChrome: activeModalCount > 0
+    Shortcut {
+        sequence: StandardKey.Paste
+        context: Qt.WindowShortcut
+        enabled: !!appUi.player && appUi.player.enabled && !appUi.player.busy
+            && appUi.activeModalCount === 0 && !appUi.gitExpanded
+            && !(appUi.activeFocusItem instanceof TextInput)
+            && !(appUi.activeFocusItem instanceof TextEdit)
+        onActivated: appUi.player.playFromClipboard()
+    }
     onClosing: function(event) {
         if (appUi.updater && appUi.updater.busy) {
             event.accepted = false;

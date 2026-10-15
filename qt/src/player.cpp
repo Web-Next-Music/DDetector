@@ -2,6 +2,8 @@
 
 #include <QAudioBuffer>
 #include <QCryptographicHash>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -296,6 +298,21 @@ void MusicPlayer::setToken(QString token) {
         m_enabled = true; m_busy = false;
         emit stateChanged();
     });
+}
+
+void MusicPlayer::playFromClipboard() {
+    if (!m_enabled || m_busy) return;
+    const QString text = QGuiApplication::clipboard()->text().trimmed();
+    QString id = text;
+    if (!validTrackId(id)) {
+        const QUrl url(text, QUrl::StrictMode);
+        if (!url.isValid() || (url.scheme() != "https" && url.scheme() != "http") || url.host().isEmpty()) return;
+        static const QRegularExpression trackPath(QStringLiteral("/track/([0-9]{1,20})(?:/|$)"));
+        const auto match = trackPath.match(url.path());
+        if (!match.hasMatch()) return;
+        id = match.captured(1);
+    }
+    if (id != m_trackId) playTrack(id);
 }
 
 void MusicPlayer::playTrack(QString trackId) {
