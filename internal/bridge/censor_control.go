@@ -222,7 +222,7 @@ func (rt *censorRuntime) control(ctx context.Context, i CensorIdentity, in censo
 	if unavailable && in.Action != "native_configure" && in.Action != "approve" && in.Action != "fetch" && in.Action != "pause" && in.Action != "stop" {
 		return ErrCensorUnavailable
 	}
-	if busy && in.Action != "pause" && in.Action != "stop" {
+	if busy && in.Action != "pause" && in.Action != "stop" && in.Action != "settings" {
 		return ErrCensorConflict
 	}
 	switch in.Action {

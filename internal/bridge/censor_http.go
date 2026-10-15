@@ -158,6 +158,8 @@ func censorFailure(w http.ResponseWriter, err error) {
 		failure(w, 400, "invalid censor control parameters")
 	case errors.Is(err, ErrCensorDenied):
 		failure(w, 403, "censor access denied")
+	case errors.Is(err, ErrCensorSettingsBusy):
+		failure(w, http.StatusConflict, ErrCensorSettingsBusy.Error())
 	case errors.Is(err, ErrCensorConflict):
 		failure(w, 409, "censor selection is stale")
 	case errors.Is(err, ErrCensorNotFound):

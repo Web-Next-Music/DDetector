@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var ErrCensorSettingsBusy = errors.New("Censor settings are waiting for active processing to finish")
+
 type CensorSettings struct {
 	Workers    int    `json:"workers"`
 	Mode       string `json:"mode"`
@@ -144,7 +146,7 @@ func (rt *censorRuntime) applySettings(ctx context.Context, p censorSettingsPatc
 	rt.mu.Lock()
 	if rt.running || rt.commandActive {
 		rt.mu.Unlock()
-		return ErrCensorConflict
+		return ErrCensorSettingsBusy
 	}
 	old := rt.disk.Settings
 	rt.mu.Unlock()
@@ -155,7 +157,7 @@ func (rt *censorRuntime) applySettings(ctx context.Context, p censorSettingsPatc
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.running || rt.commandActive {
-		return ErrCensorConflict
+		return ErrCensorSettingsBusy
 	}
 	rt.disk.Settings = next
 	if e := rt.persistLocked(); e != nil {

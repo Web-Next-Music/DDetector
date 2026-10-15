@@ -56,6 +56,7 @@ type censorDiskState struct {
 	Jobs           []CensorJob    `json:"jobs"`
 }
 type CensorState struct {
+	SearchSites           []string       `json:"search_sites"`
 	Native                bool           `json:"native"`
 	NativeRepositoryReady bool           `json:"native_repository_ready"`
 	RepositoryPath        string         `json:"repo_path,omitempty"`
@@ -242,7 +243,13 @@ func (rt *censorRuntime) snapshot() CensorState {
 		}
 	}
 	metadataConfigured, metadataWarning := rt.metadataStatus()
-	return CensorState{Native: isNative, NativeRepositoryReady: repositoryReady, RepositoryPath: repo, RepositoryError: repositoryError, RequestSource: source, Ready: !rt.sourceUnavailable, Configured: !rt.sourceUnavailable, Running: rt.running || rt.commandActive, Busy: rt.commandActive, Paused: rt.paused, Settings: rt.disk.Settings, Jobs: jobs, Stats: stats, Error: msg, RollbackSupported: rollback, MetadataConfigured: metadataConfigured, MetadataWarning: metadataWarning}
+	var searchSites []string
+	if isNative {
+		for _, site := range directSites {
+			searchSites = append(searchSites, site.host)
+		}
+	}
+	return CensorState{SearchSites: searchSites, Native: isNative, NativeRepositoryReady: repositoryReady, RepositoryPath: repo, RepositoryError: repositoryError, RequestSource: source, Ready: !rt.sourceUnavailable, Configured: !rt.sourceUnavailable, Running: rt.running || rt.commandActive, Busy: rt.commandActive, Paused: rt.paused, Settings: rt.disk.Settings, Jobs: jobs, Stats: stats, Error: msg, RollbackSupported: rollback, MetadataConfigured: metadataConfigured, MetadataWarning: metadataWarning}
 }
 func (rt *censorRuntime) jobLocked(id string) (*CensorJob, error) {
 	for n := range rt.disk.Jobs {

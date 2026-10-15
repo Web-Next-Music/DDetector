@@ -20,7 +20,8 @@ Rectangle {
     property var draft: defaults()
 
     readonly property string validationError: validateDraft()
-    readonly property bool editable: !saving && !unavailableReason
+    readonly property bool editable: !unavailableReason
+    readonly property bool processing: bridge ? bridge.censorState.running === true || bridge.censorState.busy === true : false
     readonly property int fieldWidth: Math.min(180, Math.max(100, width * 0.38))
     readonly property var modes: ["eco", "balanced", "performance"]
 
@@ -40,7 +41,7 @@ Rectangle {
         onTriggered: dialog.flushAutosave()
     }
     function flushAutosave() {
-        if (!bridge || unavailableReason || saving || bridge.censorBusy) return;
+        if (!bridge || unavailableReason || saving || bridge.censorBusy || processing) return;
         if (settingsQueued && !validationError) saveSettings();
     }
     onUnavailableReasonChanged: autosave.restart()
@@ -89,7 +90,7 @@ Rectangle {
         return "";
     }
     function saveSettings() {
-        if (!editable || validationError || !bridge || bridge.censorBusy) return;
+        if (!editable || saving || processing || validationError || !bridge || bridge.censorBusy) return;
         saveError = "";
         saving = true;
         const settings = Object.assign({}, draft);
@@ -115,7 +116,14 @@ Rectangle {
                 dialog.draftDirty = JSON.stringify(dialog.draft) !== JSON.stringify(dialog.settingsSubmitted);
                 dialog.saveFeedback = "Settings saved";
                 dialog.saved();
-            } else dialog.saveError = error || "The server did not accept the settings. Your changes have been retained";
+            } else {
+                dialog.draftDirty = true;
+                if (error === "Censor settings are waiting for active processing to finish") {
+                    dialog.settingsQueued = true;
+                } else {
+                    dialog.saveError = error || "The server did not accept the settings. Your changes have been retained";
+                }
+            }
             autosave.restart();
         }
     }

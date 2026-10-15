@@ -85,7 +85,7 @@ set(SHARED_QML
     qml/Components/FileIcon.qml qml/Components/SiteMenu.qml qml/Components/SiteMenuItem.qml
     qml/Components/SiteMenuSeparator.qml qml/Components/SiteEditMenu.qml qml/Components/SiteDialog.qml
     qml/Components/SiteToolTip.qml qml/Components/DialogHeader.qml qml/Components/WindowButton.qml
-    qml/Components/SiteQuote.qml qml/Components/SiteSectionCard.qml qml/Components/SiteSubtitle.qml
+    qml/Components/SiteQuote.qml qml/Components/SiteCodeBlock.qml qml/Components/SiteSectionCard.qml qml/Components/SiteSubtitle.qml
     qml/Components/ScrollEdgeShadow.qml qml/Components/NotificationStack.qml)
 set(APP_QML
     ${SHARED_QML} ${DEV_QML}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"ddetector-go/internal/censor"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,6 +51,81 @@ func TestCensorSettingsHTTPPersistenceAndValidation(t *testing.T) {
 	defer cancel()
 	if err := s.closeCensor(ctx, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCensorSettingsBusy(t *testing.T) {
+	for _, name := range []string{"running", "commandActive", "both", "sourceUnavailable"} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _ := integrationCensor(t)
+			state := controlAPI(t, s, map[string]any{"action": "settings", "settings": map[string]any{"workers": 3}}, http.StatusOK)
+			rt := s.censorRuntime
+			rt.mu.Lock()
+			rt.running = name == "running" || name == "both"
+			rt.commandActive = name == "commandActive" || name == "both" || name == "sourceUnavailable"
+			rt.sourceUnavailable = name == "sourceUnavailable"
+			rt.mu.Unlock()
+			defer func() {
+				rt.mu.Lock()
+				rt.running = false
+				rt.commandActive = false
+				rt.sourceUnavailable = false
+				rt.mu.Unlock()
+			}()
+
+			workers := 4
+			patch := censorSettingsPatch{Workers: &workers}
+			if err := rt.applySettings(context.Background(), patch); !errors.Is(err, ErrCensorSettingsBusy) || errors.Is(err, ErrCensorConflict) {
+				t.Fatalf("applySettings error = %v; want distinct settings busy error", err)
+			}
+			wantErr := ErrCensorSettingsBusy
+			wantStatus := http.StatusConflict
+			wantMessage := "Censor settings are waiting for active processing to finish"
+			if name == "sourceUnavailable" {
+				wantErr = ErrCensorUnavailable
+				wantStatus = http.StatusServiceUnavailable
+				wantMessage = "censor backend is unavailable; check native source, Yandex account and repository configuration"
+			}
+			if err := rt.control(context.Background(), CensorIdentity{}, censorControl{Action: "settings", Settings: &patch}); !errors.Is(err, wantErr) {
+				t.Fatalf("control error = %v; want %v", err, wantErr)
+			}
+			response := api(s, "POST", "/api/censor/control", `{"action":"settings","settings":{"workers":4}}`, "bridge-key")
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != wantStatus || body.Error != wantMessage {
+				t.Fatalf("response = %d %s", response.Code, response.Body)
+			}
+			if got := rt.settings(); got != state.Settings {
+				t.Fatalf("settings mutated: got %+v, want %+v", got, state.Settings)
+			}
+		})
+	}
+}
+
+func TestCensorSettingsStaleSelectionUnchanged(t *testing.T) {
+	s, _, _ := integrationCensor(t)
+	state := controlAPI(t, s, map[string]any{"action": "fetch"}, http.StatusOK)
+	if len(state.Jobs) == 0 {
+		t.Fatal("expected fetched job")
+	}
+	job := state.Jobs[0]
+	body, err := json.Marshal(map[string]any{"action": "retry", "id": job.ID, "request_id": job.Request.ID, "track_id": job.Request.TrackID + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := api(s, "POST", "/api/censor/control", string(body), "bridge-key")
+	var result struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || result.Error != "censor selection is stale" {
+		t.Fatalf("response = %d %s", response.Code, response.Body)
 	}
 }
 

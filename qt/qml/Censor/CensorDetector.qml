@@ -104,7 +104,49 @@ Rectangle {
         stopPlayers(); originalAudioUrl = ""; selectedId = ""; syncCurrentTrack();
     }
     onJobsChanged: syncCurrentTrack()
-    Component.onCompleted: syncCurrentTrack()
+    property string ipCountry: ""
+    property string ipCheckStatus: ""
+    readonly property string ipCountryName: ipCountry && bridge && bridge.countryName !== undefined
+        ? bridge.countryName(ipCountry) : "Unknown country"
+    property var ipRequest: null
+    function checkIpCountry() {
+        if (ipRequest) return;
+        ipCheckStatus = "Checking IP country...";
+        ipCountry = "";
+        const request = new XMLHttpRequest();
+        ipRequest = request;
+        request.onreadystatechange = function() {
+            if (request.readyState !== XMLHttpRequest.DONE || root.ipRequest !== request) return;
+            ipCheckTimeout.stop();
+            root.ipRequest = null;
+            let country = "";
+            if (request.status === 200) {
+                try {
+                    const data = JSON.parse(request.responseText);
+                    if (data && typeof data.cc === "string" && /^[A-Z]{2}$/.test(data.cc)) country = data.cc;
+                } catch (error) {
+                    country = "";
+                }
+            }
+            root.ipCountry = country;
+            root.ipCheckStatus = country ? "" : "Unable to determine your IP country. Check your connection.";
+        };
+        request.open("GET", "https://ident.me/json");
+        ipCheckTimeout.start();
+        request.send();
+    }
+    Timer {
+        id: ipCheckTimeout
+        interval: 10000
+        onTriggered: {
+            const request = root.ipRequest;
+            root.ipRequest = null;
+            if (request) request.abort();
+            root.ipCheckStatus = "Unable to determine your IP country. The request timed out.";
+        }
+    }
+    Component.onCompleted: { syncCurrentTrack(); if (pageActive) checkIpCountry(); }
+    Component.onDestruction: { if (ipRequest) { ipRequest.onreadystatechange = null; ipRequest.abort(); } }
     Connections {
         target: root.normalPlayer
         ignoreUnknownSignals: true
@@ -153,7 +195,7 @@ Rectangle {
     onCandidateChanged: if (!candidate) { replacement.stop(); approveDialog.close(); }
     onConfiguredChanged: if (!configured) { retryIds = []; stopPlayers(); }
     onVisibleChanged: if (!visible) stopPlayers()
-    onPageActiveChanged: if (!pageActive) stopPlayers()
+    onPageActiveChanged: { if (!pageActive) stopPlayers(); else checkIpCountry(); }
     function stopPlayers() { playing = false; resolvingPlayback = false; ++playbackRequestId; original.stop(); replacement.stop(); }
     function audioCandidate(c) {
         if (!c || c.full_audio !== true || c.downloadable !== true || !/^https:\/\/[^/?#@\s]+(?:[/?][^#\s]*)?$/.test(c.url || "")) return false;
@@ -243,10 +285,11 @@ Rectangle {
             return currentTrackError();
         }
         if (!bridge || !configured) return "Censor Detector is not configured or authorized";
+        if (action === "settings") return "";
         if (busy) return "Waiting for the current HTTP command";
         if (retryIds.length && action !== "pause" && action !== "stop") return "Retrying errored jobs one at a time";
         if (backendBusy && action !== "pause" && action !== "stop") return "A server command is active; pause or stop it first";
-        if (action === "settings") return censorState.running ? "Pause or stop analysis before changing settings" : "";
+
         if (["fetch", "start", "resume", "pause", "stop", "retry_errors"].indexOf(action) >= 0) {
             if (action === "retry_errors" && !retryableErrors.length) return "No retryable errors on this page. Publication errors require approving the same candidate; rollback errors require rollback";
             return "";
@@ -335,6 +378,35 @@ Rectangle {
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && root.listenCandidate && !root.resolvingPlayback) root.playing = false
         onErrorOccurred: function(error, errorString) { if (root.listenCandidate) { root.playbackError = errorString; root.playing = false; } }
     }
+    SiteDialog {
+        id: searchSitesDialog
+        objectName: "censorSearchSitesDialog"
+        title: "Search sites"
+        width: Math.min(520, parent ? parent.width - 32 : 520)
+        height: Math.min(600, parent ? parent.height - 32 : 600)
+        contentItem: ScrollView {
+            id: searchSitesScroll
+            clip: true
+            contentWidth: searchSitesScroll.availableWidth
+            ColumnLayout {
+                width: searchSitesScroll.availableWidth
+                spacing: 8
+                SiteCodeBlock {
+                    objectName: "censorSearchSitesCodeBlock"
+                    Layout.fillWidth: true
+                    visible: (root.censorState.search_sites || []).length > 0
+                    text: (root.censorState.search_sites || []).join("\n")
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !(root.censorState.search_sites || []).length
+                    text: "This search engine has not provided a list of sites."
+                    color: "#999999"
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+    }
     ScrollView {
         id: detectorScroll
         objectName: "censorScrollViewport"
@@ -344,6 +416,23 @@ Rectangle {
         ColumnLayout {
             width: detectorScroll.availableWidth
             spacing: 10
+
+            SiteQuote {
+                objectName: "censorVpnWarning"
+                Layout.fillWidth: true
+                visible: root.ipCountry.length > 0 && root.ipCountry !== "RU"
+                borderColor: "#ef4444"
+                textColor: "#fca5a5"
+                textFormat: Text.RichText
+                linkColor: textColor
+                keyboardLink: "search-sites"
+                text: ("Search may not work with a VPN enabled if your IP country is not Russia. Current country: "
+                    + root.ipCountryName + ". "
+                    + '<a href="search-sites">Search sites</a>.')
+                onLinkActivated: searchSitesDialog.open()
+            }
+
+
 
                 SiteSettingsCard {
                     Layout.fillWidth: true

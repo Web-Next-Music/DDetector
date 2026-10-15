@@ -189,8 +189,10 @@ void Bridge::censorCommand(const QString &action, const QVariantMap &args) {
         }
     }
     ++m_censorGeneration;
-    m_censorSelectedJob = {};
-    emit censorSelectedJobChanged();
+    if (action != "settings") {
+        m_censorSelectedJob = {};
+        emit censorSelectedJobChanged();
+    }
     censorRequest(action, commandArgs);
 }
 
@@ -380,7 +382,9 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
                     doc.object().value("error").toString();
                 if (error.isEmpty()) error = reply->error() != QNetworkReply::NoError ? reply->errorString() : "Invalid Censor bridge response";
                 m_censorState.insert("error", error);
-                if (!get) emit toast(error);
+                const bool settingsDeferred = action == "settings" && status == 409
+                    && error == "Censor settings are waiting for active processing to finish";
+                if (!get && !settingsDeferred) emit toast(error);
             }
             emit censorStateChanged();
             if (ok) {

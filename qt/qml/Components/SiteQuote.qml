@@ -5,6 +5,16 @@ import QtQuick.Controls
 Control {
     id: quote
     property alias text: label.text
+    property alias textFormat: label.textFormat
+    property alias linkColor: label.linkColor
+    property string keyboardLink: ""
+    signal linkActivated(string link)
+    activeFocusOnTab: textFormat === Text.RichText
+    Accessible.role: textFormat === Text.RichText ? Accessible.Link : Accessible.StaticText
+    Accessible.name: label.text.replace(/<[^>]*>/g, "")
+    Accessible.onPressAction: if (keyboardLink) linkActivated(keyboardLink)
+    Keys.onReturnPressed: if (keyboardLink) linkActivated(keyboardLink)
+    Keys.onSpacePressed: if (keyboardLink) linkActivated(keyboardLink)
     property color textColor: "#999999"
     property color borderColor: "#3397979f"
     property real backgroundRadius: 6
@@ -27,6 +37,10 @@ Control {
     contentItem: Label {
         id: label
         textFormat: Text.PlainText
+        onLinkActivated: function(link) { quote.linkActivated(link); }
+        HoverHandler {
+            cursorShape: label.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+        }
         wrapMode: Text.Wrap
         color: quote.textColor
         font.family: "DDetector Nunito"

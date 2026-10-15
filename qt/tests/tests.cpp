@@ -543,8 +543,8 @@ private slots:
         QVERIFY(reason("rollback").contains("does not support"));
         QVERIFY(!view->findChild<QObject *>("censorAutoReplace"));
         censor.insert("running", true); publishState();
-        QVERIFY(reason("settings").contains("Pause or stop"));
-        QVERIFY(!view->findChild<QObject *>("censorWorkers")->property("enabled").toBool());
+        QVERIFY(reason("settings").isEmpty());
+        QVERIFY(view->findChild<QObject *>("censorWorkers")->property("enabled").toBool());
         censor.insert("running", false); censor.insert("busy", true); publishState();
         QVERIFY(!reason("analyze").isEmpty()); QVERIFY(reason("pause").isEmpty()); QVERIFY(reason("stop").isEmpty());
         censor.insert("busy", false); publishState();
@@ -876,6 +876,73 @@ private slots:
         QCOMPARE(replacement->source(), fresh);
         QVERIFY(view->property("playbackError").toString().isEmpty());
         QVERIFY(QMetaObject::invokeMethod(view.data(), "stopPlayers"));
+    }
+    void censorSettingsDeferredAutosave() {
+        Config config(QString{});
+        MockBackend server;
+        QJsonObject state{{"configured", true}, {"running", true}, {"busy", false},
+                          {"jobs", QJsonArray{}}, {"settings", QJsonObject{{"workers", 2}}}};
+        int saves = 0;
+        bool rejectOnce = true;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            const bool post = request.startsWith("POST /api/censor/control ");
+            if (!post && !request.startsWith("GET /api/censor/state ")) return std::nullopt;
+            QJsonObject response = state;
+            bool conflict = false;
+            if (post) {
+                const auto command = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+                if (command.value("action") != "settings") return std::nullopt;
+                ++saves;
+                conflict = rejectOnce;
+                rejectOnce = false;
+                if (conflict) {
+                    state.insert("running", true);
+                    response = QJsonObject{{"error", "Censor settings are waiting for active processing to finish"}};
+                } else {
+                    state.insert("settings", command.value("settings"));
+                    response = state;
+                }
+            }
+            const auto data = QJsonDocument(response).toJson(QJsonDocument::Compact);
+            return QByteArray(conflict ? "HTTP/1.1 409 Conflict\r\n" : "HTTP/1.1 200 OK\r\n")
+                + "Connection: close\r\nContent-Type: application/json\r\nContent-Length: "
+                + QByteArray::number(data.size()) + "\r\n\r\n" + data;
+        };
+        Bridge bridge(server.url(), "censor-test-key", nullptr, &config);
+        bridge.m_censorPoll.stop();
+        QTRY_VERIFY(bridge.censorState().value("running").toBool());
+        QSignalSpy toasts(&bridge, &Bridge::toast);
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/CensorSettingsPanel.qml"));
+        QScopedPointer<QObject> panel(component.createWithInitialProperties({
+            {"bridge", QVariant::fromValue(&bridge)}, {"width", 400}}));
+        QVERIFY2(panel, qPrintable(component.errorString()));
+        auto setWorkers = [&](int workers) {
+            return QMetaObject::invokeMethod(panel.data(), "setValue", Q_ARG(QVariant, "workers"), Q_ARG(QVariant, workers));
+        };
+        QVERIFY(setWorkers(7));
+        QVERIFY(panel->findChild<QObject *>("censorWorkers")->property("enabled").toBool());
+        QVERIFY(QMetaObject::invokeMethod(panel.data(), "flushAutosave"));
+        QCOMPARE(saves, 0);
+        state.insert("running", false);
+        bridge.m_censorState = state;
+        emit bridge.censorStateChanged();
+        QVERIFY(QMetaObject::invokeMethod(panel.data(), "flushAutosave"));
+        QVERIFY(panel->property("saving").toBool());
+        QVERIFY(panel->findChild<QObject *>("censorWorkers")->property("enabled").toBool());
+        QVERIFY(setWorkers(9));
+        QTRY_VERIFY(saves == 1 && !panel->property("saving").toBool());
+        QVERIFY(panel->property("settingsQueued").toBool());
+        QCOMPARE(panel->property("draft").toMap().value("workers").toInt(), 9);
+        QCOMPARE(toasts.count(), 0);
+        QTRY_VERIFY(bridge.censorState().value("running").toBool());
+        state.insert("running", false);
+        bridge.m_censorState = state;
+        emit bridge.censorStateChanged();
+        QTRY_VERIFY(saves == 2 && !panel->property("saving").toBool());
+        QCOMPARE(state.value("settings").toObject().value("workers").toInt(), 9);
+        QVERIFY(!panel->property("draftDirty").toBool());
+        QVERIFY(!panel->property("settingsQueued").toBool());
     }
     void censorInlineSettings_data() {
         QTest::addColumn<int>("panelWidth");

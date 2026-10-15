@@ -3,6 +3,7 @@
 #include <QCache>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLocale>
 #include <QNetworkAccessManager>
 #include "config.h"
 #include <QTimer>
@@ -87,6 +88,11 @@ public:
     Q_INVOKABLE void copyId(const QString &id);
     Q_INVOKABLE void searchYandex(const QString &title, const QString &artist);
     Q_INVOKABLE void openBrowser(const QUrl &url);
+    Q_INVOKABLE QString countryName(const QString &code) const {
+        const auto territory = QLocale::codeToTerritory(code);
+        return territory == QLocale::AnyTerritory ? QStringLiteral("Unknown country")
+                                                 : QLocale::territoryToString(territory);
+    }
 signals:
     void stateChanged();
         void censorStateChanged();
