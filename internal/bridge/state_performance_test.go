@@ -135,6 +135,8 @@ func TestConditionalStateOperations(t *testing.T) {
 			} else {
 				w.WriteHeader(204)
 			}
+		case "/functions/v1/sync-ddetector-tracks":
+			fmt.Fprint(w, `{"added":0}`)
 		case "/auth/v1/logout":
 			w.WriteHeader(204)
 		default:

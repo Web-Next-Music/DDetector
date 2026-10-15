@@ -10,11 +10,43 @@ import (
 	"testing"
 )
 
+func TestFetchStopsWhenServerSyncFails(t *testing.T) {
+	syncCalls := 0
+	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/v1/user":
+			fmt.Fprint(w, `{"id":"user-1"}`)
+		case "/rest/v1/bans":
+			fmt.Fprint(w, `[]`)
+		case "/rest/v1/ddetector_users":
+			fmt.Fprint(w, `[{"user_id":"user-1"}]`)
+		case "/functions/v1/sync-ddetector-tracks":
+			syncCalls++
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			t.Error("fetch continued after failed synchronization", r.URL.Path)
+		}
+	})
+	install(s)
+	s.yandex = newYandexClient("test-yandex")
+	err := s.load(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "unable to synchronize track list") || syncCalls != 1 {
+		t.Fatalf("expected sync failure, got %v (calls %d)", err, syncCalls)
+	}
+}
+
 func TestYandexIncrementalCache(t *testing.T) {
+	syncCalls := 0
 	library := `[{"id":1,"added_at":"now"}]`
 	ignored := `[]`
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/functions/v1/sync-ddetector-tracks":
+			syncCalls++
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") == "" {
+				t.Error("sync requires POST with user authorization")
+			}
+			fmt.Fprint(w, `{"added":0,"total":1}`)
 		case "/auth/v1/user":
 			fmt.Fprint(w, `{"id":"user-1"}`)
 		case "/rest/v1/bans":
@@ -119,7 +151,13 @@ func TestYandexIncrementalCache(t *testing.T) {
 	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return response(200, `{"tracks":{}}`), nil
 	})
+	if syncCalls != 0 {
+		t.Fatal("normal load must not trigger server synchronization")
+	}
 	load(true)
+	if syncCalls != 1 {
+		t.Fatal("fetch did not synchronize server track list")
+	}
 	if metadataCalls != 2 || lyricsCalls != 1 || lrclibCalls != 1 {
 		t.Fatal("refresh not incremental")
 	}

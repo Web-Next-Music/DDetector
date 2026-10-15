@@ -14,6 +14,8 @@ func TestExclusionRefreshPurgeAndLoad(t *testing.T) {
 	failLibrary := false
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/functions/v1/sync-ddetector-tracks":
+			fmt.Fprint(w, `{"added":0}`)
 		case "/auth/v1/user":
 			fmt.Fprint(w, `{"id":"user-1"}`)
 		case "/rest/v1/bans":

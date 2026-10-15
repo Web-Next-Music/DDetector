@@ -512,6 +512,9 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	}
 	var excluded map[int64]bool
 	if fetch {
+		if err := s.client.request(ctx, http.MethodPost, "/functions/v1/sync-ddetector-tracks", token, struct{}{}, nil, nil); err != nil {
+			return fmt.Errorf("unable to synchronize track list: %w", err)
+		}
 		excluded, err = downloadExclusions(ctx, s.exclusionTransport)
 		if err != nil {
 			return err

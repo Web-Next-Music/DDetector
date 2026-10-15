@@ -141,6 +141,8 @@ func TestMissingLyricsCached(t *testing.T) {
 func authorizedTestServer(t *testing.T) *Server {
 	return testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/functions/v1/sync-ddetector-tracks":
+			fmt.Fprint(w, `{"added":0}`)
 		case "/auth/v1/user":
 			fmt.Fprint(w, `{"id":"user-1"}`)
 		case "/rest/v1/bans", "/rest/v1/ddetector_ignored_tracks":
