@@ -27,9 +27,28 @@ SiteDialog {
         return a.id === undefined || a.id === null || String(a.id) === "" ? name : String(a.id) + ": " + name
     }).filter(function(a) { return a.length > 0 }).join("; ")
     readonly property string coverPlaceholder: String(originalMetadata.coverUri || "").replace(/^https?:\/\//i, "").replace(/^\/\//, "")
-    readonly property string durationPlaceholder: originalMetadata.durationMs !== undefined && originalMetadata.durationMs !== null
-        && Number.isFinite(Number(originalMetadata.durationMs)) && Number(originalMetadata.durationMs) > 0
-        ? String(Math.round(Number(originalMetadata.durationMs))) : ""
+    property int durationRequest: -1
+    property real replacementDuration: -1
+    property bool automaticDuration: false
+    readonly property string durationPlaceholder: replacementDuration > 0 ? String(replacementDuration) : ""
+
+    function resetDuration() {
+        durationRequest = -1
+        if (automaticDuration && metadataDuration.text === String(replacementDuration)) {
+            metadataDuration.text = metadataBaseline.durationMs
+            editDuration.checked = false
+        }
+        replacementDuration = -1
+        automaticDuration = false
+    }
+
+    function requestDuration() {
+        resetDuration()
+        if (uploadBackend && typeof uploadBackend.requestDuration === "function")
+            durationRequest = uploadBackend.requestDuration(trackId, urlInput.text.trim())
+    }
+
+    Timer { id: durationTimer; interval: 400; onTriggered: dialog.requestDuration() }
     function metadataPatch() {
         const patch = {}
         if (!editMetadata.checked) return patch
@@ -37,7 +56,7 @@ SiteDialog {
             patch.title = metadataTitle.text.trim()
         if (editCover.checked && metadataCover.text.trim() !== metadataBaseline.coverUri)
             patch.coverUri = metadataCover.text.trim()
-        if (editDuration.checked && metadataDuration.text.trim() !== metadataBaseline.durationMs)
+        if (editDuration.checked && (metadataDuration.text.trim() !== metadataBaseline.durationMs || automaticDuration))
             patch.durationMs = metadataDuration.text.trim() === "" ? -1 : Number(metadataDuration.text)
         if (editArtists.checked && metadataArtists.text !== initialArtistsText) {
             patch.artists = metadataArtists.text.split(";").map(function(part) {
@@ -60,13 +79,20 @@ SiteDialog {
         artistInput.text = originalArtist
         urlInput.text = mp3Url ? String(mp3Url) : ""
         initialMetadata = uploadBackend && typeof uploadBackend.trackMetadata === "function" ? uploadBackend.trackMetadata(trackId) : ({})
+        durationTimer.stop()
+        durationRequest = -1
+        replacementDuration = -1
+        automaticDuration = false
         editMetadata.checked = false
         editTitle.checked = false; editCover.checked = false
         editDuration.checked = false; editArtists.checked = false
         metadataBaseline = {
             title: String(initialMetadata.title !== undefined ? initialMetadata.title : originalMetadata.title || originalTitle).trim(),
             coverUri: String(initialMetadata.coverUri !== undefined ? initialMetadata.coverUri : coverPlaceholder).trim(),
-            durationMs: initialMetadata.durationMs !== undefined ? String(initialMetadata.durationMs).trim() : durationPlaceholder
+            durationMs: initialMetadata.durationMs !== undefined ? String(initialMetadata.durationMs).trim()
+                : originalMetadata.durationMs !== undefined && originalMetadata.durationMs !== null
+                    && Number.isFinite(Number(originalMetadata.durationMs)) && Number(originalMetadata.durationMs) > 0
+                    ? String(Math.round(Number(originalMetadata.durationMs))) : ""
         }
         metadataTitle.text = metadataBaseline.title
         metadataCover.text = metadataBaseline.coverUri
@@ -78,6 +104,7 @@ SiteDialog {
         showUrlFields = showUrl
         coverSource = cover || ""
         open()
+        requestDuration()
     }
 
     function openTrack(id, title, artist, cover, metadata) {
@@ -96,6 +123,10 @@ SiteDialog {
     closePolicy: busy ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     onOpened: artistInput.forceActiveFocus()
+    onClosed: {
+        durationTimer.stop()
+        durationRequest = -1
+    }
 
     MediaPlayer {
         id: approveSound
@@ -210,18 +241,30 @@ SiteDialog {
             Field { id: artistInput; objectName: "sendArtist"; placeholderText: "Artists, comma-separated"; Accessible.name: "Artist" }
             Caption { text: "Title · README / commit label" }
             Field { id: titleInput; objectName: "sendTitle"; placeholderText: dialog.originalTitle; Accessible.name: "Title" }
-            Caption { text: "MP3 URL · optional"; visible: dialog.showUrlFields }
+            ColumnLayout {
+                id: standardUrlSlot
+                Layout.fillWidth: true
+                visible: dialog.showUrlFields
+            }
+        }
+        ColumnLayout {
+            parent: editMetadata.checked ? metadataUrlSlot : standardUrlSlot
+            Layout.fillWidth: true
+            spacing: 12
+            Caption { text: "MP3 URL · optional" }
             Field {
                 id: urlInput
                 objectName: "sendUrl"
-                visible: dialog.showUrlFields
                 placeholderText: "https://…"
                 Accessible.name: "MP3 URL"
                 inputMethodHints: Qt.ImhUrlCharactersOnly
+                onTextEdited: {
+                    dialog.resetDuration()
+                    durationTimer.restart()
+                }
             }
             Caption {
                 Layout.fillWidth: true
-                visible: dialog.showUrlFields
                 text: "Leave the URL empty to add only the list entry"
                 color: "#97979f"
                 wrapMode: Text.WordWrap
@@ -244,11 +287,17 @@ SiteDialog {
                 MetadataToggle { id: editDuration; objectName: "editDuration"; text: "Override duration (milliseconds)"; enabled: !dialog.busy }
                 Field { id: metadataDuration; objectName: "metadataDuration"; enabled: editDuration.checked && !dialog.busy; Accessible.name: "Metadata duration milliseconds"; placeholderText: dialog.durationPlaceholder; inputMethodHints: Qt.ImhDigitsOnly }
             }
+            ColumnLayout {
+                id: metadataUrlSlot
+                Layout.fillWidth: true
+            }
         }
         Caption {
             Layout.fillWidth: true
             visible: text.length > 0
-            text: !dialog.uploadBackend ? "Upload backend is not configured" : dialog.uploadBackend.error
+            objectName: "sendError"
+            text: !dialog.uploadBackend ? "Upload backend is not configured"
+                : dialog.uploadBackend.error === "Wait for the configured repository to be ready before sending" ? "" : dialog.uploadBackend.error
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
             color: "#ff9292"
@@ -298,6 +347,20 @@ SiteDialog {
 
     Connections {
         target: dialog.uploadBackend
+        function onDurationReady(request, durationMs) {
+            if (request !== dialog.durationRequest || !dialog.visible || dialog.busy || dialog.sending)
+                return
+            dialog.replacementDuration = durationMs
+            if (durationMs <= 0 || metadataDuration.text !== dialog.metadataBaseline.durationMs)
+                return
+            const original = Number(dialog.originalMetadata.durationMs)
+            if (!Number.isFinite(original) || original <= 0 || durationMs === original)
+                return
+            dialog.automaticDuration = true
+            metadataDuration.text = String(durationMs)
+            editDuration.checked = true
+            editMetadata.checked = true
+        }
         function onCompleted(action) {
             if (!dialog.sending)
                 return

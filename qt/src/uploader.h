@@ -26,12 +26,15 @@ public:
     Q_INVOKABLE bool setDirectory(QString directory);
     Q_INVOKABLE void send(QString id, QString title, QString artist, QString mp3Url = {}, QVariantMap metadata = {});
     Q_INVOKABLE QVariantMap trackMetadata(QString id) const;
+    Q_INVOKABLE int requestDuration(QString id, QString mp3Url = {});
 signals:
+    void durationReady(int request, qint64 durationMs);
     void stateChanged();
     void completed(const QString &action);
 private:
     QString m_directory, m_status, m_error, m_action;
     bool m_busy = false;
     QThread *m_worker = nullptr;
+    int m_durationRequest = 0;
     std::function<QString(const QString &)> m_directoryValidator, m_sendValidator;
 };

@@ -51,6 +51,61 @@ class UploaderTests final : public QObject {
         git(root, {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "initial"});
     }
 private slots:
+    void durationPreview_data() {
+        QTest::addColumn<QString>("mode");
+        for (const auto &mode : {"local", "missing", "invalid", "traversal", "invalid-url"})
+            QTest::newRow(mode) << QString(mode);
+    }
+    void durationPreview() {
+        QFETCH(QString, mode);
+        QTemporaryDir dir; init(dir.path());
+        if (mode == "local" || mode == "invalid") localAudio(dir.path(), "123");
+        if (mode == "invalid") put(dir.path() + "/tracks/123", "not audio");
+        Uploader uploader(dir.path());
+        QSignalSpy ready(&uploader, &Uploader::durationReady);
+        const auto request = uploader.requestDuration(mode == "traversal" ? "../123" : "123",
+                                                      mode == "invalid-url" ? "file:///etc/passwd" : "");
+        QVERIFY(!uploader.busy());
+        QVERIFY(ready.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(ready.size(), 1, 10000);
+        QCOMPARE(ready[0][0].toInt(), request);
+        QCOMPARE(ready[0][1].toLongLong(), mode == "local" ? 144 : -1);
+        QVERIFY(uploader.error().isEmpty());
+    }
+    void remoteDurationPreview() {
+        QTemporaryDir dir;
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto body = tinyMp3();
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, body] {
+                socket->readAll();
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) +
+                              "\r\nConnection: close\r\n\r\n" + body);
+                socket->disconnectFromHost();
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+        Uploader uploader(dir.path());
+        QSignalSpy ready(&uploader, &Uploader::durationReady);
+        const auto request = uploader.requestDuration("123", "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio");
+        QVERIFY(ready.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(ready.size(), 1, 10000);
+        QCOMPARE(ready[0][0].toInt(), request);
+        QCOMPARE(ready[0][1].toLongLong(), 144);
+        QVERIFY(QDir(dir.path()).entryList(QDir::Files).isEmpty());
+    }
+    void matchingStorageDuration() {
+        QTemporaryDir dir; init(dir.path());
+        put(dir.path() + "/list_v2.json", R"({"sources":[{"supportedVersions":">=2.0.0","tracks":{"123":{"durationMs":9999}},"tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[{"id":123,"durationMs":144}]}]}]})");
+        git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
+        localAudio(dir.path(), "123");
+        Uploader uploader(dir.path());
+        uploader.send("123", "Label", "Artist", {}, {{"durationMs", 144}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        QCOMPARE(uploader.trackMetadata("123").value("durationMs").toInt(), 144);
+    }
     void measuredDuration_data() {
         QTest::addColumn<QString>("mode");
         for (const auto &mode : {"local", "download", "missing", "invalid-local", "invalid-download",

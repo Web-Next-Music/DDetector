@@ -124,9 +124,24 @@ Tests require ffmpeg and generate tiny valid MP3 fixtures locally. They use temp
 The Send dialog keeps **README / commit labels** separate from entity metadata.
 Expand **Edit metadata · optional**, check individual overrides, then change their
 values. Prefilled, unchanged inputs and unchecked fields are omitted; disabling
-the section sends an empty patch. Opening another track resets all opt-ins.
+the section sends an empty patch. Opening another track resets all opt-ins, except
+for the duration default described below.
 Existing source-level metadata is prefilled where available; display labels and
 thumbnail URLs are never automatically copied into overrides.
+
+The duration placeholder shows the decoded replacement audio duration, not the
+Yandex Music duration. `requestDuration(id, mp3Url)` performs bounded HTTP(S)
+download and the same ffmpeg measurement as Send on a worker thread; without a URL
+it measures local `tracks/<id>`. It emits `durationReady(request, durationMs)`
+(`-1` on failure) without writes or changing Send's busy/error state. Unknown
+replacement duration leaves the placeholder empty. URL edits invalidate the old
+result and debounce a new request; stale results and results after manual duration
+edits cannot replace user input. Previewing a URL downloads the audio; Send downloads
+it again so its normal validation and concurrency checks remain authoritative.
+When a known replacement duration differs from a valid Yandex Music duration,
+both duration override and Edit metadata default to enabled. The measured value
+is included even if it equals the existing metadata baseline. Users can disable
+either toggle to omit it. Other overrides and placeholders are unchanged.
 
 Supported overrides:
 
@@ -165,7 +180,7 @@ consumer simulation.
 
 Placement deliberately fails closed: edits require a unique source with a
 compatible audio mapping after routing (which may create its storage). Multiple matching sources or metadata for that
-ID in any other source are rejected. A `durationMs` patch is also rejected if the ID already has a storage duration (before routing); title, artist and cover edits remain allowed. When this send creates a new measured storage duration, an explicitly requested metadata duration must equal the measured value or the send fails before writes. Existing source metadata durations are not used to calculate audio duration and are retained unless explicitly patched. These rules apply even when some configurations might work. Source version gates are accepted only
+ID in any other source are rejected. A `durationMs` patch is also rejected if the ID already has a conflicting storage duration (before routing); matching values are allowed; title, artist and cover edits remain allowed. When this send creates a new measured storage duration, an explicitly requested metadata duration must equal the measured value or the send fails before writes. Existing source metadata durations are not used to calculate audio duration and are retained unless explicitly patched. These rules apply even when some configurations might work. Source version gates are accepted only
 when absent, `>0.0.0`, or `>=2.0.0`; other gates require manual review. New IDs use the same `>=2.0.0` routing with or without metadata; an existing legacy mapping is not automatically migrated. Sources are never reordered and
 existing metadata is never relocated. These restrictions protect against the
 installed PulseSync consumer's first-source-wins **whole-object** selection and

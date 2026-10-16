@@ -83,6 +83,9 @@ Item {
         property string status: "List: added · committed"
         signal completed(string action)
         signal stateChanged()
+        signal durationReady(int request, double durationMs)
+        property int durationRequest: 0
+        function requestDuration(id, url) { return ++durationRequest }
         property var metadata: ({title: "Existing", artists: [{id: "42", name: "Artist"}], coverUri: "example.org/cover", durationMs: 123000})
         function trackMetadata(id) { return metadata }
         property var lastSend: ({})
@@ -248,6 +251,69 @@ Item {
             compare(spinner.visible, false);
             compare(button.enabled, true);
         }
+        function test_sendReplacementDuration_data() {
+            return [
+                {tag: "different", measured: 144, baseline: 123000, expected: true},
+                {tag: "same-baseline", measured: 144, baseline: 144, expected: true},
+                {tag: "same-yandex", measured: 234567, baseline: 123000, expected: false},
+                {tag: "failed", measured: -1, baseline: 123000, expected: false}
+            ]
+        }
+        function test_sendReplacementDuration(data) {
+            fakeUploader.busy = false
+            const saved = fakeUploader.metadata
+            fakeUploader.metadata = {durationMs: data.baseline}
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openCandidate("123", "Track", "Artist", "", "https://example.org/audio.mp3", {durationMs: 234567})
+            fakeUploader.metadata = saved
+            tryCompare(dialog, "opened", true)
+            fakeUploader.durationReady(dialog.durationRequest - 1, 999)
+            compare(dialog.durationPlaceholder, "")
+            fakeUploader.durationReady(dialog.durationRequest, data.measured)
+            compare(dialog.durationPlaceholder, data.measured > 0 ? String(data.measured) : "")
+            compare(findChild(dialog, "metadataDuration").placeholderText, dialog.durationPlaceholder)
+            compare(findChild(dialog, "editDuration").checked, data.expected)
+            compare(findChild(dialog, "editMetadata").checked, data.expected)
+            compare(JSON.stringify(dialog.metadataPatch()), data.expected ? '{"durationMs":144}' : '{}')
+            findChild(dialog, "editDuration").checked = false
+            compare(JSON.stringify(dialog.metadataPatch()), '{}')
+            dialog.close()
+        }
+        function test_sendDurationUrlAndTrackReset() {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openCandidate("123", "Track", "Artist", "", "https://example.org/first.mp3", {durationMs: 234567})
+            tryCompare(dialog, "opened", true)
+            const request = dialog.durationRequest
+            fakeUploader.durationReady(request, 144)
+            compare(JSON.stringify(dialog.metadataPatch()), '{"durationMs":144}')
+            const url = findChild(dialog, "sendUrl")
+            url.text = "https://example.org/second.mp3"
+            url.textEdited()
+            compare(dialog.durationPlaceholder, "")
+            compare(JSON.stringify(dialog.metadataPatch()), '{}')
+            fakeUploader.durationReady(request, 999)
+            compare(dialog.durationPlaceholder, "")
+            dialog.openTrack("456", "Other", "Artist", "", {durationMs: 234567})
+            fakeUploader.durationReady(request, 999)
+            compare(dialog.durationPlaceholder, "")
+            verify(!findChild(dialog, "editDuration").checked)
+            verify(!findChild(dialog, "editMetadata").checked)
+            compare(JSON.stringify(dialog.metadataPatch()), '{}')
+            dialog.close()
+        }
+        function test_sendDurationPreservesManualEdit() {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openTrack("123", "Track", "Artist", "", {durationMs: 234567})
+            tryCompare(dialog, "opened", true)
+            findChild(dialog, "metadataDuration").text = "1000"
+            fakeUploader.durationReady(dialog.durationRequest, 144)
+            compare(dialog.durationPlaceholder, "144")
+            compare(findChild(dialog, "metadataDuration").text, "1000")
+            verify(!findChild(dialog, "editMetadata").checked)
+            dialog.close()
+        }
         function test_sendOriginalPrefills_data() {
             return [{tag: "library", candidate: false}, {tag: "candidate", candidate: true}]
         }
@@ -355,6 +421,22 @@ Item {
             verify(dialog.height <= scene.height)
             dialog.close()
         }
+        function test_sendRepositoryReadinessMessageHidden() {
+            fakeUploader.busy = false
+            const savedError = fakeUploader.error
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openTrack("123", "Track", "Artist", "")
+            tryCompare(dialog, "opened", true)
+            const error = findChild(dialog, "sendError")
+            fakeUploader.error = "Wait for the configured repository to be ready before sending"
+            compare(error.text, "")
+            compare(error.visible, false)
+            fakeUploader.error = "Save or discard edits to the upload target before sending"
+            compare(error.text, fakeUploader.error)
+            compare(error.visible, true)
+            fakeUploader.error = savedError
+            dialog.close()
+        }
         function test_sendMetadataSwitchPreservesPanels_data() {
             return [{tag: "track", candidate: false}, {tag: "candidate", candidate: true}]
         }
@@ -410,8 +492,14 @@ Item {
             compare(standard.visible, false)
             compare(title.visible, false)
             compare(artist.visible, false)
-            compare(url.visible, false)
+            compare(url.visible, true)
+            compare(findChild(dialog, "sendUrl"), url)
+            compare(url.text, expectedUrl)
             compare(metadata.visible, true)
+            waitForRendering(dialog.contentItem)
+            const duration = findChild(dialog, "metadataDuration")
+            verify(url.mapToItem(metadata, 0, 0).y >= duration.mapToItem(metadata, 0, duration.height).y)
+            url.text = "https://example.org/edited.mp3"
             findChild(dialog, "editTitle").checked = true
             findChild(dialog, "metadataTitle").text = "Override title"
             keyClick(Qt.Key_Space)
@@ -420,7 +508,9 @@ Item {
             compare(metadata.visible, false)
             compare(title.text, "Commit title")
             compare(artist.text, "Commit artist")
-            compare(url.text, expectedUrl)
+            compare(url.text, "https://example.org/edited.mp3")
+            url.text = expectedUrl
+            compare(url.visible, !data.candidate)
             compare(JSON.stringify(dialog.metadataPatch()), "{}")
             keyClick(Qt.Key_Space)
             compare(dialog.metadataPatch().title, "Override title")

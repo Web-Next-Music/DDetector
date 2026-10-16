@@ -574,10 +574,13 @@ Result perform(const QString &root, const QString &id, const QString &title,
             for (const auto source : doc.object().value("sources").toArray()) {
                 for (const auto value : source.toObject().value("tracksStorages").toArray()) {
                     const auto store = value.toObject();
-                    bool duration = store.value("tracks").toObject().value(id).toObject().contains("durationMs");
+                    const auto check = [&](const QJsonObject &track) {
+                        require(!track.contains("durationMs") || track.value("durationMs") == metadata.value("durationMs"),
+                                "Storage duration may shadow metadata; edit refused");
+                    };
+                    check(store.value("tracks").toObject().value(id).toObject());
                     for (const auto entry : store.value("trackIds").toArray())
-                        if (trackID(entry) == id && entry.toObject().contains("durationMs")) duration = true;
-                    require(!duration, "Storage duration may shadow metadata; edit refused");
+                        if (trackID(entry) == id) check(entry.toObject());
                 }
             }
         }
@@ -662,7 +665,10 @@ Uploader::Uploader(QObject *parent) : QObject(parent) {}
 Uploader::Uploader(const QString &directory, QObject *parent) : Uploader(parent) {
     setDirectory(directory);
 }
-Uploader::~Uploader() { if (m_worker) { m_worker->wait(); delete m_worker; } }
+Uploader::~Uploader() {
+    for (auto thread : findChildren<QThread *>()) thread->wait();
+    if (m_worker) { m_worker->wait(); delete m_worker; }
+}
 bool Uploader::setDirectory(QString directory) {
     if (m_busy) return false;
     directory = directory.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(directory).absoluteFilePath());
@@ -714,6 +720,39 @@ void Uploader::send(QString id, QString title, QString artist, QString url, QVar
         if (m_error.isEmpty()) emit completed(m_action);
     });
     m_worker->start();
+}
+
+int Uploader::requestDuration(QString id, QString url) {
+    const int request = ++m_durationRequest;
+    const auto root = m_directory;
+    auto duration = std::make_shared<qint64>(-1);
+    auto worker = QThread::create([root, id, url = url.trimmed(), duration] {
+        try {
+            require(QRegularExpression("\\A[0-9]{1,32}\\z").match(id).hasMatch(), "Invalid track ID");
+            QTemporaryFile temporary;
+            QString path = root + "/tracks/" + id;
+            if (!url.isEmpty()) {
+                const QUrl source(url, QUrl::StrictMode);
+                require(source.isValid() && !source.host().isEmpty() && source.userInfo().isEmpty()
+                            && (source.scheme() == "http" || source.scheme() == "https"), "Invalid audio URL");
+                const auto bytes = download(source);
+                require(temporary.open() && temporary.write(bytes) == bytes.size() && temporary.flush(),
+                        "Cannot prepare audio for duration decoding");
+                path = temporary.fileName();
+            } else {
+                require(!root.isEmpty(), "No data directory");
+                require(snapshot(path).exists, "No local audio");
+            }
+            *duration = audioDuration(path);
+        } catch (const std::exception &) {} // A failed preview must not change Send state.
+    });
+    worker->setParent(this);
+    connect(worker, &QThread::finished, this, [this, worker, request, duration] {
+        worker->deleteLater();
+        emit durationReady(request, *duration);
+    });
+    worker->start();
+    return request;
 }
 
 QVariantMap Uploader::trackMetadata(QString id) const {
