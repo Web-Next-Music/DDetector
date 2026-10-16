@@ -89,7 +89,3 @@ Install `Python`, then run from the repository root in **PowerShell**:
 ```powershell
 py scripts/build-dist.py windows
 ```
-
-### Audio review
-
-Audio review retains waveform visualization, seeking, original/candidate playback, request fetching, search, and manual replacement. It does not detect silence/beep censorship or reference restorations, and does not display censorship intervals or counts. Replacement review still uses full-recording alignment, spectral similarity and optional Chromaprint matching to verify recording identity, not to infer whether audio is censored.

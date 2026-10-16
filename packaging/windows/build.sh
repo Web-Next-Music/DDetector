@@ -40,6 +40,7 @@ for tool in cmake.exe windeployqt6.exe makensis.exe ntldd.exe ffmpeg.exe; do
     }
 done
 command -v go >/dev/null || { echo 'Go must be available on PATH.' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'Python 3 must be available on PATH.' >&2; exit 1; }
 
 readonly winbuild="$BUILD_DIR/windows"
 readonly windist="$winbuild/dist"
@@ -70,6 +71,9 @@ cp "$TOOL_BIN/ffmpeg.exe" "$windist/"
 
 # Keep Qt's lookup paths relative to the installed executable, not the build prefix.
 printf '[Paths]\nPrefix=.\nPlugins=.\nQmlImports=qml\n' > "$windist/qt.conf"
+
+# Allow MSYS2 path conversion when python3 is a native Windows executable.
+MSYS2_ARG_CONV_EXCL= python3 "$SOURCE_DIR/packaging/prune-qt-runtime.py" windows "$windist"
 
 # Seed every runtime plugin as well as the EXEs; traverse direct imports only.
 readonly dependency_root="$(cd "$windist" && pwd)"

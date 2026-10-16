@@ -65,6 +65,7 @@ build_appdir() {
     if [[ "$APPDIR_READY" == 1 ]]; then
         return
     fi
+    command -v python3 >/dev/null || { echo 'Python 3 must be available on PATH.' >&2; exit 1; }
     build_linux
     local appdir="$BUILD_DIR/AppDir"
     local qtermwidget_data syntax_data ffmpeg
@@ -128,6 +129,7 @@ build_appdir() {
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --plugin qt
+    python3 "$SOURCE_DIR/packaging/prune-qt-runtime.py" linux "$appdir"
     if [[ ! -f "$bundled_integrations/libqt-plugin-wayland-egl.so" || -L "$bundled_integrations/libqt-plugin-wayland-egl.so" ]]; then
         echo "Bundled Qt Wayland EGL integration must be a regular library, not a symlink." >&2
         exit 1
