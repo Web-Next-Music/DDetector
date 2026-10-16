@@ -99,6 +99,7 @@ MusicPlayer::MusicPlayer(QObject *parent) : QObject(parent) {
     resetSpectrum();
     connect(&m_player, &QMediaPlayer::playbackStateChanged, this, [this] {
         if (!playing()) m_spectrumTap.clear();
+        syncSpectrumTimer();
     });
     m_audio.setVolume(0.5f);
     m_mediaTimeout.setSingleShot(true);
@@ -136,8 +137,6 @@ void MusicPlayer::setVisualizerEnabled(bool enabled) {
     if (enabled == m_visualizerEnabled) return;
     m_visualizerEnabled = enabled;
     resetSpectrum();
-    if (enabled) m_spectrumTimer.start();
-    else m_spectrumTimer.stop();
     emit visualizerEnabledChanged();
 }
 
@@ -165,6 +164,16 @@ void MusicPlayer::resetSpectrum() {
     if (m_spectrumPeaks != zeros) { m_spectrumPeaks = zeros; emit spectrumPeaksChanged(); }
     // A new tap identity also rejects queued delivery from the previous source/seek.
     attachSpectrumOutput();
+    syncSpectrumTimer();
+}
+
+void MusicPlayer::syncSpectrumTimer() {
+    const bool needed = m_visualizerEnabled && (playing() || !m_spectrumAnalyser.settled());
+    if (needed) {
+        if (!m_spectrumTimer.isActive()) m_spectrumTimer.start();
+    } else {
+        m_spectrumTimer.stop();
+    }
 }
 
 void MusicPlayer::receiveSpectrumBuffer(const QAudioBuffer &buffer) {
@@ -193,10 +202,12 @@ void MusicPlayer::receiveSpectrumBuffer(const QAudioBuffer &buffer) {
         const float mono = float(sum) / float(channels);
         m_spectrumTap.push(std::isfinite(mono) ? mono : 0.0f, format.sampleRate());
     }
+    syncSpectrumTimer();
 }
 
 void MusicPlayer::updateSpectrum() {
-    if (!m_visualizerEnabled) return;
+    syncSpectrumTimer();
+    if (!m_spectrumTimer.isActive()) return;
     m_spectrumAnalyser.step(playing() ? m_spectrumTap.window() : Spectrum::Wave{},
                             double(m_spectrumClock.nsecsElapsed()) / 1e9);
     QVariantList levels, peaks;
@@ -206,6 +217,7 @@ void MusicPlayer::updateSpectrum() {
     }
     if (levels != m_spectrumLevels) { m_spectrumLevels = levels; emit spectrumLevelsChanged(); }
     if (peaks != m_spectrumPeaks) { m_spectrumPeaks = peaks; emit spectrumPeaksChanged(); }
+    syncSpectrumTimer();
 }
 
 void MusicPlayer::cancelRequests() {
@@ -578,7 +590,14 @@ private slots:
         auto *stereo = reinterpret_cast<float *>(pcm.data());
         for (int i = 0; i < 1000; ++i) { stereo[2 * i] = 0.5f; stereo[2 * i + 1] = 0.0f; }
         player.setVolume(0.0);
+        QVERIFY(player.m_spectrumTimer.isActive());
+        player.setVisualizerEnabled(false);
+        QVERIFY(!player.m_spectrumTimer.isActive());
+        player.setVisualizerEnabled(true);
+        QVERIFY(player.m_spectrumTimer.isActive());
+        player.m_spectrumTimer.stop();
         player.receiveSpectrumBuffer(QAudioBuffer(pcm, format, 1000000));
+        QVERIFY(player.m_spectrumTimer.isActive());
         QCOMPARE(player.m_spectrumTap.window().back(), 0.25f);
         player.updateSpectrum();
         QVERIFY(!player.m_spectrumAnalyser.settled());
@@ -597,7 +616,12 @@ private slots:
         QCOMPARE(player.spectrumPeaks(), peaksBeforePause);
         QCOMPARE(player.m_spectrumEpoch, epochBeforePause);
         QCOMPARE(player.m_spectrumTap.window(), Spectrum::Wave{});
+        QVERIFY(player.m_spectrumTimer.isActive());
         QTRY_VERIFY_WITH_TIMEOUT(player.m_spectrumAnalyser.settled(), 3000);
+        QVERIFY(!player.m_spectrumTimer.isActive());
+        QSignalSpy idleTicks(&player.m_spectrumTimer, &QChronoTimer::timeout);
+        QTest::qWait(80);
+        QCOMPARE(idleTicks.count(), 0);
         for (const auto &level : player.spectrumLevels()) QCOMPARE(level.toFloat(), 0.0f);
         for (const auto &peak : player.spectrumPeaks()) QCOMPARE(peak.toFloat(), 0.0f);
         const auto generation = player.m_generation;
@@ -605,6 +629,7 @@ private slots:
         QCOMPARE(requests, 1);
         QCOMPARE(player.m_generation, generation);
         QTRY_VERIFY(player.playing());
+        QVERIFY(player.m_spectrumTimer.isActive());
         QVERIFY(player.position() >= 2000);
         QCOMPARE(player.m_pendingSeek, qint64(-1));
         player.receiveSpectrumBuffer(QAudioBuffer(pcm, format, 2000000));
@@ -619,7 +644,12 @@ private slots:
         QCOMPARE(player.m_spectrumEpoch, epochBeforeStop);
         QCOMPARE(player.m_spectrumTap.window(), Spectrum::Wave{});
         QVERIFY(!player.m_spectrumAnalyser.settled());
+        QVERIFY(player.m_spectrumTimer.isActive());
         QTRY_VERIFY_WITH_TIMEOUT(player.m_spectrumAnalyser.settled(), 3000);
+        QVERIFY(!player.m_spectrumTimer.isActive());
+        idleTicks.clear();
+        QTest::qWait(80);
+        QCOMPARE(idleTicks.count(), 0);
         for (const auto &level : player.spectrumLevels()) QCOMPARE(level.toFloat(), 0.0f);
         for (const auto &peak : player.spectrumPeaks()) QCOMPARE(peak.toFloat(), 0.0f);
     }
@@ -704,7 +734,15 @@ private slots:
         QCOMPARE(player.spectrumLevels().size(), Spectrum::Bands);
         player.setVisualizerEnabled(true);
         QVERIFY(player.m_bufferOutput);
-        QVERIFY(player.m_spectrumTimer.isActive());
+        QVERIFY(!player.m_spectrumTimer.isActive());
+        QSignalSpy ticks(&player.m_spectrumTimer, &QChronoTimer::timeout);
+        QSignalSpy levels(&player, &MusicPlayer::spectrumLevelsChanged);
+        QSignalSpy peaks(&player, &MusicPlayer::spectrumPeaksChanged);
+        player.updateSpectrum();
+        QTest::qWait(80);
+        QCOMPARE(ticks.count(), 0);
+        QCOMPARE(levels.count(), 0);
+        QCOMPARE(peaks.count(), 0);
         const auto epoch = player.m_spectrumEpoch;
         player.m_spectrumTap.push(1.0f, 1);
         player.m_spectrumAnalyser.levels.fill(1.0f);

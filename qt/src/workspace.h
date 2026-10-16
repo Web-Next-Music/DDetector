@@ -21,6 +21,8 @@ class GitWorkspace : public QObject {
     Q_PROPERTY(QString text READ text WRITE setText NOTIFY documentChanged)
     Q_PROPERTY(int documentRevision READ documentRevision NOTIFY documentChanged)
     Q_PROPERTY(bool largeFileMode READ largeFileMode NOTIFY documentChanged)
+    Q_PROPERTY(bool fileLoading READ fileLoading NOTIFY changed)
+    Q_PROPERTY(QString loadingFilePath READ loadingFilePath NOTIFY changed)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(bool resolving READ resolving NOTIFY changed)
@@ -45,6 +47,8 @@ public:
     QString text() const { return m_text; }
     int documentRevision() const { return m_documentRevision; }
     bool largeFileMode() const { return m_largeFileMode; }
+    bool fileLoading() const { return m_fileLoading; }
+    QString loadingFilePath() const { return m_loadingFilePath; }
     bool dirty() const { return m_text != m_saved; }
     QString error() const;
     bool resolving() const { return m_resolving; }
@@ -107,7 +111,9 @@ signals:
 private:
     QString confined(const QString &relativePath, bool directory = false) const;
     void updateLargeFileMode();
-    bool loadFile(const QString &relativePath);
+    void loadFile(const QString &relativePath);
+    void startFileLoad();
+    void cancelFileLoad();
     void appendTree(const QString &relativePath, int depth);
     void updateGitStatus(const QByteArray &status);
     void rebuildTree();
@@ -125,6 +131,12 @@ private:
     QByteArray m_diskBytes;
     int m_documentRevision = 0;
     bool m_loadingDocument = false;
+    bool m_fileLoading = false;
+    // One worker at a time; m_loadingFilePath holds only the newest requested file.
+    bool m_fileReadActive = false;
+    QString m_loadingFilePath;
+    quint64 m_fileGeneration = 0;
+    bool m_watchesDirty = true;
     bool m_largeFileMode = false;
     // The editor uses LF without a transport BOM; disk formatting is separate.
     QString m_lineEnding = "\n";

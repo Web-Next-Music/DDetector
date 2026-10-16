@@ -83,6 +83,7 @@ private:
     void attachSpectrumOutput();
     void receiveSpectrumBuffer(const QAudioBuffer &buffer);
     void updateSpectrum();
+    void syncSpectrumTimer();
     bool m_visualizerEnabled = false;
     quint64 m_spectrumEpoch = 0;
     qint64 m_spectrumSeekFloor = -1;

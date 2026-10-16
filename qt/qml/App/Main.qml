@@ -36,7 +36,7 @@ ApplicationWindow {
     property int activeModalCount: 0
     readonly property bool raiseWindowChrome: activeModalCount > 0
     Shortcut {
-        sequence: StandardKey.Paste
+        sequences: [StandardKey.Paste]
         context: Qt.WindowShortcut
         enabled: !!appUi.player && appUi.player.enabled && !appUi.player.busy
             && appUi.activeModalCount === 0 && !appUi.gitExpanded

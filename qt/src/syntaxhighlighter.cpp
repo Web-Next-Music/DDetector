@@ -5,20 +5,67 @@
 #include <QUrl>
 #include <KSyntaxHighlighting/Definition>
 #include <KSyntaxHighlighting/Format>
+#include <KSyntaxHighlighting/SyntaxHighlighter>
+#include <KSyntaxHighlighting/Theme>
 
-SyntaxHighlighter::SyntaxHighlighter(QObject *parent) : KSyntaxHighlighting::SyntaxHighlighter(parent) {
-    setTheme(m_repository.defaultTheme(KSyntaxHighlighting::Repository::DarkTheme));
+class SyntaxHighlighter::Highlighter : public KSyntaxHighlighting::SyntaxHighlighter {
+public:
+    using KSyntaxHighlighting::SyntaxHighlighter::SyntaxHighlighter;
+protected:
+    void applyFormat(int offset, int length, const KSyntaxHighlighting::Format &format) override;
+};
+
+SyntaxHighlighter::SyntaxHighlighter(QObject *parent) : QObject(parent) {}
+
+SyntaxHighlighter::~SyntaxHighlighter() = default;
+
+void SyntaxHighlighter::beginDocumentReplacement() {
+    m_replacing = true;
+    // KF queues rehighlightBlock with QTextBlock values. Destroy the receiver
+    // synchronously, before those blocks can be invalidated by setText/clear.
+    m_highlighter.reset();
+}
+
+void SyntaxHighlighter::endDocumentReplacement() {
+    m_replacing = false;
+    attachHighlighter();
+}
+
+void SyntaxHighlighter::attachHighlighter() {
+    if (m_replacing || m_highlighter || !m_textDocument) return;
+    m_highlighter = std::make_unique<Highlighter>(this);
+    m_highlighter->setTheme(m_repository.defaultTheme(KSyntaxHighlighting::Repository::DarkTheme));
+    m_highlighter->setDefinition(m_definition);
+    m_highlighter->setDocument(m_textDocument);
+}
+
+void SyntaxHighlighter::setDocument(QTextDocument *document) {
+    if (m_textDocument == document) return;
+    m_highlighter.reset();
+    QObject::disconnect(m_textDestroyed);
+    m_textDocument = document;
+    if (document) {
+        m_textDestroyed = connect(document, &QObject::destroyed, this, [this] {
+            m_textDocument = nullptr;
+            m_highlighter.reset();
+        });
+    }
+    attachHighlighter();
+}
+
+void SyntaxHighlighter::rehighlight() {
+    if (m_highlighter) m_highlighter->rehighlight();
 }
 
 void SyntaxHighlighter::setQuickDocument(QQuickTextDocument *document) {
     if (m_document == document) return;
     QObject::disconnect(m_destroyed);
     m_document = document;
-    QSyntaxHighlighter::setDocument(document ? document->textDocument() : nullptr);
+    setDocument(document ? document->textDocument() : nullptr);
     if (document) {
         m_destroyed = connect(document, &QObject::destroyed, this, [this] {
             m_document = nullptr;
-            QSyntaxHighlighter::setDocument(nullptr);
+            setDocument(nullptr);
             emit documentChanged();
         });
     }
@@ -34,12 +81,15 @@ void SyntaxHighlighter::setFilePath(const QString &path) {
     if (!definition.isValid()) definition = m_repository.definitionForFileName(info.fileName().toLower());
     if (!definition.isValid() && info.suffix().compare("mdown", Qt::CaseInsensitive) == 0)
         definition = m_repository.definitionForName("Markdown");
-    setDefinition(definition);
-    rehighlight();
+    if (m_definition != definition) {
+        m_definition = definition;
+        // KF's setDefinition already rehighlights when the definition changes.
+        if (m_highlighter) m_highlighter->setDefinition(definition);
+    }
     emit filePathChanged();
 }
 
-void SyntaxHighlighter::applyFormat(int offset, int length, const KSyntaxHighlighting::Format &format) {
+void SyntaxHighlighter::Highlighter::applyFormat(int offset, int length, const KSyntaxHighlighting::Format &format) {
     using T = KSyntaxHighlighting::Theme;
     QColor color;
     // Markdown expresses headings/code as Function/Information, and emphasis

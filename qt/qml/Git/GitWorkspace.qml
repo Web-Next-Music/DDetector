@@ -50,6 +50,7 @@ Item {
     onPageActiveChanged: if (!pageActive && available && workspaceBackend.terminalRunning) workspaceBackend.stopTerminal()
     Component.onCompleted: if (workspaceBackend) workspaceBackend.activate()
     readonly property bool available: workspaceBackend !== null && workspaceBackend !== undefined
+    readonly property bool fileLoading: available && workspaceBackend.fileLoading
     readonly property string gitNotification: available ? workspaceBackend.gitMessage : ""
     onGitNotificationChanged: if (gitNotification) notify(gitNotification)
     readonly property color surface: "#0c0c0e"
@@ -108,7 +109,7 @@ Item {
     }
     Shortcut {
         sequence: StandardKey.Save
-        enabled: root.visible && root.available && !!root.workspaceBackend.filePath
+        enabled: root.visible && root.available && !root.fileLoading && !editor.loadingDocument && !!root.workspaceBackend.filePath
         onActivated: root.workspaceBackend.save()
     }
 
@@ -252,7 +253,7 @@ Item {
                             Layout.minimumHeight: gitTabs.height + 1
                             Layout.preferredHeight: gitTabs.height + 1
                             Layout.maximumHeight: gitTabs.height + 1
-                            visible: !root.showingDiff && root.available && !!root.workspaceBackend.filePath
+                            visible: !root.showingDiff && root.available && (root.fileLoading || !!root.workspaceBackend.filePath)
                             spacing: 0
                             // Path is a breadcrumb, not a destructive navigation operation.
                             Label {
@@ -269,7 +270,8 @@ Item {
                                     color: root.raised
                                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#3397979f" }
                                 }
-                                text: !root.showingDiff && root.available ? root.workspaceBackend.filePath + (root.workspaceBackend.dirty ? " *" : "") : ""
+                                text: root.fileLoading ? "Loading " + root.workspaceBackend.loadingFilePath + "…"
+                                      : !root.showingDiff && root.available ? root.workspaceBackend.filePath + (root.workspaceBackend.dirty ? " *" : "") : ""
                                 color: root.accent
                                 elide: Text.ElideMiddle
                             }
@@ -328,8 +330,10 @@ Item {
                                 padding: 0
                                 Accessible.name: "File editor: " + (root.available ? root.workspaceBackend.filePath : "")
                                 enabled: root.available && !!root.workspaceBackend.filePath
+                                readOnly: root.fileLoading || loadingDocument
                                 textFormat: TextEdit.PlainText
                                 SyntaxHighlighter {
+                                    id: syntaxHighlighter
                                     // QQuickTextEdit lays out the complete document. Avoid combining
                                     // full-document highlighting with pathological scene-graph geometry.
                                     document: root.available && !root.workspaceBackend.largeFileMode
@@ -340,28 +344,36 @@ Item {
                                 property var loadedBackend: null
                                 property int loadedRevision: -1
                                 function syncDocument() {
+                                    const backend = root.available ? root.workspaceBackend : null
+                                    const value = backend ? backend.text : ""
+                                    // A local edit is already in this document; retain incremental highlighting.
+                                    if (!loadingDocument && loadedBackend === backend
+                                            && loadedRevision === (backend ? backend.documentRevision : -1)
+                                            && text === value)
+                                        return
+                                    syntaxHighlighter.beginDocumentReplacement()
                                     loadingDocument = true
                                     loadedBackend = null
                                     loadedRevision = -1
-                                    const backend = root.available ? root.workspaceBackend : null
-                                    const value = backend ? backend.text : ""
                                     if (text !== value) text = value
                                     // Establish identity only after the buffer has been installed.
                                     loadedRevision = backend ? backend.documentRevision : -1
                                     loadedBackend = backend
                                     loadingDocument = false
+                                    syntaxHighlighter.endDocumentReplacement()
                                 }
                                 Component.onCompleted: syncDocument()
                                 Connections {
                                     target: root.workspaceBackend
                                     function onDocumentAboutToChange() {
+                                        syntaxHighlighter.beginDocumentReplacement()
                                         editor.loadingDocument = true
                                         editor.loadedRevision = -1
                                     }
                                     function onDocumentChanged() { editor.syncDocument(); root.showingDiff = false }
                                 }
                                 onTextChanged: {
-                                    if (!loadingDocument && root.available
+                                    if (!loadingDocument && !root.fileLoading && root.available
                                             && loadedBackend === root.workspaceBackend
                                             && loadedRevision === root.workspaceBackend.documentRevision
                                             && text !== root.workspaceBackend.text)
@@ -886,7 +898,7 @@ Item {
                 Layout.fillWidth: true
                 spacing: 8
                 Item { Layout.fillWidth: true }
-                SiteButton { text: "Save"; accented: true; onClicked: root.resolve("save") }
+                SiteButton { text: "Save"; accented: true; enabled: !root.fileLoading && !editor.loadingDocument; onClicked: root.resolve("save") }
                 SiteButton { text: "Discard"; onClicked: root.resolve("discard") }
                 SiteButton { text: "Cancel"; onClicked: root.resolve("cancel") }
             }

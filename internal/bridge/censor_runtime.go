@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -257,11 +258,12 @@ func cloneCensorResult(result *censor.Result) *censor.Result {
 		return nil
 	}
 	cloned := *result
-	cloned.Waveform = append([]censor.WaveformPoint(nil), result.Waveform...)
-	cloned.Warnings = append([]string(nil), result.Warnings...)
+	cloned.Waveform = slices.Clone(result.Waveform)
+	cloned.Warnings = slices.Clone(result.Warnings)
+	cloned.ExcerptTranscripts = slices.Clone(result.ExcerptTranscripts)
 	if result.Fingerprint != nil {
 		fingerprint := *result.Fingerprint
-		fingerprint.Values = append([]uint32(nil), result.Fingerprint.Values...)
+		fingerprint.Values = slices.Clone(result.Fingerprint.Values)
 		cloned.Fingerprint = &fingerprint
 	}
 	if result.Comparison != nil {
@@ -293,9 +295,9 @@ func cloneCensorCandidate(candidate CensorCandidate) CensorCandidate {
 func cloneCensorJob(job CensorJob) CensorJob {
 	cloned := job
 	cloned.StageProgress = cloneStageProgress(job.StageProgress)
-	cloned.Queries = append([]string(nil), job.Queries...)
+	cloned.Queries = slices.Clone(job.Queries)
 	cloned.Result = cloneCensorResult(job.Result)
-	cloned.Candidates = make([]CensorCandidate, len(job.Candidates))
+	cloned.Candidates = slices.Clone(job.Candidates)
 	for n := range job.Candidates {
 		cloned.Candidates[n] = cloneCensorCandidate(job.Candidates[n])
 	}

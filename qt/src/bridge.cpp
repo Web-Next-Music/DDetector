@@ -57,13 +57,27 @@ void TrackModel::sync(const QList<QJsonObject> &input) {
     for (auto it = m_indexes.cbegin(); it != m_indexes.cend(); ++it)
         if (!ids.contains(it.key())) ++membershipChanges;
     for (const auto &row : rows) if (!m_indexes.contains(trackId(row))) ++membershipChanges;
-    if (membershipChanges > 256) {
+    int removalRanges = 0;
+    bool removing = false;
+    for (const auto &row : m_rows) {
+        const bool absent = !ids.contains(trackId(row));
+        if (absent && !removing) ++removalRanges;
+        removing = absent;
+    }
+    // Contiguous edits are cheap even for large collections; scattered edits
+    // repeatedly rebuild indexes and shift the list.
+    const bool expensiveRemovals = removalRanges > 1 && qint64(removalRanges) * m_rows.size() > 65536;
+    if ((membershipChanges > 256 && removalRanges > 32) || expensiveRemovals) {
         beginResetModel(); m_rows = rows; rebuildIndexes(); endResetModel();
     } else {
-        for (int i = m_rows.size() - 1; i >= 0; --i) {
-            if (!ids.contains(trackId(m_rows[i]))) {
-                beginRemoveRows({}, i, i); m_rows.removeAt(i); rebuildIndexes(); endRemoveRows();
-            }
+        for (int i = m_rows.size() - 1; i >= 0;) {
+            if (ids.contains(trackId(m_rows[i]))) { --i; continue; }
+            const int last = i;
+            while (i >= 0 && !ids.contains(trackId(m_rows[i]))) --i;
+            const int first = i + 1;
+            beginRemoveRows({}, first, last);
+            m_rows.remove(first, last - first + 1);
+            rebuildIndexes(); endRemoveRows();
         }
         QList<QJsonObject> added;
         for (const auto &row : rows) if (!m_indexes.contains(trackId(row))) added.append(row);
@@ -395,7 +409,14 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
             if (ok) {
                 if (!doc.object().value("configured").toBool()) censorSelectJob({});
                 m_censorOffset = doc.object().value("offset").toInt();
-                censorRequest("__detail");
+                QString revision;
+                for (const auto &value : m_censorState.value("jobs").toArray()) {
+                    const auto job = value.toObject();
+                    if (job.value("id").toString() == m_censorSelectedId)
+                        revision = job.value("detail_revision").toString();
+                }
+                if (revision.isEmpty() || revision != m_censorSelectedJob.value("detail_revision").toString())
+                    censorRequest("__detail");
             }
         }
         if (!get) emit censorCommandFinished(action, ok, error);
@@ -432,6 +453,8 @@ void Bridge::request(const QString &path, const QJsonObject &body, bool get, int
     const bool forced = get && m_forceRefresh;
     if (get) {
         m_forceRefresh = false;
+        req.setRawHeader("X-State-Delta", "1");
+        if (!m_tracksRevision.isEmpty()) req.setRawHeader("X-Tracks-Revision", m_tracksRevision.toUtf8());
         if (!forced && !m_stateETag.isEmpty()) req.setRawHeader("If-None-Match", m_stateETag);
     }
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -500,7 +523,8 @@ void Bridge::request(const QString &path, const QJsonObject &body, bool get, int
             if (get) setConnectionError(message); else emit toast(message);
                         if (path == "/api/login") { m_pendingProvider.clear(); emit pendingProviderChanged(); }
         } else if (get) {
-            if (!object.value("authenticated").isBool() || !object.value("tracks").isArray())
+            if (!object.value("authenticated").isBool() || (!object.value("tracks").isArray()
+                    && (m_tracksRevision.isEmpty() || object.value("tracksRevision").toString() != m_tracksRevision)))
                 setConnectionError("Invalid backend state response");
             else {
                 m_stateETag = reply->rawHeader("ETag");
@@ -555,7 +579,10 @@ void Bridge::acceptState(QJsonObject state) {
         state.insert("authenticated", false);
         state.insert("hasAccess", false);
     }
-    auto source = state.take("tracks").toArray();
+    const auto revision = state.value("tracksRevision").toString();
+    const bool projectTracks = state.contains("tracks") && (revision.isEmpty() || revision != m_tracksRevision);
+    auto source = projectTracks ? state.take("tracks").toArray() : m_source;
+    m_tracksRevision = revision;
     // Explicit allowlist: neither backend session tokens nor arbitrary fields reach QML.
     QJsonObject safe;
     for (const auto &name : {"authenticated", "yandexConnected", "user", "accessChecked", "hasAccess", "isBanned", "loginPending", "loading", "fetching", "processing", "processed", "foundCount", "error", "lastFetch"}) {
@@ -596,8 +623,11 @@ void Bridge::acceptState(QJsonObject state) {
         publicUser.insert("identities", publicIdentities);
         safe.insert("user", publicUser);
     }
-    if (!safe.value("authenticated").toBool() || !safe.value("hasAccess").toBool() || safe.value("isBanned").toBool()) source = {};
+    if (!safe.value("authenticated").toBool() || !safe.value("hasAccess").toBool() || safe.value("isBanned").toBool()) {
+        source = {}; m_tracksRevision.clear();
+    }
     QJsonArray publicTracks;
+    if (projectTracks) {
         QSet<QString> publicIds;
         for (const auto &value : source) {
             const auto track = value.toObject();
@@ -610,6 +640,7 @@ void Bridge::acceptState(QJsonObject state) {
             publicTracks.append(publicTrack);
         }
         source = publicTracks;
+    }
         safe.insert("trackCount", source.size());
         const auto last = safe.value("lastFetch").toObject();
     if (!safe.value("fetching").toBool() && !last.isEmpty()
@@ -697,6 +728,7 @@ void Bridge::logout() {
     m_state.insert("authenticated", false);
     m_state.insert("hasAccess", false);
     m_source = {};
+    m_tracksRevision.clear(); m_stateETag.clear();
     rebuild();
     emit stateChanged();
     request("/api/logout");

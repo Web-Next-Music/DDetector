@@ -33,13 +33,31 @@ bool validUnicode(const QString &text) {
     }
     return true;
 }
-QByteArray untrackedPreview(const QString &root, const QString &path, QString &error) {
+QByteArray readWorkspaceBytes(const QString &root, const QString &path, QString &error, bool portable = false) {
+    const auto parts = path.split('/');
+    if (root.isEmpty() || !QDir::isAbsolutePath(root) || root.contains(QChar(0))
+        || root.split('/').contains("..") || path.isEmpty() || QDir::isAbsolutePath(path)
+        || path.contains('\\') || path.contains(QChar(0))
+        || parts.contains("..") || parts.contains(".") || parts.contains("") || parts.contains(".git")) {
+        error = "File is unavailable, a symlink, or outside the workspace"; return {};
+    }
+#ifdef Q_OS_WIN
+    // Reject drive-relative paths and NTFS alternate data streams as well.
+    if (path.contains(':')) { error = "File is outside the workspace or is an alternate data stream"; return {}; }
+#endif
     QFile file;
 #ifdef Q_OS_UNIX
-    // Open every component relative to an already-open directory, so a concurrent
-    // symlink replacement cannot redirect the preview outside the working tree.
-    int fd = ::open(QFile::encodeName(root).constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    const auto parts = path.split('/');
+    Q_UNUSED(portable);
+    // Walk the canonical root too: O_NOFOLLOW on only its final component would
+    // still follow an ancestor replaced by a symlink since repository discovery.
+    int fd = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    for (const auto &part : root.split('/', Qt::SkipEmptyParts)) {
+        if (fd < 0) break;
+        const int next = ::openat(fd, QFile::encodeName(part).constData(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(fd); fd = next;
+    }
+    // Open every file component relative to the pinned directory descriptor.
     for (qsizetype i = 0; fd >= 0 && i < parts.size(); ++i) {
         const bool last = i + 1 == parts.size();
         const int next = ::openat(fd, QFile::encodeName(parts[i]).constData(),
@@ -49,24 +67,45 @@ QByteArray untrackedPreview(const QString &root, const QString &path, QString &e
     struct stat info {};
     if (fd < 0 || ::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
         if (fd >= 0) ::close(fd);
-        error = "Cannot safely preview this untracked file"; return {};
+        error = "File is unavailable, a symlink, or outside the workspace"; return {};
     }
     if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
-        ::close(fd); error = "Cannot open untracked file"; return {};
+        ::close(fd); error = "Cannot open file"; return {};
     }
 #else
-    Q_UNUSED(root);
-    Q_UNUSED(path);
-    error = "Safe untracked previews are unavailable on this platform"; return {};
+    // Preserve the editor's QFile-based confinement on platforms without openat.
+    // Untracked Git previews continue to require descriptor-relative confinement.
+    if (!portable) { error = "Safe untracked previews are unavailable on this platform"; return {}; }
+    QString current = root;
+    if (root.isEmpty()) { error = "Workspace is unavailable"; return {}; }
+    for (const auto &part : path.split('/')) {
+        current = QDir(current).filePath(part);
+        const QFileInfo info(current);
+        if (info.isSymLink() || !info.exists()
+            || !info.canonicalFilePath().startsWith(root + '/')) {
+            error = "File is unavailable, a symlink, or outside the workspace"; return {};
+        }
+    }
+    if (!QFileInfo(current).isFile()) { error = "File is not a regular file"; return {}; }
+    file.setFileName(current);
+    if (!file.open(QIODevice::ReadOnly)) { error = file.errorString(); return {}; }
 #endif
-    constexpr qint64 maximumPreviewBytes = GitWorkspace::MaximumTextBytes;
-    if (file.size() > maximumPreviewBytes) {
-        error = "Untracked file is too large to preview (maximum 2 MiB)"; return {};
+    constexpr qint64 maximumBytes = GitWorkspace::MaximumTextBytes;
+    if (file.size() > maximumBytes) {
+        error = "File is too large to read (maximum 2 MiB)"; return {};
     }
-    const auto bytes = file.read(maximumPreviewBytes + 1);
-    if (file.error() != QFileDevice::NoError || bytes.size() > maximumPreviewBytes) {
-        error = "Cannot read untracked file within the preview limit"; return {};
+    const auto bytes = file.read(maximumBytes + 1);
+    if (bytes.size() > maximumBytes) {
+        error = "File is too large to read (maximum 2 MiB)"; return {};
     }
+    if (file.error() != QFileDevice::NoError) {
+        error = "Could not read file within the 2 MiB limit"; return {};
+    }
+    return bytes;
+}
+QByteArray untrackedPreview(const QString &root, const QString &path, QString &error) {
+    const auto bytes = readWorkspaceBytes(root, path, error);
+    if (!error.isEmpty()) return {};
     QStringDecoder decoder(QStringConverter::Utf8);
     const QString text = decoder.decode(bytes);
     bool binary = decoder.hasError();
@@ -81,13 +120,72 @@ QString editorText(QString text) {
     text.replace('\r', '\n');
     return text;
 }
+struct LoadedDocument {
+    QString text, error, lineEnding = "\n";
+    QByteArray bytes;
+    QStringConverter::Encoding encoding = QStringConverter::Utf8;
+    bool hasBom = false, mixedEndings = false;
+};
+LoadedDocument readDocument(const QString &root, const QString &relativePath) {
+    LoadedDocument result;
+
+    const auto bytes = readWorkspaceBytes(root, relativePath, result.error, true);
+    if (!result.error.isEmpty()) return result;
+    const auto reject = [&](const QString &encoding, const QString &reason) {
+        result.error = QString("Cannot edit '%1' (%2): %3").arg(relativePath, encoding, reason);
+        return result;
+    };
+    // Check UTF-32 first: its LE BOM starts with the UTF-16 LE BOM.
+    if (bytes.startsWith(QByteArray::fromHex("fffe0000"))
+        || bytes.startsWith(QByteArray::fromHex("0000feff")))
+        return reject("UTF-32 BOM", "unsupported encoding; use UTF-8 or BOM-marked UTF-16");
+    auto encoding = QStringConverter::Utf8;
+    QString encodingName = "UTF-8 (no BOM)";
+    qsizetype bomSize = 0;
+    if (bytes.startsWith(QByteArray::fromHex("efbbbf"))) {
+        bomSize = 3; encodingName = "UTF-8 BOM";
+    } else if (bytes.startsWith(QByteArray::fromHex("fffe"))) {
+        bomSize = 2; encoding = QStringConverter::Utf16LE; encodingName = "UTF-16 LE BOM";
+    } else if (bytes.startsWith(QByteArray::fromHex("feff"))) {
+        bomSize = 2; encoding = QStringConverter::Utf16BE; encodingName = "UTF-16 BE BOM";
+    }
+    const QByteArray payload = bytes.mid(bomSize);
+    if (encoding != QStringConverter::Utf8 && payload.size() % 2 != 0)
+        return reject(encodingName, "truncated UTF-16 code unit (odd payload byte count)");
+    if (encoding == QStringConverter::Utf8 && payload.contains('\0'))
+        return reject(encodingName, "NUL byte found; binary or BOM-less UTF-16 is not supported");
+    // Strip exactly one transport BOM, retaining any subsequent U+FEFF as content.
+    QStringDecoder decoder(encoding, QStringConverter::Flag::ConvertInitialBom
+                                     | QStringConverter::Flag::Stateless);
+    const QString text = decoder.decode(payload);
+    QStringEncoder encoder(encoding, QStringConverter::Flag::Stateless);
+    const QByteArray roundTrip = encoder.encode(text);
+    if (!validUnicode(text) || decoder.hasError() || encoder.hasError() || roundTrip != payload)
+        return reject(encodingName, "malformed or truncated Unicode sequence; lossless decoding failed");
+    if (text.contains(QChar(0)))
+        return reject(encodingName, "decoded NUL character found; binary content cannot be edited");
+    QSet<QString> endings;
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        if (text.at(i) == '\r') {
+            if (i + 1 < text.size() && text.at(i + 1) == '\n') {
+                endings.insert("\r\n"); ++i;
+            } else endings.insert("\r");
+        } else if (text.at(i) == '\n') endings.insert("\n");
+    }
+    result.text = editorText(text); result.bytes = bytes;
+    result.encoding = encoding; result.hasBom = bomSize != 0;
+    result.mixedEndings = endings.size() > 1;
+    if (endings.size() == 1) result.lineEnding = *endings.cbegin();
+    return result;
+}
+
 }
 
 GitWorkspace::GitWorkspace(QObject *parent) : QObject(parent) {
     m_refreshDebounce.setSingleShot(true);
     m_refreshDebounce.setInterval(60);
     connect(&m_refreshDebounce, &QTimer::timeout, this, &GitWorkspace::refreshTree);
-    const auto schedule = [this](const QString &) { m_refreshDebounce.start(); };
+    const auto schedule = [this](const QString &) { m_watchesDirty = true; m_refreshDebounce.start(); };
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, schedule);
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, schedule);
     // File-watch limits and ignore/config changes must not silently leave stale status.
@@ -163,6 +261,7 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
         fail("Stop the shell before changing the repository");
         return;
     }
+    cancelFileLoad();
     cancelGit();
     m_resolving = false; m_refreshActive = false; m_refreshAgain = false;
     m_gitError.clear(); m_watchError.clear(); m_reconcile.stop();
@@ -172,6 +271,7 @@ void GitWorkspace::setRepositoryPath(const QString &path) {
     m_refreshDebounce.stop();
     if (!m_watcher.files().isEmpty()) m_watcher.removePaths(m_watcher.files());
     if (!m_watcher.directories().isEmpty()) m_watcher.removePaths(m_watcher.directories());
+    m_watchesDirty = true;
     m_gitStatus.clear(); m_gitDirectories.clear(); m_trackedFiles.clear();
     m_repository = path;
     m_root.clear(); m_file.clear(); m_text.clear(); m_saved.clear();
@@ -459,7 +559,9 @@ void GitWorkspace::refreshChanges(const QStringList &tracked, quint64 revision) 
                 std::stable_sort(changes.begin(), changes.end(), [](const QVariant &a, const QVariant &b) {
                     return !a.toMap().value("untracked").toBool() && b.toMap().value("untracked").toBool();
                 });
-                updateGitStatus(status); m_trackedFiles = tracked;
+                updateGitStatus(status);
+                if (m_trackedFiles != tracked) m_watchesDirty = true;
+                m_trackedFiles = tracked;
                 if (m_changedFiles != changes) { m_changedFiles = changes; emit changesChanged(); }
                 finish({});
             });
@@ -686,6 +788,7 @@ void GitWorkspace::updateGitStatus(const QByteArray &status) {
 }
 
 void GitWorkspace::updateWatches() {
+    m_watchesDirty = false;
     QSet<QString> desired;
     bool limited = false;
     const auto add = [&](const QString &path) {
@@ -751,7 +854,11 @@ void GitWorkspace::rebuildTree() {
     const auto previousTree = m_tree;
     const auto previousError = error();
     m_tree.clear();
-    if (!m_root.isEmpty()) { appendTree({}, 0); updateWatches(); }
+    if (!m_root.isEmpty()) {
+        // Still enumerate on reconciliation: untracked/ignored entries may have no watch.
+        appendTree({}, 0);
+        if (m_tree != previousTree || m_watchesDirty || !m_watchError.isEmpty()) updateWatches();
+    }
     if (m_tree != previousTree) emit treeChanged();
     if (error() != previousError) emit changed();
 }
@@ -771,7 +878,7 @@ void GitWorkspace::refreshTree() {
         else rebuildTree();
         return;
     }
-    struct Snapshot { QHash<QString, QString> status; QStringList tracked; QString error; bool filters = false; };
+    struct Snapshot { QStringList tracked; QString error; };
     m_refreshActive = true;
     const auto generation = m_gitGeneration;
     auto *watcher = new QFutureWatcher<Snapshot>(this);
@@ -795,48 +902,9 @@ void GitWorkspace::refreshTree() {
         if (git_repository_open(&raw, root.constData()) == 0) {
             {
                 std::unique_ptr<git_repository, decltype(&git_repository_free)> repo(raw, git_repository_free);
-                git_config *config = nullptr;
-                bool filters = false;
-                if (git_repository_config_snapshot(&config, raw) == 0) {
-                    git_config_foreach(config, [](const git_config_entry *entry, void *payload) {
-                        if (QByteArray(entry->name).startsWith("filter.")) *static_cast<bool *>(payload) = true;
-                        return 0;
-                    }, &filters);
-                    git_config_free(config);
-                } else result.error = "Git failed: cannot read repository configuration";
-                result.filters = filters;
-                git_status_options options = GIT_STATUS_OPTIONS_INIT;
-                options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS
-                    | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX | GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
-                git_status_list *list = nullptr;
                 git_index *index = nullptr;
-                if (result.error.isEmpty() && git_repository_index(&index, raw) == 0
-                    && (filters || git_status_list_new(&list, raw, &options) == 0)) {
+                if (git_repository_index(&index, raw) == 0) {
                     qsizetype bytes = 0;
-                    const auto mark = [&](const char *name, const QString &status) {
-                        QString path = QFile::decodeName(name);
-                        bytes += path.size();
-                        while (!path.isEmpty()) {
-                            if (result.status.value(path) != "modified") result.status.insert(path, status);
-                            const int slash = path.lastIndexOf('/');
-                            if (slash < 0) break;
-                            path.truncate(slash);
-                        }
-                    };
-                    for (size_t i = 0; !filters && i < git_status_list_entrycount(list); ++i) {
-                        const auto *entry = git_status_byindex(list, i);
-                        const auto flags = entry->status;
-                        if (flags == GIT_STATUS_CURRENT || flags == GIT_STATUS_IGNORED) continue;
-                        const auto *delta = entry->index_to_workdir ? entry->index_to_workdir : entry->head_to_index;
-                        if (!delta || !delta->new_file.path) { result.error = "Git failed: invalid status path"; break; }
-                        const bool added = flags == GIT_STATUS_WT_NEW || flags == GIT_STATUS_INDEX_NEW
-                            || flags == (GIT_STATUS_INDEX_NEW | GIT_STATUS_WT_MODIFIED);
-                        mark(delta->new_file.path, added ? "new" : "modified");
-                        for (const auto *rename : {entry->head_to_index, entry->index_to_workdir})
-                            if (rename && rename->status == GIT_DELTA_RENAMED && rename->old_file.path)
-                                mark(rename->old_file.path, "modified");
-                        if (bytes > 16 * 1024 * 1024) { result.error = "Git output exceeds the safety limit; previous status retained"; break; }
-                    }
                     for (size_t i = 0; result.error.isEmpty() && i < git_index_entrycount(index); ++i) {
                         const auto *path = git_index_get_byindex(index, i)->path;
                         bytes += qstrlen(path);
@@ -844,11 +912,11 @@ void GitWorkspace::refreshTree() {
                         if (bytes > 16 * 1024 * 1024) result.error = "Git output exceeds the safety limit; previous status retained";
                     }
                 }
-                if (result.error.isEmpty() && (!index || (!filters && !list))) {
+                if (result.error.isEmpty() && !index) {
                     const auto *error = git_error_last();
                     result.error = "Git failed: " + QString::fromUtf8(error ? error->message : "cannot read status/index");
                 }
-                git_index_free(index); git_status_list_free(list);
+                git_index_free(index);
             }
         }
         if (!raw) result.error = "Git failed: cannot open repository";
@@ -885,6 +953,7 @@ void GitWorkspace::updateLargeFileMode() {
 void GitWorkspace::setText(const QString &text) {
     const QString normalized = editorText(text);
     if (m_loadingDocument || m_file.isEmpty() || m_text == normalized) return;
+    cancelFileLoad();
     m_text = normalized;
     updateLargeFileMode();
     emit documentChanged();
@@ -899,75 +968,52 @@ bool GitWorkspace::editDocument(int revision, const QString &text) {
     return true;
 }
 
-bool GitWorkspace::loadFile(const QString &relativePath) {
-    const QString path = confined(relativePath);
-    if (path.isEmpty()) { fail("File is unavailable, a symlink, or outside the workspace"); return false; }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) { fail(file.errorString()); return false; }
-    if (file.size() > MaximumTextBytes) { fail("Text files are limited to 2 MiB"); return false; }
-    const QByteArray bytes = file.read(MaximumTextBytes + 1);
-    if (file.error() != QFileDevice::NoError || bytes.size() > MaximumTextBytes) {
-        fail("Could not read file within the 2 MiB limit"); return false;
-    }
-    auto reject = [&](const QString &encoding, const QString &reason) {
-        fail(QString("Cannot edit '%1' (%2): %3").arg(relativePath, encoding, reason));
-        return false;
-    };
-    // Check UTF-32 first: its LE BOM starts with the UTF-16 LE BOM.
-    if (bytes.startsWith(QByteArray::fromHex("fffe0000"))
-        || bytes.startsWith(QByteArray::fromHex("0000feff")))
-        return reject("UTF-32 BOM", "unsupported encoding; use UTF-8 or BOM-marked UTF-16");
-    auto encoding = QStringConverter::Utf8;
-    QString encodingName = "UTF-8 (no BOM)";
-    qsizetype bomSize = 0;
-    if (bytes.startsWith(QByteArray::fromHex("efbbbf"))) {
-        bomSize = 3; encodingName = "UTF-8 BOM";
-    } else if (bytes.startsWith(QByteArray::fromHex("fffe"))) {
-        bomSize = 2; encoding = QStringConverter::Utf16LE; encodingName = "UTF-16 LE BOM";
-    } else if (bytes.startsWith(QByteArray::fromHex("feff"))) {
-        bomSize = 2; encoding = QStringConverter::Utf16BE; encodingName = "UTF-16 BE BOM";
-    }
-    const QByteArray payload = bytes.mid(bomSize);
-    if (encoding != QStringConverter::Utf8 && payload.size() % 2 != 0)
-        return reject(encodingName, "truncated UTF-16 code unit (odd payload byte count)");
-    if (encoding == QStringConverter::Utf8 && payload.contains('\0'))
-        return reject(encodingName, "NUL byte found; binary or BOM-less UTF-16 is not supported");
-    // Strip exactly one transport BOM, retaining any subsequent U+FEFF as content.
-    QStringDecoder decoder(encoding, QStringConverter::Flag::ConvertInitialBom
-                                     | QStringConverter::Flag::Stateless);
-    const QString text = decoder.decode(payload);
-    QStringEncoder encoder(encoding, QStringConverter::Flag::Stateless);
-    const QByteArray roundTrip = encoder.encode(text);
-    if (!validUnicode(text) || decoder.hasError() || encoder.hasError() || roundTrip != payload)
-        return reject(encodingName, "malformed or truncated Unicode sequence; lossless decoding failed");
-    if (text.contains(QChar(0)))
-        return reject(encodingName, "decoded NUL character found; binary content cannot be edited");
-    QSet<QString> endings;
-    for (qsizetype i = 0; i < text.size(); ++i) {
-        if (text.at(i) == '\r') {
-            if (i + 1 < text.size() && text.at(i + 1) == '\n') {
-                endings.insert("\r\n"); ++i;
-            } else endings.insert("\r");
-        } else if (text.at(i) == '\n') endings.insert("\n");
-    }
-    m_loadingDocument = true;
-    emit documentAboutToChange();
-    ++m_documentRevision;
-    m_hasBom = bomSize != 0;
-    m_encoding = encoding;
-    m_mixedEndings = endings.size() > 1;
-    m_lineEnding = endings.size() == 1 ? *endings.cbegin() : QString("\n");
-    m_file = relativePath; m_text = editorText(text); m_saved = m_text; m_diskBytes = bytes;
-    updateLargeFileMode();
+void GitWorkspace::cancelFileLoad() {
+    ++m_fileGeneration;
+    m_fileLoading = false;
+    m_loadingFilePath.clear();
+}
+
+void GitWorkspace::loadFile(const QString &relativePath) {
+    cancelFileLoad();
+    m_fileLoading = true; m_loadingFilePath = relativePath;
     m_error.clear();
-    emit documentChanged();
+    startFileLoad();
     emit changed();
-    m_loadingDocument = false;
-    return true;
+}
+
+void GitWorkspace::startFileLoad() {
+    if (m_fileReadActive || !m_fileLoading) return;
+    m_fileReadActive = true;
+    const auto generation = m_fileGeneration;
+    const auto relativePath = m_loadingFilePath;
+    auto *watcher = new QFutureWatcher<LoadedDocument>(this);
+    watcher->setObjectName("workspaceFileLoad");
+    connect(watcher, &QFutureWatcher<LoadedDocument>::finished, this, [this, watcher, generation, relativePath] {
+        const auto result = watcher->result(); watcher->deleteLater();
+        m_fileReadActive = false;
+        if (generation != m_fileGeneration) { startFileLoad(); return; }
+        cancelFileLoad();
+        if (!result.error.isEmpty()) { fail(result.error); return; }
+        m_loadingDocument = true;
+        const auto acceptedGeneration = m_fileGeneration;
+        emit documentAboutToChange();
+        if (acceptedGeneration != m_fileGeneration) { m_loadingDocument = false; return; }
+        ++m_documentRevision;
+        m_hasBom = result.hasBom; m_encoding = result.encoding;
+        m_mixedEndings = result.mixedEndings; m_lineEnding = result.lineEnding;
+        m_file = relativePath; m_text = result.text; m_saved = m_text; m_diskBytes = result.bytes;
+        updateLargeFileMode(); m_error.clear();
+        emit documentChanged();
+        m_loadingDocument = false;
+        emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run([root = m_root, relativePath] { return readDocument(root, relativePath); }));
 }
 
 void GitWorkspace::openFile(const QString &path) {
-    if (m_pending || path == m_file) return;
+    if (m_pending || m_loadingDocument) return;
+    if (path == m_file) { cancelFileLoad(); emit changed(); return; }
     if (dirty()) {
         m_pending = true; m_pendingClose = false; m_pendingFile = path;
         emit unsavedPrompt();
@@ -1033,6 +1079,7 @@ bool GitWorkspace::save() {
 
 void GitWorkspace::requestClose() {
     if (m_pending) return;
+    cancelFileLoad(); emit changed();
     if (!dirty()) { emit closeApproved(); return; }
     m_pending = true; m_pendingClose = true; m_pendingFile.clear(); emit unsavedPrompt();
 }
@@ -1047,6 +1094,7 @@ void GitWorkspace::resolveUnsaved(const QString &decision) {
     if (decision == "cancel") return;
     if (decision == "discard") {
         m_text = m_saved;
+        updateLargeFileMode();
         emit documentChanged();
         emit changed();
     }
@@ -1101,6 +1149,7 @@ void GitWorkspace::clearTerminal() {
 #ifdef GIT_WORKSPACE_QML_TEST
 #include "terminal.h"
 #include "syntaxhighlighter.h"
+#include <QSyntaxHighlighter>
 #include <qqml.h>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -1380,7 +1429,7 @@ private slots:
             return QString("missing");
         };
         QCOMPARE(metadata("tracked.txt", "status"), QString());
-        workspace.openFile("tracked.txt");
+        workspace.openFile("tracked.txt"); QTRY_VERIFY(!workspace.fileLoading());
         const int revision = workspace.documentRevision();
         workspace.setText("unsaved editor\n");
         QSignalSpy documentChanges(&workspace, &GitWorkspace::documentChanged);
@@ -1546,7 +1595,7 @@ private slots:
         QVERIFY(git.waitForFinished());
         QFile file(temp.filePath("README.md")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("original"); file.close();
         GitWorkspace workspace; workspace.setRepositoryPath(temp.path()); QTRY_VERIFY(!workspace.resolving());
-        workspace.openFile("README.md"); workspace.setText("edited");
+        workspace.openFile("README.md"); QTRY_VERIFY(!workspace.fileLoading()); workspace.setText("edited");
         QLockFile lock(temp.filePath(".ddetector-upload.lock")); QVERIFY(lock.tryLock(0));
         QVERIFY(!workspace.save()); QVERIFY(workspace.dirty());
         QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("original")); file.close();
@@ -1567,10 +1616,12 @@ private slots:
 
         GitWorkspace workspace; workspace.setRepositoryPath(temp.path());
         QTRY_VERIFY(!workspace.resolving());
-        workspace.openFile("normal.txt"); QVERIFY(!workspace.largeFileMode());
-        workspace.openFile("long-line.txt"); QVERIFY(workspace.largeFileMode());
-        workspace.openFile("large.txt"); QVERIFY(workspace.largeFileMode());
+        workspace.openFile("normal.txt"); QTRY_VERIFY(!workspace.fileLoading()); QVERIFY(!workspace.largeFileMode());
+        workspace.openFile("long-line.txt"); QTRY_VERIFY(!workspace.fileLoading()); QVERIFY(workspace.largeFileMode());
+        workspace.openFile("large.txt"); QTRY_VERIFY(!workspace.fileLoading()); QVERIFY(workspace.largeFileMode());
         workspace.setText("small again\n"); QVERIFY(!workspace.largeFileMode());
+        workspace.requestClose(); workspace.resolveUnsaved("discard");
+        QVERIFY(workspace.largeFileMode()); QVERIFY(!workspace.dirty());
     }
 
     void formatting_data() {
@@ -1627,7 +1678,7 @@ private slots:
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(original), original.size()); file.close();
         GitWorkspace backend; backend.setRepositoryPath(temp.path());
-                QTRY_VERIFY(!backend.resolving()); backend.openFile("document");
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("document"); QTRY_VERIFY(!backend.fileLoading());
         QCOMPARE(backend.filePath(), "document"); QCOMPARE(backend.text(), model); QVERIFY(!backend.dirty());
 #ifdef GIT_WORKSPACE_QML_TEST
         QQmlEngine engine;
@@ -1759,7 +1810,7 @@ private slots:
         // Switch in a burst without delivering queued highlighter/document events.
         for (int pass = 0; pass < 3; ++pass) {
             for (int i = 0; i < names.size(); ++i) {
-                backend.openFile(names[i]);
+                backend.openFile(names[i]); QTRY_VERIFY(!backend.fileLoading());
                 QCOMPARE(backend.filePath(), names[i]);
                 QCOMPARE(editor->property("text").toString(), editorText(QString::fromUtf8(expected[i])));
                 QVERIFY(!backend.dirty());
@@ -1772,14 +1823,14 @@ private slots:
             for (int i = 0; i < names.size(); ++i) {
                 const int previousRevision = backend.documentRevision();
                 const QString previousText = backend.text();
-                backend.openFile(names[i]);
+                backend.openFile(names[i]); QTRY_VERIFY(!backend.fileLoading());
                 QCOMPARE(backend.filePath(), names[i]);
                 QCOMPARE(backend.text(), editorText(QString::fromUtf8(expected[i])));
                 QCOMPARE(editor->property("text").toString(), backend.text());
                 QVERIFY(!backend.dirty());
                 QVERIFY(!backend.editDocument(previousRevision, previousText));
                 backend.refreshTree();
-                backend.openFile("missing-file"); // Broad error notification, not a document change.
+                backend.openFile("missing-file"); QTRY_VERIFY(!backend.fileLoading()); // Broad error notification, not a document change.
                 QCoreApplication::processEvents();
                 QCOMPARE(editor->property("text").toString(), backend.text());
                 QVERIFY(!backend.dirty());
@@ -1789,9 +1840,15 @@ private slots:
                 if (pass == 1) {
                     // Insert through the actual TextArea API, including into an empty document.
                     const int position = editor->property("text").toString().size();
+                    auto *highlighter = editor->findChild<SyntaxHighlighter *>();
+                    QVERIFY(highlighter);
+                    QPointer<QSyntaxHighlighter> receiver = highlighter->findChild<QSyntaxHighlighter *>();
+                    QVERIFY(receiver);
                     QVERIFY(QMetaObject::invokeMethod(editor, "insert", Q_ARG(int, position),
                                                       Q_ARG(QString, QString("X"))));
                     QCOMPARE(backend.text(), editorText(QString::fromUtf8(expected[i])) + "X");
+                    QVERIFY(receiver); // Local edits must retain incremental highlighting.
+                    QCOMPARE(highlighter->findChild<QSyntaxHighlighter *>(), receiver.data());
                     QVERIFY(backend.dirty());
                     QVERIFY2(backend.save(), qPrintable(backend.error()));
                     expected[i] += "X";
@@ -1802,6 +1859,24 @@ private slots:
                     QFile disk(temp.filePath(names[j])); QVERIFY(disk.open(QIODevice::ReadOnly));
                     QCOMPARE(disk.readAll(), expected[j]);
                 }
+            }
+        }
+        auto *highlighter = editor->findChild<SyntaxHighlighter *>();
+        QVERIFY(highlighter);
+        for (const auto &largeText : {QByteArray(17000, 'x'), QByteArray("{}\n").repeated(90000)}) {
+            QFile large(temp.filePath("large.json")); QVERIFY(large.open(QIODevice::WriteOnly));
+            QCOMPARE(large.write(largeText), largeText.size()); large.close();
+            for (int cycle = 0; cycle < 3; ++cycle) {
+                backend.openFile("large.json"); QTRY_VERIFY(!backend.fileLoading());
+                QVERIFY(backend.largeFileMode());
+                QVERIFY(!highlighter->findChild<QSyntaxHighlighter *>());
+                QCOMPARE(editor->property("text").toString(), QString::fromUtf8(largeText));
+                QTest::qWait(20); // Allow layout and scene-graph work between both transition directions.
+                backend.openFile("append_track.py"); QTRY_VERIFY(!backend.fileLoading());
+                QVERIFY(!backend.largeFileMode());
+                QVERIFY(highlighter->findChild<QSyntaxHighlighter *>());
+                QCOMPARE(editor->property("text").toString(), backend.text());
+                QTest::qWait(20);
             }
         }
         QCOMPARE(prompts.count(), 0);
@@ -1898,7 +1973,7 @@ private slots:
         file.write("hello"); file.close();
         GitWorkspace backend;
         QVERIFY(object->setProperty("workspaceBackend", QVariant::fromValue<QObject *>(&backend)));
-        backend.setRepositoryPath(temp.path()); QTRY_VERIFY(!backend.resolving()); backend.openFile("a.txt");
+        backend.setRepositoryPath(temp.path()); QTRY_VERIFY(!backend.resolving()); backend.openFile("a.txt"); QTRY_VERIFY(!backend.fileLoading());
         QVERIFY(object->setProperty("expanded", true));
         item->setSize(QSizeF(1200, 800));
         window.resize(1200, 800);
@@ -1929,15 +2004,99 @@ private slots:
         write("nul", bom + QByteArray("a\0b", 3));
         write("utf16", QByteArray::fromHex("fffe00d8"));
         GitWorkspace backend; backend.setRepositoryPath(temp.path());
-                QTRY_VERIFY(!backend.resolving()); backend.openFile("valid");
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("valid"); QTRY_VERIFY(!backend.fileLoading());
         QCOMPARE(backend.text(), QString(QChar(0xfeff)) + "hello\n");
         for (const QString &name : {QString("invalid"), QString("nul"), QString("utf16")}) {
-            backend.openFile(name); QCOMPARE(backend.filePath(), "valid"); QVERIFY(!backend.error().isEmpty());
+            backend.openFile(name); QTRY_VERIFY(!backend.fileLoading()); QCOMPARE(backend.filePath(), "valid"); QVERIFY(!backend.error().isEmpty());
         }
         write("valid", "external\r\n");
         QVERIFY(!backend.save()); QVERIFY(!backend.dirty());
         QFile file(temp.filePath("valid")); QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), "external\r\n");
+    }
+    void asynchronousLoadsAndDiscard() {
+        QTemporaryDir temp, other;
+        for (const auto &directory : {temp.path(), other.path()}) {
+            QProcess git; git.start("git", {"init", "-q", directory});
+            QVERIFY(git.waitForFinished()); QCOMPARE(git.exitCode(), 0);
+        }
+        for (const auto &name : {"first", "second"}) {
+            QFile file(temp.filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(name); file.close();
+        }
+        GitWorkspace workspace; workspace.setRepositoryPath(temp.path());
+        QTRY_VERIFY(!workspace.resolving());
+        // No event processing between requests: even an already-finished worker is stale.
+        workspace.openFile("missing");
+        QVERIFY(workspace.fileLoading()); QCOMPARE(workspace.loadingFilePath(), "missing");
+        for (int i = 0; i < 1000; ++i) workspace.openFile(i % 2 ? "first" : "second");
+        QCOMPARE(workspace.findChildren<QFutureWatcherBase *>("workspaceFileLoad").size(), 1);
+        QVERIFY(workspace.m_fileReadActive);
+        QCOMPARE(workspace.loadingFilePath(), "first");
+        QTRY_VERIFY(!workspace.fileLoading());
+        QTRY_VERIFY(workspace.findChildren<QFutureWatcherBase *>().isEmpty());
+        QCOMPARE(workspace.filePath(), "first"); QCOMPARE(workspace.text(), "first");
+        QVERIFY(workspace.loadingFilePath().isEmpty()); QVERIFY(workspace.m_error.isEmpty());
+        const int revision = workspace.documentRevision();
+        workspace.openFile("second");
+        workspace.openFile("missing"); // Cancel both the worker result and the queued request.
+        QVERIFY(workspace.editDocument(revision, "new edit"));
+        QVERIFY(!workspace.fileLoading());
+        QTRY_VERIFY(workspace.findChildren<QFutureWatcherBase *>().isEmpty());
+        QCOMPARE(workspace.text(), "new edit"); QCOMPARE(workspace.filePath(), "first");
+        QVERIFY(workspace.dirty()); QCOMPARE(workspace.documentRevision(), revision);
+
+        workspace.setText(QString(17000, 'x')); QVERIFY(workspace.largeFileMode());
+        workspace.openFile("missing"); workspace.resolveUnsaved("discard");
+        QTRY_VERIFY(!workspace.fileLoading());
+        QCOMPARE(workspace.text(), "first"); QVERIFY(!workspace.largeFileMode());
+        QVERIFY(!workspace.dirty()); QVERIFY(!workspace.m_error.isEmpty());
+        QCOMPARE(workspace.documentRevision(), revision);
+        QVERIFY(workspace.save()); // Failed loading must preserve disk bytes/formatting.
+
+        workspace.openFile("second");
+        QSignalSpy closed(&workspace, &GitWorkspace::closeApproved);
+        workspace.requestClose(); QCOMPARE(closed.count(), 1);
+        QTRY_VERIFY(workspace.findChildren<QFutureWatcherBase *>().isEmpty());
+        QCOMPARE(workspace.filePath(), "first"); QVERIFY(!workspace.fileLoading());
+
+        workspace.openFile("second"); workspace.setRepositoryPath(other.path());
+        QTRY_VERIFY(!workspace.resolving());
+        QTRY_VERIFY(workspace.findChildren<QFutureWatcherBase *>().isEmpty());
+        QCOMPARE(workspace.rootPath(), QDir(other.path()).canonicalPath());
+        QVERIFY(workspace.filePath().isEmpty()); QVERIFY(workspace.text().isEmpty());
+        QVERIFY(!workspace.fileLoading()); QVERIFY(workspace.loadingFilePath().isEmpty());
+    }
+    void confinedReader() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QVERIFY(QDir(temp.path()).mkpath("parent/repo"));
+        const QString root = temp.filePath("parent/repo");
+        QFile file(QDir(root).filePath("text")); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("inside"), 6); file.close();
+        QString error;
+        QCOMPARE(readWorkspaceBytes(root, "text", error, true), QByteArray("inside"));
+        QVERIFY(error.isEmpty());
+        for (const QString &path : {QString("../repo/text"), QString("/etc/passwd"),
+                 QString("text") + QChar(0) + "suffix", QString(".git/config"), QString("a/../../text")}) {
+            error.clear(); QVERIFY(readWorkspaceBytes(root, path, error, true).isEmpty());
+            QVERIFY(!error.isEmpty());
+        }
+        error.clear(); QVERIFY(readWorkspaceBytes({}, "text", error, true).isEmpty());
+        QVERIFY(!error.isEmpty());
+#ifdef Q_OS_UNIX
+        QVERIFY(QFile::link(file.fileName(), QDir(root).filePath("link")));
+        error.clear(); QVERIFY(readWorkspaceBytes(root, "link", error).isEmpty());
+        QVERIFY(!error.isEmpty());
+        QVERIFY(::mkfifo(QFile::encodeName(QDir(root).filePath("fifo")).constData(), 0600) == 0);
+        error.clear(); QVERIFY(readWorkspaceBytes(root, "fifo", error).isEmpty());
+        QVERIFY(!error.isEmpty());
+        // A root ancestor swapped for a symlink must not redirect the read.
+        QVERIFY(QDir(temp.path()).rename("parent", "moved"));
+        QVERIFY(QFile::link(temp.filePath("moved"), temp.filePath("parent")));
+        error.clear(); QVERIFY(readWorkspaceBytes(root, "text", error).isEmpty());
+        QVERIFY(!error.isEmpty());
+#endif
     }
     void rejectedEncoding_data() {
         QTest::addColumn<QByteArray>("bytes");
@@ -1969,7 +2128,7 @@ private slots:
         QFile file(temp.filePath("bad.json")); QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(bytes), bytes.size()); file.close();
         GitWorkspace backend; backend.setRepositoryPath(temp.path());
-                QTRY_VERIFY(!backend.resolving()); backend.openFile("bad.json");
+                QTRY_VERIFY(!backend.resolving()); backend.openFile("bad.json"); QTRY_VERIFY(!backend.fileLoading());
         QVERIFY(backend.filePath().isEmpty());
         QVERIFY2(backend.error().contains("bad.json"), qPrintable(backend.error()));
         QVERIFY2(backend.error().contains(encoding), qPrintable(backend.error()));
@@ -1986,7 +2145,7 @@ private slots:
             QFile file(temp.filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly));
             QCOMPARE(file.write(original), original.size()); file.close();
             GitWorkspace backend; backend.setRepositoryPath(temp.path());
-                        QTRY_VERIFY(!backend.resolving()); backend.openFile(name);
+                        QTRY_VERIFY(!backend.resolving()); backend.openFile(name); QTRY_VERIFY(!backend.fileLoading());
             for (const QString &invalid : {QString("a") + QChar(0) + "b", QString(QChar(0xd800)), QString(QChar(0xdc00))}) {
                 backend.setText(invalid); QVERIFY(!backend.save()); QVERIFY(backend.dirty());
                 QVERIFY(backend.error().contains(name)); QVERIFY(backend.error().contains("UTF-16"));
@@ -2016,25 +2175,25 @@ private slots:
         QCOMPARE(workspace.rootPath(), dir.canonicalPath());
         for (const auto &row : workspace.tree()) QVERIFY(row.toMap().value("name") != ".git");
         workspace.toggleDirectory("sub");
-        workspace.openFile("sub/a.txt"); QCOMPARE(workspace.text(), "hello\n");
+        workspace.openFile("sub/a.txt"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.text(), "hello\n");
         workspace.setText("changed"); QVERIFY(workspace.dirty());
         QSignalSpy prompt(&workspace, &GitWorkspace::unsavedPrompt);
         QSignalSpy closed(&workspace, &GitWorkspace::closeApproved);
-        workspace.openFile("b.txt"); QCOMPARE(prompt.count(), 1);
+        workspace.openFile("b.txt"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(prompt.count(), 1);
         workspace.resolveUnsaved("cancel"); QCOMPARE(workspace.filePath(), "sub/a.txt");
-        workspace.openFile("b.txt"); workspace.resolveUnsaved("save");
+        workspace.openFile("b.txt"); QTRY_VERIFY(!workspace.fileLoading()); workspace.resolveUnsaved("save"); QTRY_VERIFY(!workspace.fileLoading());
         QCOMPARE(workspace.filePath(), "b.txt");
         QFile saved(dir.filePath("sub/a.txt")); QVERIFY(saved.open(QIODevice::ReadOnly)); QCOMPARE(saved.readAll(), "changed");
-        workspace.openFile("../outside"); QCOMPARE(workspace.filePath(), "b.txt");
-        workspace.openFile(".git/config"); QCOMPARE(workspace.filePath(), "b.txt");
+        workspace.openFile("../outside"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.filePath(), "b.txt");
+        workspace.openFile(".git/config"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.filePath(), "b.txt");
 #ifndef Q_OS_WIN
         QVERIFY(QFile::link(dir.filePath("b.txt"), dir.filePath("link")));
-        workspace.openFile("link"); QCOMPARE(workspace.filePath(), "b.txt");
+        workspace.openFile("link"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.filePath(), "b.txt");
 #endif
-        workspace.openFile("binary"); QCOMPARE(workspace.filePath(), "b.txt");
-        workspace.openFile("large"); QCOMPARE(workspace.filePath(), "b.txt");
+        workspace.openFile("binary"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.filePath(), "b.txt");
+        workspace.openFile("large"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(workspace.filePath(), "b.txt");
         workspace.setText("local"); write("b.txt", "external"); QVERIFY(!workspace.save());
-        workspace.requestClose(); workspace.resolveUnsaved("save"); QCOMPARE(closed.count(), 0);
+        workspace.requestClose(); workspace.resolveUnsaved("save"); QTRY_VERIFY(!workspace.fileLoading()); QCOMPARE(closed.count(), 0);
         workspace.resolveUnsaved("discard"); QCOMPARE(closed.count(), 1); QVERIFY(!workspace.dirty());
         workspace.startTerminal(); QTRY_VERIFY(workspace.terminalRunning());
         QTRY_VERIFY(workspace.sendTerminalInput("echo workspace-shell-test\n"));

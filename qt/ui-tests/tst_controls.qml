@@ -92,6 +92,7 @@ Item {
         }
     }
     Component { id: sendFactory; UI.SendDialog { uploadBackend: fakeUploader } }
+    Component { id: diffFactory; UI.GitDiffView { width: 700; height: 400 } }
     Component { id: quoteFactory; UI.SiteQuote { width: 220; text: "A long warning that wraps across several lines without leaving the shared quote block" } }
     Component { id: buttonFactory; UI.SiteButton { text: "<b>literal</b>" } }
     Component { id: fieldFactory; UI.SiteTextField { Accessible.name: "Artist" } }
@@ -116,6 +117,69 @@ Item {
             tryCompare(nunitoSemiBold, "status", FontLoader.Ready);
         }
         function init() { fakeUi.plays = 0; fakeUi.choices = 0; fakeUi.menus = 0; fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0; }
+        function test_diffBudgetBoundaries() {
+            const diff = createTemporaryObject(diffFactory, scene);
+            const chars = diff.maxPreviewChars;
+            const lines = diff.maxPreviewLines;
+            const line = diff.maxLineChars;
+            const cases = [
+                {text: "", truncated: false, count: 0},
+                {text: "x".repeat(line - 1), truncated: false},
+                {text: "x".repeat(line), truncated: false},
+                {text: "x".repeat(line + 1), truncated: true},
+                {text: "x".repeat(line) + "\n", truncated: false},
+                {text: "\n".repeat(lines - 1), truncated: false},
+                {text: "\n".repeat(lines), truncated: false},
+                {text: "\n".repeat(lines + 1), truncated: true},
+                {text: ("x".repeat(127) + "\n").repeat(chars / 128).slice(0, -1), truncated: false},
+                {text: ("x".repeat(127) + "\n").repeat(chars / 128), truncated: false},
+                {text: ("x".repeat(127) + "\n").repeat(chars / 128) + "x", truncated: true},
+                {text: "x".repeat(4000000), truncated: true},
+                {text: "\n".repeat(1000000), truncated: true},
+                {text: "x".repeat(line - 1) + "😀", truncated: true}
+            ];
+            for (const entry of cases) {
+                diff.diffText = entry.text;
+                compare(diff.diffText, entry.text);
+                compare(diff.parsed.truncated, entry.truncated);
+                compare(findChild(diff, "diffPreviewWarning").visible, entry.truncated);
+                verify(diff.parsed.previewChars <= chars);
+                verify(diff.parsed.previewLines <= lines);
+                verify(diff.parsed.rows.length <= lines);
+                verify(diff.parsed.textWidth <= diff.maxTextWidth);
+                for (const row of diff.parsed.rows) {
+                    verify(row.label.length <= line);
+                    verify(row.oldText.length <= line);
+                    verify(row.newText.length <= line);
+                }
+            }
+            diff.diffText = "small";
+            compare(diff.parsed.truncated, false);
+            compare(diff.parsed.rows[0].label, "small");
+        }
+        function test_diffBoundedGeometryAndParsing() {
+            const diff = createTemporaryObject(diffFactory, scene);
+            diff.diffText = "+++ b/file\n@@ -1,2 +1,2 @@\n-old\n+<b>new</b>\n context\n";
+            compare(diff.parsed.truncated, false);
+            compare(diff.parsed.rows.length, 4);
+            compare(diff.parsed.rows[2].oldText, "old");
+            compare(diff.parsed.rows[2].newText, "<b>new</b>");
+            compare(diff.parsed.rows[3].oldNumber, 2);
+            diff.diffText = "@@ -1 +1 @@\n-" + "\t".repeat(diff.maxLineChars - 1)
+                + "\n" + "\\ No newline at end of file\n".repeat(10000);
+            verify(diff.parsed.truncated);
+            verify(diff.parsed.rows[1].oldText.length <= diff.maxLineChars);
+            verify(diff.parsed.textWidth <= diff.maxTextWidth);
+            const view = findChild(diff, "diffList");
+            wait(0);
+            verify(isFinite(view.contentWidth));
+            verify(view.contentWidth <= 2 * (diff.gutterWidth + diff.maxTextWidth + 24));
+            verify(view.contentHeight <= diff.maxPreviewLines * Math.max(diff.headerHeight, diff.rowHeight));
+            verify(findChild(diff, "diffPreviewWarning").text.indexOf("Source files are unchanged") >= 0);
+            diff.diffText = "@@ -" + "9".repeat(400) + " +1 @@\n-x\n+y";
+            verify(isFinite(diff.parsed.maxLine));
+            verify(isFinite(diff.sideWidth));
+        }
         function test_sharedTextContextMenu() {
             const field = createTemporaryObject(fieldFactory, scene, {text: "Artist"});
             const menu = field.ContextMenu.menu;

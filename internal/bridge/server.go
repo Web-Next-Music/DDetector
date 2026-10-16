@@ -81,6 +81,9 @@ type Server struct {
 	censorRuntime      *censorRuntime
 	censorProcessor    censor.Processor
 	OpenBrowser        func(string) error
+	stateBuildMu       sync.Mutex
+	tracksJSON         []byte
+	tracksTag          string
 	tracksRevision     uint64
 	cachedRevision     uint64
 	cachedState        State
@@ -192,12 +195,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendState captures an immutable snapshot under mu, then marshals and writes
+// stateResponse captures an immutable snapshot under mu, then marshals
 // outside the lock. User values are immutable session snapshots;
 // LastFetch is copied so even direct scalar writes invalidate the encoding.
 // Track replacements (including publishResults) change the backing slice; all
 // in-place track edits must increment tracksRevision under mu.
-func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
+func (s *Server) stateResponse(r *http.Request) ([]byte, string, error) {
+	s.stateBuildMu.Lock()
+	defer s.stateBuildMu.Unlock()
 	s.mu.Lock()
 	current := s.state
 	current.Tracks = nil
@@ -209,28 +214,78 @@ func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
 	if sameTracks && len(s.state.Tracks) > 0 {
 		sameTracks = &s.state.Tracks[0] == &s.cachedTracks[0]
 	}
-	if s.stateJSON == nil || !sameTracks || s.tracksRevision != s.cachedRevision || !reflect.DeepEqual(current, s.cachedState) {
-		snapshot := current
-		snapshot.Tracks = append([]Result(nil), s.state.Tracks...)
-		if s.state.Tracks != nil && snapshot.Tracks == nil {
-			snapshot.Tracks = []Result{}
+	tracksChanged := s.tracksJSON == nil || !sameTracks || s.tracksRevision != s.cachedRevision
+	tracks, revision := s.state.Tracks, s.tracksRevision
+	var snapshot []Result
+	if tracksChanged {
+		snapshot = append([]Result(nil), tracks...)
+		if tracks != nil && snapshot == nil {
+			snapshot = []Result{}
 		}
-		tracks, revision := s.state.Tracks, s.tracksRevision
-		s.mu.Unlock()
-		encoded, err := json.Marshal(snapshot)
-		if err != nil {
-			failure(w, 500, "unable to encode state")
-			return
-		}
-		s.mu.Lock()
-		s.stateJSON = append(encoded, '\n')
-		s.stateETag = fmt.Sprintf(`"%x"`, sha256.Sum256(s.stateJSON))
-		s.cachedState = current
-		s.cachedTracks = tracks
-		s.cachedRevision = revision
 	}
-	encoded, etag := s.stateJSON, s.stateETag
 	s.mu.Unlock()
+	if tracksChanged {
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, "", errors.New("unable to encode tracks")
+		}
+		s.stateJSON = nil
+		s.tracksJSON = data
+		s.tracksTag = fmt.Sprintf("%x", sha256.Sum256(data))
+		s.cachedTracks, s.cachedRevision = tracks, revision
+	}
+	// Delta clients receive complete scalar state and only a changed collection.
+	// The opaque content revision is safe across backend restarts.
+	delta := r.Header.Get("X-State-Delta") == "1"
+	var encoded []byte
+	var etag string
+	if delta {
+		scalar, err := json.Marshal(current)
+		if err != nil {
+			return nil, "", errors.New("unable to encode state")
+		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(scalar, &fields)
+		delete(fields, "tracks")
+		fields["tracksRevision"], _ = json.Marshal(s.tracksTag)
+		if r.Header.Get("X-Tracks-Revision") != s.tracksTag {
+			fields["tracks"] = s.tracksJSON
+		}
+		encoded, _ = json.Marshal(fields)
+		encoded = append(encoded, '\n')
+		etag = fmt.Sprintf(`"%x"`, sha256.Sum256(encoded))
+	} else {
+		if s.stateJSON == nil || tracksChanged || !reflect.DeepEqual(current, s.cachedState) {
+			scalar, err := json.Marshal(current)
+			if err != nil {
+				return nil, "", errors.New("unable to encode state")
+			}
+			// Reuse the track encoding without sending it through Marshal again.
+			var fields map[string]json.RawMessage
+			_ = json.Unmarshal(scalar, &fields)
+			delete(fields, "tracks")
+			scalar, _ = json.Marshal(fields)
+			encoded = append(scalar[:len(scalar)-1], []byte(`,"tracks":`)...)
+			encoded = append(encoded, s.tracksJSON...)
+			s.stateJSON = append(encoded, '}', '\n')
+			s.stateETag = fmt.Sprintf(`"%x"`, sha256.Sum256(s.stateJSON))
+			s.cachedState = current
+		}
+		encoded, etag = s.stateJSON, s.stateETag
+	}
+	return encoded, etag, nil
+}
+
+func (s *Server) sendState(w http.ResponseWriter, r *http.Request) {
+	// Cached byte slices are immutable. Release both locks before touching the
+	// writer, including error and conditional responses, so slow clients cannot
+	// hold up other snapshots.
+	encoded, etag, err := s.stateResponse(r)
+	if err != nil {
+		failure(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Vary", "X-State-Delta, X-Tracks-Revision")
 	w.Header().Set("ETag", etag)
 	for _, tag := range strings.Split(r.Header.Get("If-None-Match"), ",") {
 		tag = strings.TrimSpace(tag)

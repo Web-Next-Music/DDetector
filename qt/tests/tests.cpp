@@ -218,10 +218,10 @@ private slots:
         QTRY_VERIFY(scrollShadow->isVisible());
         auto viewItem = qobject_cast<QQuickItem *>(view.data());
         QVERIFY(viewItem);
-        QCOMPARE(scrollViewport->mapToItem(viewItem, QPointF()), QPointF(16, 16));
-        QCOMPARE(scrollViewport->width(), viewItem->width() - 32);
-        QCOMPARE(scrollViewport->height(), viewItem->height() - 32);
-        QCOMPARE(scrollShadow->mapToItem(viewItem, QPointF()), QPointF(16, 16));
+        QCOMPARE(scrollViewport->mapToItem(viewItem, QPointF()), QPointF(10, 10));
+        QCOMPARE(scrollViewport->width(), viewItem->width() - 20);
+        QCOMPARE(scrollViewport->height(), viewItem->height() - 20);
+        QCOMPARE(scrollShadow->mapToItem(viewItem, QPointF()), QPointF(10, 10));
         QCOMPARE(scrollShadow->width(), scrollViewport->width());
         QCOMPARE(scrollShadow->height(), scrollViewport->height());
         QVERIFY(!scrollShadow->isEnabled());
@@ -1441,7 +1441,102 @@ private slots:
         Config memory{QString()};
         memory.setMusicToken("memory-only"); QVERIFY(memory.error().isEmpty());
     }
-    void modelDiffPreservesIndexes() {
+    void censorDetailRevisionPolling() {
+        MockBackend server;
+        QJsonObject job{{"id", "selected"}, {"status", "stopped"}, {"detail_revision", "one"}};
+        int details = 0;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (!request.startsWith("GET /api/censor/")) return std::nullopt;
+            const bool detail = request.startsWith("GET /api/censor/job?");
+            if (detail) ++details;
+            const auto data = QJsonDocument(detail ? QJsonObject{{"job", job}}
+                : QJsonObject{{"configured", true}, {"jobs", QJsonArray{job}}}).toJson(QJsonDocument::Compact);
+            return "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "
+                + QByteArray::number(data.size()) + "\r\n\r\n" + data;
+        };
+        Config config{QString()};
+        Bridge bridge(server.url(), "revision-test", nullptr, &config);
+        bridge.m_censorPoll.stop(); bridge.m_poll.stop();
+        QTRY_VERIFY(!bridge.m_censorPolling);
+        bridge.censorSelectJob("selected");
+        QTRY_VERIFY(!bridge.m_censorDetailPolling);
+        QCOMPARE(details, 1);
+        for (int poll = 0; poll < 3; ++poll) {
+            bridge.censorRequest();
+            QTRY_VERIFY(!bridge.m_censorPolling);
+            QVERIFY(!bridge.m_censorDetailPolling);
+            QCOMPARE(details, 1);
+        }
+        job.insert("detail_revision", "two"); job.insert("status", "running");
+        bridge.censorRequest();
+        QTRY_COMPARE(bridge.censorSelectedJob().value("status").toString(), QString("running"));
+        QCOMPARE(details, 2);
+        job.remove("detail_revision"); // Legacy/oversized jobs must not suppress detail polling.
+        for (int poll = 0; poll < 2; ++poll) {
+            bridge.censorRequest();
+            QTRY_VERIFY(!bridge.m_censorPolling);
+            QTRY_VERIFY(!bridge.m_censorDetailPolling);
+            QCOMPARE(details, 3 + poll);
+        }
+        bridge.censorSelectJob({});
+        bridge.censorRequest();
+        QTRY_VERIFY(!bridge.m_censorPolling);
+        QCOMPARE(details, 4);
+        QVERIFY(bridge.censorSelectedJob().isEmpty());
+    }
+    void modelScatteredRemovalCost() {
+        TrackModel model;
+        QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+        QList<QJsonObject> rows, retained;
+        for (int i = 0; i < 1000; ++i) {
+            const QJsonObject row{{"id", i + 1}};
+            rows.append(row);
+            if (i >= 200 || i % 2) retained.append(row);
+        }
+        model.sync(rows);
+        QSignalSpy resets(&model, &QAbstractItemModel::modelReset);
+        model.sync(retained);
+        QCOMPARE(resets.count(), 1);
+        QCOMPARE(model.count(), 900);
+        QCOMPARE(model.indexOf("1000"), 899);
+    }
+    void modelContiguousRemovalRanges() {
+            for (int removed : {1, 100, 256, 257}) {
+                TrackModel model;
+                QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+                QList<QJsonObject> rows;
+                for (int i = 0; i < removed + 2; ++i) rows.append(QJsonObject{{"id", i + 1}});
+                model.sync(rows);
+                QPersistentModelIndex held(model.index(removed + 1));
+                QPersistentModelIndex deleted(model.index(1));
+                QSignalSpy ranges(&model, &QAbstractItemModel::rowsRemoved);
+                QSignalSpy resets(&model, &QAbstractItemModel::modelReset);
+                model.sync({rows.first(), rows.last()});
+                QCOMPARE(ranges.count(), 1); QCOMPARE(resets.count(), 0);
+                QCOMPARE(ranges.first().at(1).toInt(), 1);
+                QCOMPARE(ranges.first().at(2).toInt(), removed);
+                QCOMPARE(held.row(), 1); QVERIFY(!deleted.isValid());
+                QCOMPARE(model.indexOf(QString::number(removed + 2)), 1);
+            }
+        }
+        void bridgeDeltaScalarAndClearing() {
+            MockBackend server;
+            Bridge bridge(server.url(), "bridge-key");
+            QJsonObject state{{"authenticated", true}, {"hasAccess", true},
+                              {"tracksRevision", "one"}, {"tracks", QJsonArray{QJsonObject{{"id", 1}}}}};
+            bridge.acceptState(state);
+            QSignalSpy changes(bridge.tracks(), &QAbstractItemModel::dataChanged);
+            QSignalSpy resets(bridge.tracks(), &QAbstractItemModel::modelReset);
+            state.remove("tracks"); state.insert("processed", 1);
+            bridge.acceptState(state);
+            QCOMPARE(bridge.tracks()->count(), 1);
+            QCOMPARE(changes.count(), 0); QCOMPARE(resets.count(), 0);
+            state.insert("hasAccess", false);
+            bridge.acceptState(state);
+            QCOMPARE(bridge.tracks()->count(), 0);
+            QVERIFY(bridge.m_tracksRevision.isEmpty());
+        }
+        void modelDiffPreservesIndexes() {
         TrackModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         const QJsonObject a{{"id", 1}, {"title", "A"}}, b{{"id", 2}, {"title", "B"}};
@@ -1785,21 +1880,21 @@ private slots:
         QVERIFY(local.workspace.resolving());
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         QTRY_VERIFY(!local.workspace.resolving()); QCOMPARE(local.uploader.directory(), a.path());
-        local.workspace.openFile("README.md"); local.workspace.setText("dirty");
+        local.workspace.openFile("README.md"); QTRY_VERIFY(!local.workspace.fileLoading()); local.workspace.setText("dirty");
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         local.uploader.send("1", "song", "artist"); QVERIFY(!local.uploader.busy());
         QVERIFY(local.uploader.error().contains("edits"));
         local.workspace.setText("# Tracks\n");
-        local.workspace.openFile("list_v2.json"); local.workspace.setText("unsaved v2 edits");
+        local.workspace.openFile("list_v2.json"); QTRY_VERIFY(!local.workspace.fileLoading()); local.workspace.setText("unsaved v2 edits");
         local.uploader.send("1", "song", "artist"); QVERIFY(!local.uploader.busy());
         QVERIFY(local.uploader.error().contains("edits"));
         local.workspace.setText("{\"sources\":[]}");
-        local.workspace.openFile("list.json"); local.workspace.setText("unsaved legacy edits");
+        local.workspace.openFile("list.json"); QTRY_VERIFY(!local.workspace.fileLoading()); local.workspace.setText("unsaved legacy edits");
         local.uploader.send("invalid-id", "song", "artist"); QVERIFY(local.uploader.busy());
         QTRY_VERIFY_WITH_TIMEOUT(!local.uploader.busy(), 20000);
         QVERIFY(local.uploader.error().contains("ASCII digits"));
         QVERIFY(local.workspace.dirty()); QCOMPARE(local.workspace.text(), QString("unsaved legacy edits"));
-        local.workspace.setText("legacy bytes"); local.workspace.openFile("README.md");
+        local.workspace.setText("legacy bytes"); local.workspace.openFile("README.md"); QTRY_VERIFY(!local.workspace.fileLoading());
         local.workspace.startTerminal(); QVERIFY(local.workspace.terminalRunning());
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         local.workspace.stopTerminal();
@@ -2276,14 +2371,14 @@ private slots:
         QCOMPARE(loadedWorkspace->property("workspaceBackend").value<QObject *>(),
                  static_cast<QObject *>(&local.workspace));
         QTRY_COMPARE(local.workspace.repositoryPath(), config.repositoryPath());
-        auto terminalLoader = loadedWorkspace->findChild<QObject *>("gitTerminalLoader");
-        QVERIFY(terminalLoader);
-        QTRY_VERIFY(terminalLoader->property("item").value<QObject *>());
+        // The workspace opens a system terminal explicitly; visiting Git must not spawn one.
+        QVERIFY(!loadedWorkspace->findChild<QObject *>("gitTerminalLoader"));
+        QVERIFY(!local.workspace.terminalRunning());
         QVERIFY(QMetaObject::invokeMethod(lyricsButton, "clicked"));
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QTRY_VERIFY(!workspaceView->isVisible());
         QCOMPARE(workspaceView->property("item").value<QObject *>(), loadedWorkspace);
-        QTRY_VERIFY(!terminalLoader->property("item").value<QObject *>());
+        QVERIFY(!local.workspace.terminalRunning());
 
         QVERIFY(sendDialog);
         QCOMPARE(sendDialog->property("uploadBackend").value<QObject *>(),

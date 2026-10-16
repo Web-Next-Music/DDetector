@@ -11,6 +11,11 @@ Item {
     readonly property color removedColor: "#cf4f2a"
     readonly property color addedColor: "#00a682"
     readonly property int rowHeight: Math.ceil(metrics.height) + 8
+    // UTF-16 code units, including prefixes and transport line endings.
+    readonly property int maxPreviewChars: 131072
+    readonly property int maxPreviewLines: 2000
+    readonly property int maxLineChars: 1024
+    readonly property int maxTextWidth: 4096
     readonly property var parsed: parseDiff(diffText)
     readonly property real gutterWidth: Math.max(44, metrics.advanceWidth(String(parsed.maxLine)) + 20)
     readonly property real sideWidth: Math.max(view.width / 2, gutterWidth + parsed.textWidth + 24)
@@ -24,8 +29,30 @@ Item {
     // Only consume line prefixes inside a hunk. File metadata (including binary
     // diffs and quoted paths) stays literal, never interpreted as markup.
     function parseDiff(input) {
+        // Scan only a bounded prefix, before allocating lines/rows or shaping text.
+        // Stop at the first limit rather than searching through an enormous line.
+        let end = 0;
+        let lineChars = 0;
+        let lineCount = 0;
+        while (end < input.length && end < maxPreviewChars && lineCount < maxPreviewLines) {
+            const code = input.charCodeAt(end);
+            if (code === 10) {
+                ++lineCount;
+                lineChars = 0;
+            } else {
+                if (lineChars === maxLineChars)
+                    break;
+                ++lineChars;
+            }
+            ++end;
+        }
+        // Do not leave half a surrogate pair at a preview boundary.
+        if (end < input.length && end > 0 && input.charCodeAt(end - 1) >= 0xd800
+                && input.charCodeAt(end - 1) <= 0xdbff)
+            --end;
+        const truncated = end < input.length;
         const rows = [];
-        const lines = input.split("\n");
+        const lines = input.slice(0, end).split("\n");
         if (lines.length && lines[lines.length - 1] === "")
             lines.pop();
         let oldLine = 0;
@@ -38,7 +65,8 @@ Item {
         let added = [];
 
         function measure(text) {
-            textWidth = Math.max(textWidth, metrics.advanceWidth(text));
+            text = text.slice(0, maxLineChars);
+            textWidth = Math.min(maxTextWidth, Math.max(textWidth, metrics.advanceWidth(text)));
             return text;
         }
         function flush() {
@@ -62,7 +90,8 @@ Item {
             // Strip transport CR only; retain all other source whitespace.
             const line = lines[i].endsWith("\r") ? lines[i].slice(0, -1) : lines[i];
             const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/.exec(line);
-            if (hunk) {
+            if (hunk && hunk.slice(1, 5).every(value => value === undefined
+                    || Number(value) <= Number.MAX_SAFE_INTEGER - maxPreviewLines)) {
                 flush();
                 oldLine = Number(hunk[1]);
                 newLine = Number(hunk[3]);
@@ -92,12 +121,12 @@ Item {
             if (line.startsWith("\\ No newline at end of file")) {
                 // Annotate the affected side without splitting a replacement block.
                 if (added.length)
-                    added[added.length - 1].text += "  [No newline at end of file]";
+                    added[added.length - 1].text = measure(added[added.length - 1].text + "  [No newline at end of file]");
                 else if (removed.length)
-                    removed[removed.length - 1].text += "  [No newline at end of file]";
+                    removed[removed.length - 1].text = measure(removed[removed.length - 1].text + "  [No newline at end of file]");
                 else
                     heading("note", line);
-                measure((added.length ? added[added.length - 1] : removed.length ? removed[removed.length - 1] : {text: ""}).text);
+
                 continue;
             }
             if (line.startsWith("-") && oldRemaining > 0) {
@@ -125,7 +154,8 @@ Item {
             maxLine = Math.max(maxLine, oldLine, newLine);
         }
         flush();
-        return {rows: rows, maxLine: maxLine, textWidth: textWidth};
+        return {rows: rows, maxLine: maxLine, textWidth: textWidth,
+            truncated: truncated, previewChars: end, previewLines: lines.length};
     }
 
     Rectangle {
@@ -133,9 +163,20 @@ Item {
         color: root.bg
     }
 
+    SiteQuote {
+        id: previewWarning
+        objectName: "diffPreviewWarning"
+        anchors.top: parent.top
+        width: parent.width
+        visible: root.parsed.truncated
+        text: qsTr("Truncated diff preview — a rendering limit was reached. Source files are unchanged. View the full diff with Git.")
+    }
+
     ListView {
         id: view
+        objectName: "diffList"
         anchors.fill: parent
+        anchors.topMargin: previewWarning.visible ? previewWarning.height : 0
         clip: true
         model: root.parsed.rows
         contentWidth: root.sideWidth * 2
@@ -227,6 +268,7 @@ Item {
                         text: cell.oldSide ? diffRow.modelData.oldText : diffRow.modelData.newText
                         textFormat: Text.PlainText
                         wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
                         font: metrics.font
                         color: "#f0f0f4"
                         verticalAlignment: Text.AlignVCenter

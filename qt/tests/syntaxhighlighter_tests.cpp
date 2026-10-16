@@ -9,6 +9,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
+#include <QSyntaxHighlighter>
 #include <QtTest>
 
 // Standalone target: enable AUTOMOC, compile this file plus syntaxhighlighter.cpp/.h,
@@ -24,6 +25,8 @@ private slots:
     void fenceLengths();
     void shellAndYamlQuoting();
     void semanticPalette();
+    void queuedPropagation_data();
+    void queuedPropagation();
 };
 #else
 class SyntaxHighlighterTests : public QObject {
@@ -67,7 +70,7 @@ private slots:
         const QByteArray bytes = before.toUtf8();
         SyntaxHighlighter highlighter;
         highlighter.setFilePath(path);
-        highlighter.QSyntaxHighlighter::setDocument(&document);
+        highlighter.setDocument(&document);
         highlighter.rehighlight();
         QCOMPARE(document.toPlainText(), before);
         QCOMPARE(document.toPlainText().toUtf8(), bytes);
@@ -85,7 +88,7 @@ private slots:
         QTextDocument document("/* comment\nconst false 123\n*/ const value = true;");
         SyntaxHighlighter highlighter;
         highlighter.setFilePath("test.ts");
-        highlighter.QSyntaxHighlighter::setDocument(&document);
+        highlighter.setDocument(&document);
         highlighter.rehighlight();
         const auto ranges = document.findBlockByNumber(1).layout()->formats();
         QCOMPARE(ranges.size(), 1);
@@ -104,7 +107,7 @@ private slots:
     void fenceLengths() {
         QTextDocument document("````\n```\n# still literal\n````\n# heading\n~~~~\n~~~\n~~~~~\n# heading again\n");
         SyntaxHighlighter highlighter; highlighter.setFilePath("README.md");
-        highlighter.QSyntaxHighlighter::setDocument(&document); highlighter.rehighlight();
+        highlighter.setDocument(&document); highlighter.rehighlight();
         // Inspect output, not the library's opaque state encoding. Shorter
         // delimiters must not close a fence; longer closing delimiters may.
         QCOMPARE(colorAt(document, 2, 2), QColor("#a5d6a7"));
@@ -116,14 +119,15 @@ private slots:
         SyntaxHighlighter highlighter;
         QTextDocument document("echo 'first\n# still string\\\nlast' # comment\necho foo#bar\n");
         const auto original = document.toPlainText();
-        highlighter.setFilePath("test.sh"); highlighter.QSyntaxHighlighter::setDocument(&document); highlighter.rehighlight();
+        highlighter.setFilePath("test.sh"); highlighter.setDocument(&document); highlighter.rehighlight();
         QCOMPARE(colorAt(document, 2, 9), QColor("#78909c"));
         QVERIFY(colorAt(document, 3, 8) != QColor("#78909c"));
         const auto ranges = document.findBlockByNumber(1).layout()->formats();
         QCOMPARE(ranges.size(), 1); QCOMPARE(ranges[0].format.foreground().color(), QColor("#a5d6a7"));
         QCOMPARE(document.toPlainText(), original);
         highlighter.setFilePath("test.yaml");
-        document.setPlainText("key: foo#bar\nkey: 'a\\' # comment\nkey: 'a''#b' # comment\n"); highlighter.rehighlight();
+        highlighter.beginDocumentReplacement();
+        document.setPlainText("key: foo#bar\nkey: 'a\\' # comment\nkey: 'a''#b' # comment\n"); highlighter.endDocumentReplacement(); highlighter.rehighlight();
         QVERIFY(colorAt(document, 0, 8) != QColor("#78909c"));
         QCOMPARE(colorAt(document, 1, 10), QColor("#78909c"));
         QCOMPARE(colorAt(document, 2, 9), QColor("#a5d6a7"));
@@ -133,18 +137,22 @@ private slots:
         SyntaxHighlighter highlighter;
         QTextDocument document("const value = 42; // comment\nconst text = \"hello\";");
         highlighter.setFilePath("test.js");
-        highlighter.QSyntaxHighlighter::setDocument(&document);
+        highlighter.setDocument(&document);
         highlighter.rehighlight();
         QCOMPARE(colorAt(document, 0, 0), QColor("#c792ea"));
         QCOMPARE(colorAt(document, 0, 14), QColor("#80cbc4"));
         QCOMPARE(colorAt(document, 0, 20), QColor("#78909c"));
         QCOMPARE(colorAt(document, 1, 15), QColor("#a5d6a7"));
         highlighter.setFilePath("test.sh");
+        highlighter.beginDocumentReplacement();
         document.setPlainText("echo ${PATH}");
+        highlighter.endDocumentReplacement();
         highlighter.rehighlight();
         QCOMPARE(colorAt(document, 0, 8), QColor("#26a6b5"));
         highlighter.setFilePath("test.md");
+        highlighter.beginDocumentReplacement();
         document.setPlainText("# Heading\n**bold** [link](url) `code`\n```js\nconst value = 42;\n```\n# Heading again");
+        highlighter.endDocumentReplacement();
         highlighter.rehighlight();
         QCOMPARE(colorAt(document, 0, 2), QColor("#26a6b5"));
         QCOMPARE(colorAt(document, 1, 2), QColor("#c792ea"));
@@ -154,6 +162,52 @@ private slots:
         QCOMPARE(colorAt(document, 3, 0), QColor("#c792ea"));
         QCOMPARE(colorAt(document, 3, 14), QColor("#80cbc4"));
         QCOMPARE(colorAt(document, 5, 2), QColor("#26a6b5"));
+    }
+    void queuedPropagation_data() {
+        QTest::addColumn<QString>("operation");
+        for (const auto *operation : {"replace", "discard", "switch", "destroy-document", "destroy-wrapper"})
+            QTest::newRow(operation) << QString(operation);
+    }
+    void queuedPropagation() {
+        QFETCH(QString, operation);
+        auto document = std::make_unique<QTextDocument>("/* comment\nstill comment\n*/\nint value = 42;\n");
+        auto highlighter = std::make_unique<SyntaxHighlighter>();
+        highlighter->setFilePath("test.cpp");
+        highlighter->setDocument(document.get());
+        highlighter->rehighlight();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        QPointer<QSyntaxHighlighter> receiver = highlighter->findChild<QSyntaxHighlighter *>();
+        QVERIFY(receiver);
+        // Reproduce KF's queued propagation argument explicitly, without depending
+        // on private state IDs or whether this library version propagates eagerly.
+        QVERIFY(QMetaObject::invokeMethod(receiver, "rehighlightBlock", Qt::QueuedConnection,
+                                          Q_ARG(QTextBlock, document->begin().next())));
+        bool staleCallDelivered = false;
+        QMetaObject::invokeMethod(receiver, [&] { staleCallDelivered = true; }, Qt::QueuedConnection);
+        QTextDocument replacement("int fresh = 42;");
+        if (operation == "destroy-document") {
+            document.reset();
+        } else if (operation == "destroy-wrapper") {
+            highlighter.reset();
+        } else if (operation == "switch") {
+            highlighter->setDocument(&replacement);
+            document.reset();
+        } else {
+            highlighter->beginDocumentReplacement();
+            QVERIFY(!receiver);
+            document->setPlainText(operation == "discard" ? "/* restored */" : "int fresh = 42;");
+            highlighter->endDocumentReplacement();
+        }
+        QVERIFY(!receiver);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        QVERIFY(!staleCallDelivered);
+        if (highlighter) {
+            if (!document && operation == "destroy-document") highlighter->setDocument(&replacement);
+            highlighter->rehighlight();
+            const auto &current = document ? *document : replacement;
+            QVERIFY(!current.begin().layout()->formats().isEmpty());
+            QCOMPARE(colorAt(current, 0, 0), QColor(operation == "discard" ? "#78909c" : "#c792ea"));
+        }
     }
     void quickDocumentBinding() {
         qmlRegisterType<SyntaxHighlighter>("HighlighterTests", 1, 0, "SyntaxHighlighter");

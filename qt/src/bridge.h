@@ -135,6 +135,7 @@ private:
     bool m_forceRefresh = false;
     bool m_cachedHideIgnored = false;
     QByteArray m_stateETag;
+        QString m_tracksRevision;
     Config *m_config;
     QTimer m_poll;
     QJsonObject m_state;

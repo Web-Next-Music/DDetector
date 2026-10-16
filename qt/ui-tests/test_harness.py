@@ -35,6 +35,10 @@ def png():
 class SmokeTests(unittest.TestCase):
     def test_narrow_diagnostics_allowlist(self):
         self.assertEqual(smoke.unexpected_stderr("qt.multimedia.ffmpeg: Using Qt multimedia with FFmpeg version 9\n"), [])
+        missing_driver = "Failed to open VDPAU backend libvdpau_nvidia.so: cannot open shared object file: No such file or directory"
+        self.assertEqual(smoke.unexpected_stderr(missing_driver), [])
+        self.assertEqual(smoke.unexpected_stderr(missing_driver.replace("No such file or directory", "Permission denied")),
+                         [missing_driver.replace("No such file or directory", "Permission denied")])
         for message in ["qrc:/Main.qml:10: ReferenceError: missing", "Failed to open VDPAU backend other.so", "Unknown hw device type none", "QQmlApplicationEngine failed to load component"]:
             self.assertEqual(smoke.unexpected_stderr(message), [message])
 
@@ -95,10 +99,11 @@ class SmokeTests(unittest.TestCase):
         detector = (ROOT / "qml" / "Censor" / "CensorDetector.qml").read_text()
         viewport = detector[detector.index("id: detectorScroll"):detector.index("contentWidth: availableWidth")]
         self.assertIn("anchors.fill: parent", viewport)
-        self.assertIn("anchors.margins: 16", viewport)
+        self.assertIn("anchors.margins: 10", viewport)
         self.assertIn("anchors.fill: detectorScroll", detector)
         self.assertIn('shadowColor: "#0c0c0e"', detector)
-        self.assertIn('ctx.fillStyle = "#D50811"', detector)
+        self.assertIn('width: 2; height: parent.height; color: "#D50811"', detector)
+        self.assertIn("waveform.playhead / waveform.duration * parent.width", detector)
 
         subtitle = (ROOT / "qml" / "Components" / "SiteSubtitle.qml").read_text()
         self.assertIn('color: "transparent"', subtitle)

@@ -2,11 +2,13 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -188,6 +190,103 @@ func TestConditionalStateOperations(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	fresh()
+}
+
+func TestDeltaStateTracksAndConcurrentSnapshots(t *testing.T) {
+	s := &Server{state: State{Tracks: []Result{{Track: Track{ID: 1}}}}}
+	request := func(revision string) map[string]json.RawMessage {
+		r := httptest.NewRequest("GET", "/api/state", nil)
+		r.Header.Set("X-State-Delta", "1")
+		r.Header.Set("X-Tracks-Revision", revision)
+		w := httptest.NewRecorder()
+		s.sendState(w, r)
+		var out map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Error(err)
+		}
+		return out
+	}
+	first := request("")
+	var revision string
+	_ = json.Unmarshal(first["tracksRevision"], &revision)
+	encoded := &s.tracksJSON[0]
+	s.state.Processed++
+	if next := request(revision); next["tracks"] != nil || string(next["processed"]) != "1" {
+		t.Fatal(next)
+	}
+	if encoded != &s.tracksJSON[0] {
+		t.Fatal("scalar re-encoded tracks")
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); request(revision) }()
+	}
+	wg.Wait()
+	s.state.Tracks[0].Ignored = true
+	s.tracksRevision++
+	if request(revision)["tracks"] == nil {
+		t.Fatal("mutation omitted")
+	}
+	s.state = State{Tracks: []Result{}}
+	if string(request(revision)["tracks"]) != "[]" {
+		t.Fatal("logout did not clear")
+	}
+}
+
+func TestCensorViewInvalidatesWithoutTimestamp(t *testing.T) {
+	job := CensorJob{ID: "cache-test", Status: "stopped"}
+	first := censorJobView(job, true)
+	repeated := censorJobView(job, true)
+	if first.DetailRevision == "" || &first.encoded[0] != &repeated.encoded[0] {
+		t.Fatal("cache missed")
+	}
+	job.Status = "pending"
+	next := censorJobView(job, true)
+	if next.DetailRevision == first.DetailRevision {
+		t.Fatal("status mutation missed")
+	}
+	detail := censorJobView(job, false)
+	if detail.DetailRevision != next.DetailRevision {
+		t.Fatal("detail revision mismatch")
+	}
+	job.Error = "changed without timestamp"
+	if censorJobView(job, false).DetailRevision == detail.DetailRevision {
+		t.Fatal("detail mutation missed")
+	}
+}
+
+func BenchmarkStateScalarChangeLarge(b *testing.B) {
+	for _, delta := range []bool{false, true} {
+		name := "full"
+		if delta {
+			name = "delta"
+		}
+		b.Run(name, func(b *testing.B) {
+			s := &Server{state: State{Tracks: make([]Result, 10000)}}
+			for i := range s.state.Tracks {
+				s.state.Tracks[i] = Result{Track: Track{ID: int64(i + 1), Title: "large track"}, Lyrics: []Lyric{{Text: strings.Repeat("lyrics ", 1000)}}}
+			}
+			r := httptest.NewRequest("GET", "/api/state", nil)
+			if _, _, err := s.stateResponse(r); err != nil {
+				b.Fatal(err)
+			}
+			if delta {
+				r.Header.Set("X-State-Delta", "1")
+				r.Header.Set("X-Tracks-Revision", s.tracksTag)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				s.state.Processed++
+				data, _, err := s.stateResponse(r)
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.ReportMetric(float64(len(data)), "response-B")
+			}
+		})
+	}
 }
 
 func BenchmarkConditionalStateLarge(b *testing.B) {
