@@ -17,6 +17,8 @@
 #include <QSaveFile>
 #include <QStringDecoder>
 #include <QTimer>
+#include <QTemporaryFile>
+#include <QElapsedTimer>
 #include <QUrl>
 #include <memory>
 #include <cmath>
@@ -158,7 +160,31 @@ QString trackURL(const QString &pattern, QJsonValue value) {
             "Invalid v2 track URL; original preserved");
     return url;
 }
-QJsonObject updateList(QJsonObject doc, const QString &id, const QString &url, QString &action) {
+qint64 audioDuration(const QString &path) {
+    QProcess process;
+    process.setStandardErrorFile(QProcess::nullDevice());
+    process.start("ffmpeg", {"-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
+                             "-i", path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "48000",
+                             "-f", "s16le", "pipe:1"});
+    require(process.waitForStarted(3000), "Cannot start ffmpeg to measure audio duration");
+    QElapsedTimer timer;
+    timer.start();
+    qint64 bytes = 0;
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForReadyRead(100);
+        bytes += process.readAllStandardOutput().size();
+        if (timer.elapsed() >= 60000) {
+            process.kill(); process.waitForFinished(3000);
+            require(false, "Audio duration decoding timed out");
+        }
+    }
+    bytes += process.readAllStandardOutput().size();
+    require(process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0 && bytes >= 96,
+            "Cannot measure duration: no readable audio");
+    return bytes / 96; // 48 kHz mono, two bytes per sample; truncate to milliseconds.
+}
+QJsonObject updateList(QJsonObject doc, const QString &id, const QString &url, QString &action,
+                       qint64 durationMs = -1, bool *needsDuration = nullptr) {
     require(doc.value("sources").isArray(), "Invalid list_v2.json sources; original preserved");
     auto sources = doc.value("sources").toArray();
     QString previous;
@@ -266,7 +292,8 @@ QJsonObject updateList(QJsonObject doc, const QString &id, const QString &url, Q
                 require(number.size() == 1 && trackID(number[0]) == id,
                         "Track ID cannot be represented exactly in v2 trackIds; original preserved");
                 auto ids = store.value("trackIds").toArray();
-                ids.append(number[0]);
+                if (needsDuration) *needsDuration = true;
+                ids.append(QJsonObject{{"id", number[0]}, {"durationMs", durationMs}});
                 store.insert("trackIds", ids);
             } else {
                 auto tracks = store.value("tracks").toObject();
@@ -543,7 +570,7 @@ Result perform(const QString &root, const QString &id, const QString &title,
         const auto doc = QJsonDocument::fromJson(text.toUtf8(), &parse);
         require(parse.error == QJsonParseError::NoError && doc.isObject(), "Invalid list_v2.json; original preserved");
         // Reject shadowing before audio migration can remove storage durations.
-        if (!metadata.isEmpty()) {
+        if (metadata.contains("durationMs")) {
             for (const auto source : doc.object().value("sources").toArray()) {
                 for (const auto value : source.toObject().value("tracksStorages").toArray()) {
                     const auto store = value.toObject();
@@ -554,10 +581,35 @@ Result perform(const QString &root, const QString &id, const QString &title,
                 }
             }
         }
-        auto updated = updateList(doc.object(), id, github, result.action);
-        const auto audioUpdated = updated;
+        // Preflight routing and metadata before downloading. The placeholder duration
+        // stays in memory; rebuild with decoded audio duration before serializing.
+        bool needsDuration = false;
+        auto updated = updateList(doc.object(), id, github, result.action, -1, &needsDuration);
+        auto audioUpdated = updated;
         updated = editMetadata(updated, id, github, metadata);
         if (updated != audioUpdated && result.action == "skipped") result.action = "updated";
+        QByteArray audio;
+        if (!url.isEmpty()) {
+            QUrl source(url, QUrl::StrictMode);
+            require(source.isValid() && (source.scheme() == "http" || source.scheme() == "https") &&
+                    !source.host().isEmpty() && source.userInfo().isEmpty(), "MP3 URL must be HTTP(S), without credentials");
+            audio = download(source);
+        }
+        if (needsDuration) {
+            QTemporaryFile temporary;
+            QString path = root + "/tracks/" + id;
+            if (!audio.isEmpty()) {
+                require(temporary.open() && temporary.write(audio) == audio.size() && temporary.flush(),
+                        "Cannot prepare audio for duration decoding");
+                path = temporary.fileName();
+            }
+            const auto duration = audioDuration(path);
+            require(!metadata.contains("durationMs") || metadata.value("durationMs").toInteger() == duration,
+                    "Requested metadata durationMs conflicts with measured audio duration");
+            audioUpdated = updateList(doc.object(), id, github, result.action, duration);
+            updated = editMetadata(audioUpdated, id, github, metadata);
+            if (updated != audioUpdated && result.action == "skipped") result.action = "updated";
+        }
         // Exclude surrounding whitespace from the recursive JSON patch.
         qsizetype start = 0;
         while (start < text.size() && text[start].isSpace()) ++start;
@@ -571,13 +623,6 @@ Result perform(const QString &root, const QString &id, const QString &title,
             if (!readme.isEmpty() && !readme.endsWith('\n') && !readme.endsWith('\r') &&
                 readme != QString(QChar(0xfeff))) readme += eol;
             readme += "- [" + title + " - " + artist + "](https://music.yandex.ru/track/" + id + ")" + eol;
-        }
-        QByteArray audio;
-        if (!url.isEmpty()) {
-            QUrl source(url, QUrl::StrictMode);
-            require(source.isValid() && (source.scheme() == "http" || source.scheme() == "https") &&
-                    !source.host().isEmpty() && source.userInfo().isEmpty(), "MP3 URL must be HTTP(S), without credentials");
-            audio = download(source);
         }
         // Downloading is outside the write phase; revalidate every target and Git
         // snapshot before any mutation. The lock is also respected by workspace saves.

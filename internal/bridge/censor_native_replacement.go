@@ -57,6 +57,7 @@ type nativePublisher struct {
 	repo, history string
 	client        *http.Client
 	validate      func(context.Context, string) error
+	duration      func(context.Context, string) (int64, error)
 	mu            sync.Mutex
 }
 
@@ -96,18 +97,36 @@ func NewNativePublisher(repo, runtime string) (*nativePublisher, error) {
 		return nil, errors.New("history must be a private nonsymlink directory")
 	}
 	p := &nativePublisher{repo: repo, history: history, client: &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	p.duration = nativeMP3Duration
 	p.validate = func(ctx context.Context, path string) error {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", path, "-map", "0:a:0", "-f", "null", "-")
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err != nil {
-			return errors.New("downloaded full MP3 failed FFmpeg validation")
-		}
-		return nil
+		_, err := nativeMP3Duration(ctx, path)
+		return err
 	}
 	return p, nil
+}
+
+func nativeMP3Duration(ctx context.Context, path string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", path, "-map", "0:a:0", "-progress", "pipe:1", "-f", "null", "-")
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, errors.New("downloaded full MP3 failed FFmpeg validation")
+	}
+	var micros int64
+	for _, line := range strings.Split(string(out), "\n") {
+		if value, ok := strings.CutPrefix(line, "out_time_us="); ok {
+			if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && n > micros {
+				micros = n
+			}
+		}
+	}
+	ms := micros / 1000
+	if ms <= 0 {
+		return 0, errors.New("downloaded MP3 has no positive audio duration")
+	}
+	return ms, nil
 }
 
 type nativeFileChange struct {
@@ -824,7 +843,7 @@ func nativeURL(template string, v any) (string, error) {
 }
 
 // Metadata source.tracks is not an audio mapping. Only tracksStorages is edited.
-func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, error) {
+func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64) ([]byte, []byte, error) {
 	expected, e := nativeMapping(v2, id)
 	if e != nil {
 		return nil, nil, e
@@ -992,7 +1011,7 @@ func nativeLists(legacy, v2 []byte, id, old, published string) ([]byte, []byte, 
 		}
 		{
 			if ids, has := target["trackIds"]; has {
-				target["trackIds"] = append(ids.([]any), json.Number(id))
+				target["trackIds"] = append(ids.([]any), map[string]any{"id": json.Number(id), "durationMs": durationMs})
 			} else {
 				tracks, _ := target["tracks"].(map[string]any)
 				if tracks == nil {
@@ -1058,7 +1077,7 @@ func (p *nativePublisher) Replace(ctx context.Context, i CensorIdentity, s Censo
 	if !existed[1] {
 		return zero, errors.New("repository list_v2.json must exist")
 	}
-	_, b, e := nativeLists(nil, before[1], id, r.ExpectedMapping, published)
+	_, b, e := nativeLists(nil, before[1], id, r.ExpectedMapping, published, 0)
 	if e != nil {
 		return zero, e
 	}
@@ -1105,7 +1124,16 @@ func (p *nativePublisher) Replace(ctx context.Context, i CensorIdentity, s Censo
 	if e != nil || size == 0 || size > 512<<20 {
 		return zero, errors.New("incomplete or oversized MP3 download")
 	}
-	if e = p.validate(ctx, f.Name()); e != nil {
+	if r.ExpectedMapping == "" {
+		durationMs, err := p.duration(ctx, f.Name())
+		if err != nil {
+			return zero, err
+		}
+		_, b, e = nativeLists(nil, before[1], id, r.ExpectedMapping, published, durationMs)
+		if e != nil {
+			return zero, e
+		}
+	} else if e = p.validate(ctx, f.Name()); e != nil {
 		return zero, e
 	}
 	audio, e := os.ReadFile(f.Name())

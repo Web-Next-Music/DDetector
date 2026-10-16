@@ -25,6 +25,23 @@ class UploaderTests final : public QObject {
         QFile f(path); if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size()) qFatal("Fixture write failed");
     }
     static QByteArray get(const QString &path) { QFile f(path); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll(); }
+    static QByteArray tinyMp3() {
+        // Non-seekable MP3 output includes padding: six 1152-sample frames = 144 ms.
+        static const QByteArray bytes = [] {
+            QProcess p;
+            p.start("ffmpeg", {"-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                               "anullsrc=r=48000:cl=mono", "-t", "0.12", "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"});
+            if (!p.waitForFinished(10000) || p.exitCode() != 0) qFatal("Cannot generate MP3 fixture");
+            return p.readAllStandardOutput();
+        }();
+        return bytes;
+    }
+    static void localAudio(const QString &root, const QString &id) {
+        if (!QDir().mkpath(root + "/tracks")) qFatal("Cannot create fixture tracks");
+        put(root + "/tracks/" + id, tinyMp3());
+        git(root, {"add", "--", "tracks/" + id});
+        git(root, {"commit", "-qm", "fixture audio"});
+    }
     static void init(const QString &root) {
         git(root, {"init", "-q"});
         git(root, {"config", "user.name", "Uploader Test"});
@@ -34,6 +51,74 @@ class UploaderTests final : public QObject {
         git(root, {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "initial"});
     }
 private slots:
+    void measuredDuration_data() {
+        QTest::addColumn<QString>("mode");
+        for (const auto &mode : {"local", "download", "missing", "invalid-local", "invalid-download",
+                                 "conflicting-duration", "matching-duration"})
+            QTest::newRow(mode) << QString(mode);
+    }
+    void measuredDuration() {
+        QFETCH(QString, mode);
+        QTemporaryDir dir; init(dir.path());
+        const QByteArray before = R"({"sources":[{"supportedVersions":">=2.0.0","tracks":{"123":{"durationMs":9999,"unknown":true}},"tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[456]}]}]})";
+        put(dir.path() + "/list_v2.json", before);
+        git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
+        const bool remote = mode == "download" || mode == "invalid-download";
+        const bool success = mode == "local" || mode == "download" || mode == "matching-duration";
+        if (!remote && mode != "missing") {
+            localAudio(dir.path(), "123");
+            if (mode == "invalid-local") {
+                put(dir.path() + "/tracks/123", "not audio");
+                git(dir.path(), {"add", "--", "tracks/123"}); git(dir.path(), {"commit", "-qm", "invalid audio"});
+            }
+        }
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        const auto readme = get(dir.path() + "/README.md");
+        const auto originalAudio = get(dir.path() + "/tracks/123");
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto body = mode == "invalid-download" ? QByteArray("not audio") : tinyMp3();
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, body] {
+                socket->readAll();
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) +
+                              "\r\nConnection: close\r\n\r\n" + body);
+                socket->disconnectFromHost();
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+        QVariantMap patch{{"title", "Custom"}};
+        if (mode.endsWith("duration")) patch.insert("durationMs", mode == "matching-duration" ? 144 : 9999);
+        Uploader uploader(dir.path());
+        uploader.send("123", "Label", "Artist", remote ? "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio" : QString(), patch);
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        if (!success) {
+            QVERIFY2(!uploader.error().isEmpty(), qPrintable(mode));
+            QCOMPARE(get(dir.path() + "/list_v2.json"), before);
+            QCOMPARE(get(dir.path() + "/README.md"), readme);
+            QCOMPARE(get(dir.path() + "/tracks/123"), originalAudio);
+            QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+            QVERIFY(git(dir.path(), {"status", "--porcelain"}).isEmpty());
+            return;
+        }
+        QCOMPARE(uploader.error(), QString());
+        auto source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray(),
+                 QJsonArray({456, QJsonObject{{"id", 123}, {"durationMs", 144}}}));
+        QCOMPARE(source["tracks"].toObject()["123"].toObject()["durationMs"].toInt(), mode == "matching-duration" ? 144 : 9999);
+        if (remote) QCOMPARE(get(dir.path() + "/tracks/123"), body);
+        // A measured storage duration must not block ordinary entity edits.
+        uploader.send("123", "Label", "Artist", {}, {{"title", "Changed"}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
+        source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
+        QCOMPARE(source["tracks"].toObject()["123"].toObject()["title"].toString(), "Changed");
+        const auto after = get(dir.path() + "/list_v2.json");
+        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", {{"durationMs", 200}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY(uploader.error().contains("shadow"));
+        QCOMPARE(get(dir.path() + "/list_v2.json"), after);
+    }
     void sourceRouting_data() {
         QTest::addColumn<bool>("metadata");
         QTest::newRow("plain") << false;
@@ -46,6 +131,7 @@ private slots:
         put(dir.path() + "/list_v2.json", "{\"sources\":[{\"supportedVersions\":\">=2.0.0\",\"tracks\":{\"1\":{\"title\":\"Keep\"}}}," + legacy + "]}");
         git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
         Uploader uploader(dir.path());
+        localAudio(dir.path(), "123");
         uploader.send("123", "Label", "Artist", {}, metadata ? QVariantMap{{"title", "Custom"}} : QVariantMap{});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
@@ -54,7 +140,8 @@ private slots:
         const auto sources = QJsonDocument::fromJson(bytes).object()["sources"].toArray();
         QCOMPARE(sources.size(), 2);
         const auto source = sources[0].toObject();
-        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray()[0].toInt(), 123);
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray(),
+                 QJsonArray({QJsonObject{{"id", 123}, {"durationMs", 144}}}));
         QCOMPARE(source["tracks"].toObject().contains("123"), metadata);
         if (metadata) QCOMPARE(source["tracks"].toObject()["123"].toObject()["title"].toString(), "Custom");
     }
@@ -94,6 +181,7 @@ private slots:
         put(dir.path() + "/list_v2.json", before);
         git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
         Uploader uploader(dir.path());
+        localAudio(dir.path(), "123");
         uploader.send("123", "Display", "Display", {}, {{"artists", QVariantList{QVariantMap{{"id", "42"}, {"name", "After"}}}}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "added");
@@ -103,7 +191,8 @@ private slots:
         QCOMPARE(track["__fckCensor"].toObject()["insertionIndex"].toInt(-1), 0);
         QCOMPARE(track["__fckCensor"].toObject()["unknown"].toString(), "keep");
         QVERIFY(track["artists"].toArray()[0].toObject()["various"].toBool());
-        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray()[0].toInt(), 123);
+        QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray(),
+                 QJsonArray({QJsonObject{{"id", 123}, {"durationMs", 144}}}));
         const auto after = get(dir.path() + "/list_v2.json");
         const auto head = git(dir.path(), {"rev-parse", "HEAD"});
         uploader.send("123", "Display", "Display", {}, {{"title", "Keep"}});
@@ -148,7 +237,8 @@ private slots:
         put(dir.path() + "/list_v2.json", before);
         git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
         Uploader uploader(dir.path());
-        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", {{"title", "Custom"}});
+        uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never",
+                      sources.contains("durationMs") ? QVariantMap{{"durationMs", 20}} : QVariantMap{{"title", "Custom"}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QVERIFY(!uploader.error().isEmpty()); QVERIFY(!uploader.error().contains("Download"));
         QCOMPARE(get(dir.path() + "/list_v2.json"), before);
@@ -162,11 +252,12 @@ private slots:
         git(dir.path(), {"add", "--", "list_v2.json"});
         git(dir.path(), {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "list"});
         Uploader uploader(dir.path());
+        localAudio(dir.path(), "126984723");
         uploader.send("126984723", "Title", "Artist");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
         auto want = before;
-                want.replace("\"tracks\":{\"1\":{\"title\":\"keep\"}}", "\"tracks\":{\"1\":{\"title\":\"keep\"}},\"tracksStorages\":[{\"trackIds\":[126984723],\"urlTemplate\":\"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%\"}]");
+                want.replace("\"tracks\":{\"1\":{\"title\":\"keep\"}}", "\"tracks\":{\"1\":{\"title\":\"keep\"}},\"tracksStorages\":[{\"trackIds\":[{\"durationMs\":144,\"id\":126984723}],\"urlTemplate\":\"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%\"}]");
         QCOMPARE(get(dir.path() + "/list_v2.json"), want);
         const auto head = git(dir.path(), {"rev-parse", "HEAD"});
         uploader.send("126984723", "Title", "Artist");

@@ -20,11 +20,11 @@ func TestNativeListsReuseGitHubList(t *testing.T) {
 	published := "https://" + strings.ReplaceAll(template, "%%", id)
 	storage := `{"urlTemplate":"` + template + `","trackIds":[{"id":119689460,"durationMs":110838},152396542],"tracks":{"149360077":149665384,"155807913":151855578},"unknown":9007199254740993}`
 	before := []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracks":{"1":{"title":"keep"}}},{"supportedVersions":">0.0.0","tracksStorages":[` + storage + `]}]}`)
-	_, out, err := nativeLists(nil, before, id, "", published)
+	_, out, err := nativeLists(nil, before, id, "", published, 123456)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := bytes.Replace(before, []byte(`"tracks":{"1":{"title":"keep"}}`), []byte(`"tracks":{"1":{"title":"keep"}},"tracksStorages":[{"trackIds":[126984723],"urlTemplate":"`+template+`"}]`), 1)
+	want := bytes.Replace(before, []byte(`"tracks":{"1":{"title":"keep"}}`), []byte(`"tracks":{"1":{"title":"keep"}},"tracksStorages":[{"trackIds":[{"durationMs":123456,"id":126984723}],"urlTemplate":"`+template+`"}]`), 1)
 	if !bytes.Equal(out, want) {
 		t.Fatalf("unexpected list edit: %s", out)
 	}
@@ -34,12 +34,12 @@ func TestNativeListsReuseGitHubList(t *testing.T) {
 			t.Fatalf("mapping %s: %s %v", track, got, err)
 		}
 	}
-	_, again, err := nativeLists(nil, out, id, published, published)
+	_, again, err := nativeLists(nil, out, id, published, published, 123456)
 	if err != nil || !bytes.Equal(out, again) {
 		t.Fatal("not idempotent", err)
 	}
 	ambiguous := []byte(`{"sources":[{"tracksStorages":[` + storage + `,` + storage + `]}]}`)
-	if _, _, err := nativeLists(nil, ambiguous, id, "", published); err == nil {
+	if _, _, err := nativeLists(nil, ambiguous, id, "", published, 123456); err == nil {
 		t.Fatal("accepted ambiguous storage")
 	}
 }
@@ -48,7 +48,7 @@ func TestNativeNewTrackSourceGate(t *testing.T) {
 	const published = "https://new.example/42"
 	for _, gate := range []string{`">0.0.0"`, `"<2.0.0"`, `[">=2.0.0"]`} {
 		input := []byte(`{"sources":[{"supportedVersions":` + gate + `,"tracks":{"1":{"title":"Keep"}}}]}`)
-		_, out, err := nativeLists(nil, input, "42", "", published)
+		_, out, err := nativeLists(nil, input, "42", "", published, 123456)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,11 +65,11 @@ func TestNativeNewTrackSourceGate(t *testing.T) {
 		}
 	}
 	ambiguous := []byte(`{"sources":[{"supportedVersions":">=2.0.0"},{"supportedVersions":">=2.0.0"}]}`)
-	if _, _, err := nativeLists(nil, ambiguous, "42", "", published); !errors.Is(err, ErrCensorConflict) {
+	if _, _, err := nativeLists(nil, ambiguous, "42", "", published, 123456); !errors.Is(err, ErrCensorConflict) {
 		t.Fatal("ambiguous gate accepted", err)
 	}
 	input := []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracksStorages":[{"urlTemplate":"new.example/%%","tracks":{"1":1}}]}]}`)
-	_, out, err := nativeLists(nil, input, "42", "", published)
+	_, out, err := nativeLists(nil, input, "42", "", published, 123456)
 	if err != nil || !bytes.Contains(out, []byte(`"42":"42"`)) {
 		t.Fatalf("templated bare ID behavior: %s %v", out, err)
 	}
@@ -98,6 +98,12 @@ func nativePublisherFixture(t *testing.T) (*nativePublisher, CensorIdentity, Cen
 		t.Fatal(e)
 	}
 	p.validate = func(context.Context, string) error { return nil }
+	p.duration = func(_ context.Context, path string) (int64, error) {
+		if string(nativeReadTest(t, path)) != "full-mp3" {
+			t.Fatal("duration must probe downloaded audio")
+		}
+		return 123456, nil
+	}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" || r.Header.Get("apikey") != "" {
 			t.Error("secret sent")
@@ -282,12 +288,29 @@ func TestNativePublicationCrashRecovery(t *testing.T) {
 }
 func TestNativePublicationNewTrackRollback(t *testing.T) {
 	p, i, s, r, c, _ := nativePublisherFixture(t)
+	p.validate = func(context.Context, string) error {
+		t.Fatal("new tracks must not decode again via validate")
+		return nil
+	}
+	probe := p.duration
+	calls := 0
+	p.duration = func(ctx context.Context, path string) (int64, error) {
+		calls++
+		return probe(ctx, path)
+	}
 	os.Remove(filepath.Join(p.repo, "tracks/42"))
 	os.WriteFile(filepath.Join(p.repo, "list.json"), []byte(`{"tracks":{}}`), 0644)
-	os.WriteFile(filepath.Join(p.repo, "list_v2.json"), []byte(`{"sources":[]}`), 0644)
+	os.WriteFile(filepath.Join(p.repo, "list_v2.json"), []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracksStorages":[{"urlTemplate":"raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/%%","trackIds":[99]}]}]}`), 0644)
 	r.ExpectedMapping = ""
 	if _, e := p.Replace(context.Background(), i, s, r, c); e != nil {
 		t.Fatal(e)
+	}
+	if calls != 1 {
+		t.Fatalf("duration probe calls = %d, want 1", calls)
+	}
+	out := nativeReadTest(t, filepath.Join(p.repo, "list_v2.json"))
+	if !bytes.Contains(out, []byte(`"trackIds":[99,{"durationMs":123456,"id":42}]`)) {
+		t.Fatalf("missing numeric ID and downloaded duration: %s", out)
 	}
 	if _, e := p.Rollback(context.Background(), i, s); e != nil {
 		t.Fatal(e)
@@ -300,14 +323,14 @@ func TestNativeListsTemplatedAndDirectMappings(t *testing.T) {
 	for _, storage := range []string{`{"urlTemplate":"old.example/%%","trackIds":[{"id":42,"durationMs":1000,"custom":true},99]}`, `{"urlTemplate":"old.example/%%","tracks":{"42":{"url":"42","custom":true},"99":99}}`, `{"tracks":{"42":{"url":"https://old.example/42","custom":true},"99":"https://old.example/99"}}`} {
 		legacy := []byte(`{"tracks":{"42":"https://old.example/42"}}`)
 		v2 := []byte(`{"sources":[{"supportedVersions":[">=2.0.0"],"tracksStorages":[` + storage + `]}]}`)
-		_, out, e := nativeLists(legacy, v2, "42", "https://old.example/42", "https://published.example/42")
+		_, out, e := nativeLists(legacy, v2, "42", "https://old.example/42", "https://published.example/42", 123456)
 		if e != nil {
 			t.Fatal(e)
 		}
 		if !strings.Contains(string(out), `"custom":true`) {
 			t.Fatal("unknown field lost")
 		}
-		if _, _, e = nativeLists(legacy, v2, "42", "https://wrong.example/42", "https://published.example/42"); !errors.Is(e, ErrCensorConflict) {
+		if _, _, e = nativeLists(legacy, v2, "42", "https://wrong.example/42", "https://published.example/42", 123456); !errors.Is(e, ErrCensorConflict) {
 			t.Fatal("CAS missing")
 		}
 	}
@@ -384,12 +407,16 @@ func TestNativeMP3Validator(t *testing.T) {
 		t.Fatal(e)
 	}
 	path := filepath.Join(t.TempDir(), "audio.mp3")
-	cmd := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-codec:a", "libmp3lame", path)
+	cmd := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.0007", "-codec:a", "libmp3lame", path)
 	if out, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("generate mp3: %v %s", e, out)
 	}
 	if e = real.validate(context.Background(), path); e != nil {
 		t.Fatal(e)
+	}
+	durationMs, err := real.duration(context.Background(), path)
+	if err != nil || durationMs != 1000 {
+		t.Fatalf("decoded duration = %d ms, want 1000: %v", durationMs, err)
 	}
 	os.WriteFile(path, []byte("not audio"), 0600)
 	if e = real.validate(context.Background(), path); e == nil {
@@ -492,7 +519,7 @@ func TestNativeV2FormattingPreserved(t *testing.T) {
 	// An existing direct mapping changes only its entry and the appended storage;
 	// unrelated metadata, escaping, key order, BOM and CRLF stay byte-identical.
 	input := "\xef\xbb\xbf{\r\n\t\"z\" : 9007199254740993,\r\n\t\"sources\" : [ { \"supportedVersions\" : \">=2.0.0\", \"tracks\":{\"42\":{\"title\":\"\\u006bеep\"}}, \"tracksStorages\" : [ { \"unknown\":true, \"tracks\":{\"42\":\"https://old.example/42\",\"99\":\"https://old.example/99\"} } ] } ],\r\n\t\"a\" : false\r\n}\r\n"
-	_, out, err := nativeLists(nil, []byte(input), "42", "https://old.example/42", "https://published.example/42")
+	_, out, err := nativeLists(nil, []byte(input), "42", "https://old.example/42", "https://published.example/42", 123456)
 	if err != nil {
 		t.Fatal(err)
 	}
