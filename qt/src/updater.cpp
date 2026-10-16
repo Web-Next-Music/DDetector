@@ -314,7 +314,9 @@ void Updater::detectInstallation() {
         fallback("This executable is not an owned system package installation"); return;
     }
     auto probe = new QProcess(this);
-    const bool deb = QFileInfo::exists("/usr/bin/dpkg-query");
+    // Arch can also have dpkg installed; prefer its native package database.
+    const bool arch = QFileInfo::exists("/etc/arch-release") && QFileInfo::exists("/usr/bin/pacman");
+    const bool deb = !arch && QFileInfo::exists("/usr/bin/dpkg-query");
     if (!deb && !QFileInfo::exists("/usr/bin/pacman")) { probe->deleteLater(); fallback("Unsupported package manager"); return; }
     auto timedOut = std::make_shared<bool>(false);
     auto timer = new QTimer(probe); timer->setSingleShot(true);
