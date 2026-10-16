@@ -104,6 +104,15 @@ build_appdir() {
         "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/$LINUXDEPLOY_PLUGIN_QT_VERSION/linuxdeploy-plugin-qt-x86_64.AppImage" \
         "$LINUXDEPLOY_PLUGIN_QT_SHA256"
 
+    # QtKeychain dlopens libsecret, so ELF dependency scanning cannot discover it.
+    # Use the build toolchain's backend, not a host libsecret with bundled GLib/GIO.
+    local libsecret
+    libsecret="$(pkg-config --variable=libdir libsecret-1)/libsecret-1.so.0"
+    if [[ ! -f "$libsecret" ]]; then
+        echo "Libsecret runtime missing at $libsecret; install libsecret development files in the build toolchain." >&2
+        exit 1
+    fi
+
     local qmake qt_plugins platform_plugins
     qmake="${QMAKE:-$(command -v qmake6)}"
     qt_plugins="$("$qmake" -query QT_INSTALL_PLUGINS)"
@@ -135,10 +144,15 @@ build_appdir() {
         --appdir "$appdir" \
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
         --executable "$appdir/usr/bin/ffmpeg" \
+        --library "$libsecret" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --plugin qt
     python3 "$SOURCE_DIR/packaging/prune-qt-runtime.py" linux "$appdir"
+    if [[ ! -f "$appdir/usr/lib/libsecret-1.so.0" ]]; then
+        echo 'QtKeychain libsecret backend is missing from the bundle.' >&2
+        exit 1
+    fi
     if [[ ! -f "$bundled_integrations/libqt-plugin-wayland-egl.so" || -L "$bundled_integrations/libqt-plugin-wayland-egl.so" ]]; then
         echo "Bundled Qt Wayland EGL integration must be a regular library, not a symlink." >&2
         exit 1
