@@ -6,7 +6,7 @@
 #include <KSyntaxHighlighting/Repository>
 #include <memory>
 
-// Stable QML identity; the internal KF receiver is retired before buffer replacement.
+// Stable QML identity; timer-driven parsing is retired before buffer replacement.
 class SyntaxHighlighter : public QObject {
     Q_OBJECT
     Q_PROPERTY(QQuickTextDocument *document READ quickDocument WRITE setQuickDocument NOTIFY documentChanged)
@@ -19,6 +19,7 @@ public:
     void setDocument(QTextDocument *document);
     QString filePath() const { return m_filePath; }
     void setFilePath(const QString &path);
+    // Explicit synchronous pass; automatic attach, path changes and edits are batched.
     void rehighlight();
     // Call before any full-buffer mutation, even when the document identity is unchanged.
     Q_INVOKABLE void beginDocumentReplacement();

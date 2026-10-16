@@ -5,14 +5,64 @@
 #include <QUrl>
 #include <KSyntaxHighlighting/Definition>
 #include <KSyntaxHighlighting/Format>
-#include <KSyntaxHighlighting/SyntaxHighlighter>
+#include <KSyntaxHighlighting/AbstractHighlighter>
+#include <KSyntaxHighlighting/State>
+#include <QElapsedTimer>
+#include <QTextBlock>
+#include <QTextLayout>
+#include <QTimer>
+#include <vector>
 #include <KSyntaxHighlighting/Theme>
 
-class SyntaxHighlighter::Highlighter : public KSyntaxHighlighting::SyntaxHighlighter {
+class SyntaxHighlighter::Highlighter : public QObject, public KSyntaxHighlighting::AbstractHighlighter {
 public:
-    using KSyntaxHighlighting::SyntaxHighlighter::SyntaxHighlighter;
+    Highlighter(QObject *parent, QTextDocument *document) : QObject(parent), m_document(document) {
+        // Ensure contentsChange is emitted even for standalone QTextDocuments.
+        document->documentLayout();
+        m_timer.setSingleShot(true);
+        connect(&m_timer, &QTimer::timeout, this, [this] { process(false); });
+        connect(document, &QTextDocument::contentsChange, this, [this](int position, int removed, int added) {
+            if (!removed && !added) return;
+            restart(m_document->findBlock(position).blockNumber());
+        });
+    }
+    void restart(int block = 0) {
+        // Only the prefix remains valid after edits, including block insertion/removal.
+        m_states.resize(qMin(qMax(0, block), int(m_states.size())));
+        m_timer.start(0);
+    }
+    void rehighlight() {
+        m_timer.stop();
+        m_states.clear();
+        process(true);
+    }
 protected:
     void applyFormat(int offset, int length, const KSyntaxHighlighting::Format &format) override;
+private:
+    void process(bool synchronous) {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        auto block = m_document->findBlockByNumber(int(m_states.size()));
+        const int start = block.isValid() ? block.position() : 0;
+        int end = start;
+        int count = 0;
+        while (block.isValid()) {
+            m_formats.clear();
+            const auto previous = m_states.empty() ? KSyntaxHighlighting::State() : m_states.back();
+            const QString text = block.text();
+            m_states.push_back(highlightLine(QStringView(text), previous));
+            block.layout()->setFormats(m_formats);
+            end = block.position() + block.length();
+            block = block.next();
+            if (!synchronous && (++count >= 128 || elapsed.elapsed() >= 4)) break;
+        }
+        if (end > start) m_document->markContentsDirty(start, end - start);
+        if (block.isValid()) m_timer.start(0);
+    }
+    QTextDocument *m_document;
+    QTimer m_timer;
+    std::vector<KSyntaxHighlighting::State> m_states;
+    QList<QTextLayout::FormatRange> m_formats;
 };
 
 SyntaxHighlighter::SyntaxHighlighter(QObject *parent) : QObject(parent) {}
@@ -21,8 +71,7 @@ SyntaxHighlighter::~SyntaxHighlighter() = default;
 
 void SyntaxHighlighter::beginDocumentReplacement() {
     m_replacing = true;
-    // KF queues rehighlightBlock with QTextBlock values. Destroy the receiver
-    // synchronously, before those blocks can be invalidated by setText/clear.
+    // Destroy the timer and state cache before the buffer is invalidated.
     m_highlighter.reset();
 }
 
@@ -33,10 +82,10 @@ void SyntaxHighlighter::endDocumentReplacement() {
 
 void SyntaxHighlighter::attachHighlighter() {
     if (m_replacing || m_highlighter || !m_textDocument) return;
-    m_highlighter = std::make_unique<Highlighter>(this);
+    m_highlighter = std::make_unique<Highlighter>(this, m_textDocument);
     m_highlighter->setTheme(m_repository.defaultTheme(KSyntaxHighlighting::Repository::DarkTheme));
     m_highlighter->setDefinition(m_definition);
-    m_highlighter->setDocument(m_textDocument);
+    m_highlighter->restart();
 }
 
 void SyntaxHighlighter::setDocument(QTextDocument *document) {
@@ -83,8 +132,10 @@ void SyntaxHighlighter::setFilePath(const QString &path) {
         definition = m_repository.definitionForName("Markdown");
     if (m_definition != definition) {
         m_definition = definition;
-        // KF's setDefinition already rehighlights when the definition changes.
-        if (m_highlighter) m_highlighter->setDefinition(definition);
+        if (m_highlighter) {
+            m_highlighter->setDefinition(definition);
+            m_highlighter->restart();
+        }
     }
     emit filePathChanged();
 }
@@ -108,5 +159,15 @@ void SyntaxHighlighter::Highlighter::applyFormat(int offset, int length, const K
     case T::Attribute: case T::Variable: color = QColor("#26a6b5"); break;
     default: color = QColor("#c792ea"); break;
     }
-    setFormat(offset, length, color);
+    if (length <= 0) return;
+    if (!m_formats.isEmpty() && m_formats.back().start + m_formats.back().length == offset
+        && m_formats.back().format.foreground().color() == color) {
+        m_formats.back().length += length;
+        return;
+    }
+    QTextLayout::FormatRange range;
+    range.start = offset;
+    range.length = length;
+    range.format.setForeground(color);
+    m_formats.push_back(range);
 }

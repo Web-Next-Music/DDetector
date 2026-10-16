@@ -9,7 +9,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
-#include <QSyntaxHighlighter>
+#include <QTimer>
 #include <QtTest>
 
 // Standalone target: enable AUTOMOC, compile this file plus syntaxhighlighter.cpp/.h,
@@ -25,6 +25,8 @@ private slots:
     void fenceLengths();
     void shellAndYamlQuoting();
     void semanticPalette();
+    void progressive();
+    void incrementalEdits();
     void queuedPropagation_data();
     void queuedPropagation();
 };
@@ -80,6 +82,7 @@ private slots:
             formatted |= !block.layout()->formats().isEmpty();
         QVERIFY(formatted);
         highlighter.setFilePath("unknown.txt");
+        highlighter.rehighlight();
         for (auto block = document.begin(); block.isValid(); block = block.next())
             QVERIFY(block.layout()->formats().isEmpty());
         QCOMPARE(document.toPlainText(), before);
@@ -163,6 +166,50 @@ private slots:
         QCOMPARE(colorAt(document, 3, 14), QColor("#80cbc4"));
         QCOMPARE(colorAt(document, 5, 2), QColor("#26a6b5"));
     }
+    void progressive() {
+        QTextDocument document(QString("const value = 42;\n").repeated(12000));
+        document.setModified(false);
+        SyntaxHighlighter highlighter;
+        highlighter.setFilePath("test.js");
+        highlighter.setDocument(&document);
+        QVERIFY(document.begin().layout()->formats().isEmpty());
+        bool yielded = false;
+        QTimer probe;
+        probe.setSingleShot(true);
+        connect(&probe, &QTimer::timeout, &document, [&] {
+            yielded = !document.begin().layout()->formats().isEmpty()
+                && document.findBlockByNumber(11999).layout()->formats().isEmpty();
+        });
+        probe.start(0);
+        QTRY_VERIFY(yielded);
+        QTRY_VERIFY(!document.findBlockByNumber(11999).layout()->formats().isEmpty());
+        QVERIFY(!document.isModified());
+        highlighter.setFilePath("unknown.txt");
+        // Definition changes must also be deferred, including clearing formats.
+        QVERIFY(!document.begin().layout()->formats().isEmpty());
+        QTRY_VERIFY(document.findBlockByNumber(11999).layout()->formats().isEmpty());
+    }
+    void incrementalEdits() {
+        QTextDocument document(QString("int value = 42;\n").repeated(2000));
+        SyntaxHighlighter highlighter;
+        highlighter.setFilePath("test.cpp");
+        highlighter.setDocument(&document);
+        QTRY_VERIFY(!document.findBlockByNumber(1999).layout()->formats().isEmpty());
+        QTextCursor cursor(document.findBlockByNumber(10));
+        cursor.insertText("/*\n");
+        QTRY_COMPARE(colorAt(document, 2000, 0), QColor("#78909c"));
+        cursor.setPosition(document.findBlockByNumber(10).position());
+        cursor.setPosition(document.findBlockByNumber(11).position(), QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
+        QTRY_COMPARE(colorAt(document, 1999, 0), QColor("#c792ea"));
+        // Edit beyond an unprocessed prefix, then before it while work is pending.
+        highlighter.setFilePath("test.js");
+        cursor.setPosition(document.findBlockByNumber(1500).position());
+        cursor.insertText("/*");
+        cursor.setPosition(0);
+        cursor.insertText("/*\n");
+        QTRY_COMPARE(colorAt(document, 2000, 0), QColor("#78909c"));
+    }
     void queuedPropagation_data() {
         QTest::addColumn<QString>("operation");
         for (const auto *operation : {"replace", "discard", "switch", "destroy-document", "destroy-wrapper"})
@@ -174,14 +221,10 @@ private slots:
         auto highlighter = std::make_unique<SyntaxHighlighter>();
         highlighter->setFilePath("test.cpp");
         highlighter->setDocument(document.get());
-        highlighter->rehighlight();
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
-        QPointer<QSyntaxHighlighter> receiver = highlighter->findChild<QSyntaxHighlighter *>();
+        QPointer<QObject> receiver = highlighter->findChild<QObject *>();
         QVERIFY(receiver);
-        // Reproduce KF's queued propagation argument explicitly, without depending
-        // on private state IDs or whether this library version propagates eagerly.
-        QVERIFY(QMetaObject::invokeMethod(receiver, "rehighlightBlock", Qt::QueuedConnection,
-                                          Q_ARG(QTextBlock, document->begin().next())));
+        // Attach has pending timer work. A queued sentinel also verifies that
+        // cancellation destroys the receiver rather than merely stopping a timer.
         bool staleCallDelivered = false;
         QMetaObject::invokeMethod(receiver, [&] { staleCallDelivered = true; }, Qt::QueuedConnection);
         QTextDocument replacement("int fresh = 42;");
@@ -203,9 +246,8 @@ private slots:
         QVERIFY(!staleCallDelivered);
         if (highlighter) {
             if (!document && operation == "destroy-document") highlighter->setDocument(&replacement);
-            highlighter->rehighlight();
-            const auto &current = document ? *document : replacement;
-            QVERIFY(!current.begin().layout()->formats().isEmpty());
+            const auto &current = operation == "switch" || !document ? replacement : *document;
+            QTRY_VERIFY(!current.begin().layout()->formats().isEmpty());
             QCOMPARE(colorAt(current, 0, 0), QColor(operation == "discard" ? "#78909c" : "#c792ea"));
         }
     }
