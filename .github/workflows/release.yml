@@ -56,7 +56,8 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libegl1 libgl1 libopengl0
+          # Packaging needs the distribution FFmpeg with a portable ELF loader, not Linuxbrew's.
+          sudo apt-get install --no-install-recommends -y ffmpeg libegl1 libgl1 libopengl0
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           if [[ '${{ steps.homebrew.outputs.cache-hit }}' != 'true' ]]; then
             # Keep runtime image/Wayland plugins and LinguistTools without the Qt umbrella.
