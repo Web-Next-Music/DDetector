@@ -2,8 +2,8 @@
 """Prune optional Qt deployment artifacts from a Linux AppDir or Windows dist."""
 
 import argparse
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 STYLES = (
