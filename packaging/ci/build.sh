@@ -69,10 +69,19 @@ build_appdir() {
     build_linux
     local appdir="$BUILD_DIR/AppDir"
     local qtermwidget_data syntax_data ffmpeg
-    ffmpeg="$(command -v ffmpeg)" || {
-        echo 'FFmpeg is required to package audio analysis; install ffmpeg.' >&2
+    # PATH can put Linuxbrew ahead of the distribution binaries. Its FFmpeg
+    # embeds an absolute Linuxbrew ELF loader that does not exist on user hosts.
+    ffmpeg="${FFMPEG:-/usr/bin/ffmpeg}"
+    if [[ ! -x "$ffmpeg" ]]; then
+        echo "Native FFmpeg not found at $ffmpeg; install the distribution's ffmpeg package or set FFMPEG to a portable Linux executable." >&2
         exit 1
-    }
+    fi
+    local interpreter
+    interpreter="$(LC_ALL=C readelf -l "$ffmpeg" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')"
+    case "$interpreter" in
+        ''|/lib64/ld-linux-x86-64.so.2|/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2) ;;
+        *) echo "FFmpeg uses a non-portable ELF loader: $interpreter. Install the distribution's ffmpeg package and set FFMPEG to its executable." >&2; exit 1 ;;
+    esac
     qtermwidget_data="${QTERMWIDGET_DATA_DIR:-/usr/share/qtermwidget6}"
     syntax_data="${SYNTAX_HIGHLIGHTING_DATA_DIR:-/usr/share/org.kde.syntax-highlighting}"
     rm -rf "$appdir"
@@ -149,6 +158,10 @@ build_appdir() {
     done
     install -Dm755 "$SOURCE_DIR/packaging/linux/AppRun" "$appdir/AppRun"
     LD_LIBRARY_PATH="$appdir/usr/lib" "$appdir/usr/bin/ffmpeg" -version >/dev/null
+    # Exercise the same PCM output used by audio analysis, not just startup.
+    LD_LIBRARY_PATH="$appdir/usr/lib" "$appdir/usr/bin/ffmpeg" \
+        -nostdin -v error -f lavfi -i 'sine=frequency=440:duration=0.1' \
+        -map 0:a:0 -ac 1 -ar 16000 -f s16le - > /dev/null
     APPDIR_READY=1
 }
 
