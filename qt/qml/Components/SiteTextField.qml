@@ -20,7 +20,7 @@ TextField {
     background: Rectangle {
         radius: 8
         color: "#0c0c0e"
-        border.color: control.activeFocus ? "#332bfef5" : "#3397979f"
+        border.color: control.activeFocus ? "#332bfef5" : "#242426"
         opacity: control.enabled ? 1 : 0.55
     }
     SiteFocusRing {

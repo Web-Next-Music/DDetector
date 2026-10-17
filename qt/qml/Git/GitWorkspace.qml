@@ -134,7 +134,7 @@ Item {
             handle: Rectangle {
                 implicitHeight: 1
                 implicitWidth: 1
-                color: "#3397979f"
+                color: "#242426"
             }
             Item {
                 objectName: "gitEditorSplit"
@@ -147,7 +147,7 @@ Item {
                 orientation: Qt.Horizontal
                 handle: Rectangle {
                     implicitWidth: 1
-                    color: "#3397979f"
+                    color: "#242426"
                 }
                 Rectangle {
                     SplitView.preferredWidth: 240
@@ -268,7 +268,7 @@ Item {
                                 font.pixelSize: 12
                                 background: Rectangle {
                                     color: root.raised
-                                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#3397979f" }
+                                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#242426" }
                                 }
                                 text: root.fileLoading ? "Loading " + root.workspaceBackend.loadingFilePath + "…"
                                       : !root.showingDiff && root.available ? root.workspaceBackend.filePath + (root.workspaceBackend.dirty ? " *" : "") : ""
@@ -452,7 +452,7 @@ Item {
                                 cornerRadius: 0
                                 onClicked: root.historyTab = false
                             }
-                            Rectangle { implicitHeight: 30; implicitWidth: 1; color: "#3397979f" }
+                            Rectangle { implicitHeight: 30; implicitWidth: 1; color: "#242426" }
                             SiteButton {
                                 Layout.fillWidth: true
                                 Layout.preferredWidth: 1
@@ -465,7 +465,7 @@ Item {
                                 onClicked: root.historyTab = true
                             }
                         }
-                        Rectangle { visible: root.expanded; Layout.fillWidth: true; implicitHeight: 1; color: "#3397979f" }
+                        Rectangle { visible: root.expanded; Layout.fillWidth: true; implicitHeight: 1; color: "#242426" }
                         ColumnLayout {
                             visible: root.expanded && !root.historyTab
                             Layout.fillWidth: true
@@ -617,7 +617,7 @@ Item {
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
                                     height: 1
-                                    color: "#3397979f"
+                                    color: "#242426"
                                 }
                             }
                         }
@@ -706,7 +706,7 @@ Item {
                                 implicitHeight: 24
                                 radius: 4
                                 color: root.surface
-                                border.color: "#3397979f"
+                                border.color: "#242426"
                                 Row {
                                     id: fetchActions
                                     anchors.centerIn: parent
@@ -727,7 +727,7 @@ Item {
                                         enabled: root.available && !root.workspaceBackend.gitBusy
                                         onClicked: root.workspaceBackend.gitAction(aheadCount > 0 ? "push" : "fetch")
                                     }
-                                    Rectangle { width: 1; height: 22; color: "#3397979f" }
+                                    Rectangle { width: 1; height: 22; color: "#242426" }
                                     SiteButton {
                                         text: "Git actions"
                                         glyph: "chevron-down"
@@ -756,9 +756,9 @@ Item {
                             Layout.minimumHeight: 70
                             color: "#08080a"
                             radius: root.expanded ? 0 : 4
-                            border.color: root.expanded ? "transparent" : "#3397979f"
-                            Rectangle { visible: root.expanded; anchors.top: parent.top; width: parent.width; height: 1; color: "#3397979f" }
-                            Rectangle { visible: root.expanded; anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#3397979f" }
+                            border.color: root.expanded ? "transparent" : "#242426"
+                            Rectangle { visible: root.expanded; anchors.top: parent.top; width: parent.width; height: 1; color: "#242426" }
+                            Rectangle { visible: root.expanded; anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#242426" }
                             ScrollView {
                                 anchors.fill: parent
                                 anchors.margins: 1

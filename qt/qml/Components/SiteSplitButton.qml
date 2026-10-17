@@ -10,7 +10,7 @@ Item {
     property bool menuEnabled: true
     property string toolTip: ""
     property string menuToolTip: ""
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color accentBorder: "#332bfef5"
 
     signal clicked()

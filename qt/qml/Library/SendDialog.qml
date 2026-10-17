@@ -183,7 +183,7 @@ SiteDialog {
             implicitHeight: 84
             radius: 14
             color: "#171719"
-            border.color: "#3397979f"
+            border.color: "#242426"
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 10

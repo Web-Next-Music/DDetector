@@ -32,6 +32,8 @@ ApplicationWindow {
     property var updater: null
     property int rightPage: 0
     property bool gitExpanded: false
+    readonly property int panelInset: 10
+    readonly property int panelRadius: 12
     property bool workspaceCloseApproved: false
     property int activeModalCount: 0
     readonly property bool raiseWindowChrome: activeModalCount > 0
@@ -66,7 +68,7 @@ ApplicationWindow {
     property color playerSurface: "#0c0c0e"
     property color surface: playerSurface
     property color surface2: "#171719"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color ink: "#f0f0f4"
     property color muted: "#999999"
     property color accent: "#2bfef5"
@@ -375,20 +377,17 @@ ApplicationWindow {
         id: mainHeader
         visible: appUi.showShell || !!appUi.state.authenticated
         z: 10
-        width: parent.width
-        y: 0
+        x: appUi.panelInset
+        width: parent.width - appUi.panelInset * 2
+        y: appUi.panelInset
         height: !visible ? 0 : 48
-        color: appUi.bg
+        radius: appUi.panelRadius
+        border.color: appUi.borderColor
+        color: appUi.surface
         MouseArea {
             anchors.fill: parent
             onPressed: appUi.startSystemMove()
             onDoubleClicked: appUi.toggleMaximized()
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: appUi.borderColor
         }
         TapHandler {
             acceptedButtons: Qt.RightButton
@@ -411,8 +410,9 @@ ApplicationWindow {
                     id: windowTitle
                     objectName: "windowTitle"
                     parent: appUi.raiseWindowChrome ? Overlay.overlay : windowTitleSlot
-                    x: appUi.raiseWindowChrome ? 16 : 0
-                    y: appUi.raiseWindowChrome ? (mainHeader.height - height) / 2 + 2 : (windowTitleSlot.height - height) / 2
+                    x: appUi.raiseWindowChrome ? windowTitleSlot.mapToItem(Overlay.overlay, 0, 0).x : 0
+                    y: (appUi.raiseWindowChrome ? windowTitleSlot.mapToItem(Overlay.overlay, 0, 0).y : 0)
+                       + (windowTitleSlot.height - height) / 2
                     z: 40
                     text: "D<span style='color:" + appUi.accent + "'>Detector</span> <span style='color:white'>" + appUi.gitTag + "</span>"
                     textFormat: Text.RichText
@@ -584,8 +584,8 @@ ApplicationWindow {
     Column {
         anchors.right: parent.right
         anchors.rightMargin: 8
-        anchors.bottom: avatarButton.top
-        anchors.bottomMargin: 12
+        anchors.bottom: panels.bottom
+        anchors.bottomMargin: appUi.panelInset + avatarButton.height + 20
         spacing: 8
         z: 40
         visible: appUi.showShell
@@ -635,21 +635,39 @@ ApplicationWindow {
         id: windowControls
         parent: appUi.raiseWindowChrome ? Overlay.overlay : appUi.contentItem
         anchors.right: parent.right
-        anchors.rightMargin: appUi.config.hideWindowControls ? 8 : 0
-        y: 0
+        anchors.rightMargin: appUi.panelInset + (appUi.config.hideWindowControls ? 8 : 0)
+        y: mainHeader.y
         z: 40
         spacing: 0
         height: 48
+        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
+        layer.effect: MultiEffect {
+            maskEnabled: true
+            maskSource: windowControlsMask
+        }
+        Item {
+            id: windowControlsMask
+            width: windowControls.width
+            height: windowControls.height
+            visible: false
+            layer.enabled: true
+            Rectangle {
+                x: mainHeader.x - windowControls.x
+                width: mainHeader.width
+                height: mainHeader.height
+                radius: mainHeader.radius
+            }
+        }
         SmallButton {
             id: avatarButton
             objectName: "avatarButton"
-            parent: appUi.contentItem
+            parent: rightPanel
             z: 40
-            visible: !!appUi.state.authenticated
+            visible: appUi.showShell && !!appUi.state.authenticated
             width: 32; height: 32
             anchors.right: parent.right
             anchors.rightMargin: 8
-            anchors.bottom: playerPanel.top
+            anchors.bottom: parent.bottom
             anchors.bottomMargin: 8
             padding: 0
             leftPadding: 0
@@ -953,20 +971,36 @@ ApplicationWindow {
             anchors.fill: trackList
             flickable: trackList
         }
-        Rectangle {
-            x: panels.leftPanelWidth
-            height: panels.height
-            width: 1
-            color: appUi.borderColor
-        }
+
         Rectangle {
             id: rightPanel
             z: 2
-            x: appUi.rightPage === 1 && appUi.gitExpanded ? 0 : panels.leftPanelWidth + 1
-            y: 0
-            width: panels.width - x
-            height: panels.height
-            color: appUi.bg
+            readonly property int panelInset: appUi.panelInset
+            x: (appUi.rightPage === 1 && appUi.gitExpanded ? 0 : panels.leftPanelWidth) + panelInset
+            y: panelInset
+            width: Math.max(0, panels.width - x - panelInset)
+            height: Math.max(0, panels.height - panelInset * 2)
+            radius: appUi.panelRadius
+            color: appUi.surface
+            layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
+            layer.effect: MultiEffect {
+                maskEnabled: true
+                maskSource: rightPanelMask
+            }
+            Rectangle {
+                id: rightPanelMask
+                anchors.fill: parent
+                radius: rightPanel.radius
+                layer.enabled: true
+                visible: false
+            }
+            Rectangle {
+                anchors.fill: parent
+                z: 10
+                radius: rightPanel.radius
+                color: "transparent"
+                border.color: appUi.borderColor
+            }
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.AllButtons
@@ -1024,10 +1058,15 @@ ApplicationWindow {
                                 font.weight: Font.DemiBold
                             }
                         }
-                        background: Rectangle {
-                            color: activityButton.hovered || appUi.rightPage === activityButton.index ? appUi.surface2 : appUi.surface
-                            Rectangle { width: 2; height: parent.height; anchors.right: parent.right; color: appUi.rightPage === activityButton.index ? appUi.accent : "transparent" }
-                            Rectangle { width: 1; height: parent.height; anchors.left: parent.left; color: appUi.borderColor }
+                        background: Item {
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: 6
+                                radius: 6
+                                color: activityButton.down ? appUi.accentBg
+                                     : activityButton.hovered || appUi.rightPage === activityButton.index ? appUi.surface2 : "transparent"
+
+                            }
                         }
                         SiteToolTip { text: activityButton.index === 0 ? "Lyrics" : activityButton.index === 1 ? "Git" : "Censor Detector" }
                         Accessible.name: index === 0 ? "Lyrics" : index === 1 ? "Git" : "Censor Detector"
@@ -1056,7 +1095,7 @@ ApplicationWindow {
                         objectName: "gitWorkspaceView"
                         pageActive: workspaceLoader.visible
                         expanded: appUi.gitExpanded
-                        bg: appUi.bg
+                        bg: appUi.surface
                         workspaceBackend: appUi.workspace
                         onNotify: function(message) { appUi.notify(message); }
                     }
@@ -1083,48 +1122,58 @@ ApplicationWindow {
                     }
                 }
             }
-            RowLayout {
+            Rectangle {
                 id: progress
                 visible: appUi.rightPage === 0
-                x: 20
-                y: 10
-                width: parent.width - 40 - activityBar.width
-                height: 26
-                spacing: 10
-                Text {
-                    textFormat: Text.PlainText
-                    text: appUi.state.processing ? "Scanning " + (appUi.state.processed || 0) + " / " + appUi.total : appUi.total ? "Done · " + appUi.total + " tracks" : "No tracks"
-                    color: appUi.muted
-                    font.pixelSize: 11
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 2
-                    color: appUi.surface2
-                    radius: 2
-                    Rectangle {
-                        height: 2
-                        width: parent.width * (appUi.state.processing ? Math.min(1, (appUi.state.processed || 0) / Math.max(1, appUi.total)) : 1)
-                        color: appUi.accent
-                        radius: 2
-
-                    }
-                }
-                Text {
-                    textFormat: Text.PlainText
-                    visible: (appUi.state.foundCount || 0) > 0
-                    text: (appUi.state.foundCount || 0) + " with hits"
-                    color: appUi.accent
-                    font.pixelSize: 11
-                }
-            }
-            Rectangle {
                 x: 10
-                visible: appUi.rightPage === 0
-                y: progress.y + progress.height
+                y: 10
                 width: parent.width - 20 - activityBar.width
-                height: 1
-                color: appUi.borderColor
+                height: 34
+                radius: 8
+                color: appUi.surface2
+                readonly property real fraction: appUi.state.processing
+                    ? Math.max(0, Math.min(1, (appUi.state.processed || 0) / Math.max(1, appUi.total)))
+                    : appUi.total > 0 ? 1 : 0
+                readonly property string statusText: (appUi.state.processing
+                    ? "Scanning " + (appUi.state.processed || 0) + " / " + appUi.total + " tracks"
+                    : appUi.total ? "Done " + appUi.total + " tracks" : "No tracks")
+                    + " · " + (appUi.state.foundCount || 0) + " with hits"
+                Accessible.role: Accessible.ProgressBar
+                Accessible.name: statusText
+                Rectangle {
+                    id: progressFill
+                    width: parent.width * progress.fraction
+                    height: parent.height
+                    radius: progress.radius
+                    color: appUi.accentBg
+                }
+                component ProgressLabel: Text {
+                    width: progress.width
+                    height: progress.height
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    font.weight: Font.Bold
+                    property bool hits: false
+                    text: hits ? (appUi.state.foundCount || 0) + " with hits"
+                               : appUi.state.processing
+                                 ? "Scanning " + (appUi.state.processed || 0) + " / " + appUi.total + " tracks"
+                                 : appUi.total ? "Done " + appUi.total + " tracks" : "No tracks"
+                    leftPadding: 10
+                    rightPadding: 10
+                    horizontalAlignment: hits ? Text.AlignRight : Text.AlignLeft
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    Accessible.ignored: true
+                }
+                ProgressLabel { color: appUi.ink }
+                ProgressLabel { hits: true; color: appUi.ink }
+                Item {
+                    width: progressFill.width
+                    height: parent.height
+                    clip: true
+                    ProgressLabel { color: appUi.accent }
+                    ProgressLabel { hits: true; color: appUi.accent }
+                }
             }
             ListView {
                 id: results
@@ -1163,6 +1212,7 @@ ApplicationWindow {
                 visible: appUi.rightPage === 0
                 anchors.fill: results
                 flickable: results
+                shadowColor: appUi.surface
             }
         }
         SiteSpinner {
@@ -1234,10 +1284,26 @@ ApplicationWindow {
         id: playerPanel
         objectName: "playerPanel"
         anchors.bottom: parent.bottom
-        width: parent.width
+        anchors.bottomMargin: appUi.panelInset
+        x: appUi.panelInset
+        width: parent.width - appUi.panelInset * 2
         visible: true
-        height: 88
+        height: 80
+        radius: appUi.panelRadius
+        border.color: appUi.borderColor
         color: appUi.playerSurface
+        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
+        layer.effect: MultiEffect {
+            maskEnabled: true
+            maskSource: playerPanelMask
+        }
+        Rectangle {
+            id: playerPanelMask
+            anchors.fill: parent
+            radius: playerPanel.radius
+            layer.enabled: true
+            visible: false
+        }
         enabled: appUi.privileged && appUi.player.enabled
         TapHandler {
             acceptedButtons: Qt.RightButton
@@ -1259,20 +1325,23 @@ ApplicationWindow {
             levels: appUi.player.spectrumLevels
             peaks: appUi.player.spectrumPeaks
         }
-        Rectangle { width: parent.width; height: 1; color: "#29292d" }
+
         function timeLabel(ms) {
             const seconds = Math.floor(ms / 1000);
             return Math.floor(seconds / 60) + ":" + (seconds % 60 < 10 ? "0" : "") + seconds % 60;
         }
         Item {
             anchors.fill: parent
-            anchors.margins: 16
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            anchors.topMargin: 8
+            anchors.bottomMargin: 8
             opacity: appUi.player.enabled ? 1 : 0.4
             Rectangle {
                 id: playerCover
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: 52; height: 52
+                width: 56; height: 56
                 radius: 8; color: "#171719"
                 layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
                 layer.effect: MultiEffect {
@@ -1295,12 +1364,12 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.max(0, parent.width * 0.25 - 68)
-                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: appUi.player.title || "DDetector"; color: "#f0f0f4"; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: appUi.player.title || "DDetector"; color: "#f0f0f4"; font.pixelSize: 15; elide: Text.ElideRight }
                 Text {
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: appUi.player.artist || (appUi.player.enabled ? "Select a track" : "Add a token in Settings")
-                    color: "#888888"; font.pixelSize: 11; elide: Text.ElideRight
+                    color: "#888888"; font.pixelSize: 13; elide: Text.ElideRight
                 }
             }
             ColumnLayout {

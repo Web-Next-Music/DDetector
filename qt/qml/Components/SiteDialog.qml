@@ -28,7 +28,7 @@ Dialog {
     property url assetRoot: "qrc:/assets/"
     property color surface: "#0c0c0e"
     property color surface2: "#171719"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color ink: "#f0f0f4"
     property color muted: "#999999"
     property color accentBg: "#142bfef5"

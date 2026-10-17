@@ -49,7 +49,7 @@ ComboBox {
     background: Rectangle {
         radius: 8
         color: control.hovered || control.down || control.popup.visible ? "#142bfef5" : "#0c0c0e"
-        border.color: control.visualFocus || control.hovered || control.popup.visible ? "#332bfef5" : "#3397979f"
+        border.color: control.visualFocus || control.hovered || control.popup.visible ? "#332bfef5" : "#242426"
     }
     SiteFocusRing { active: control.visualFocus }
     delegate: SiteMenuItem {
@@ -88,7 +88,7 @@ ComboBox {
         background: Rectangle {
             radius: 10
             color: "#171719"
-            border.color: "#3397979f"
+            border.color: "#242426"
         }
     }
 }

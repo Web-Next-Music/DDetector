@@ -7,7 +7,7 @@ Control {
 
     property alias text: code.text
     property color surface: "#0c0c0e"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color textColor: "#f0f0f4"
     readonly property var lineStarts: {
         const starts = [0];

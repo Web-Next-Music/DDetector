@@ -6,7 +6,7 @@ ToolTip {
     id: control
 
     property color surfaceColor: "#171719"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color textColor: "#f0f0f4"
     property real maximumWidth: 320
     property Control owner: parent as Control

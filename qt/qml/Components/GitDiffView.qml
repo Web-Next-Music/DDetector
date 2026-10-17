@@ -279,7 +279,7 @@ Item {
                 x: root.sideWidth
                 width: 1
                 height: parent.height
-                color: "#3397979f"
+                color: "#242426"
                 visible: diffRow.modelData.kind === "line"
             }
         }

@@ -134,11 +134,19 @@ Rectangle {
         onTapped: point => card.ui.context(card.row, card, point.position.x, point.position.y, card.unsynced)
     }
     component CardButton: SiteButton {
+        id: cardButton
         property bool expandAction: false
-        implicitHeight: 22
+        iconOnly: true
+        glyphSize: 14
+        SiteToolTip {
+            parent: cardButton
+            owner: cardButton
+            text: cardButton.text
+        }
+        implicitHeight: 26
         padding: 4
-        leftPadding: 10
-        rightPadding: 10
+        leftPadding: 4
+        rightPadding: 4
         cornerRadius: 6
         font.pixelSize: 10
         textRenderType: Text.NativeRendering
@@ -205,10 +213,16 @@ Rectangle {
                     asynchronous: true
                 }
             }
-            ColumnLayout {
+            Item {
                 Layout.fillWidth: true
-                spacing: 1
+                implicitHeight: trackDetails.implicitHeight
+                ColumnLayout {
+                    id: trackDetails
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width
+                    spacing: 1
                 Text {
+                    id: trackTitle
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
                     renderType: Text.NativeRendering
@@ -226,6 +240,7 @@ Rectangle {
                     Layout.fillWidth: true
                     renderType: Text.NativeRendering
                     font.hintingPreference: Font.PreferFullHinting
+                    id: trackArtist
                     text: card.row.artist || ""
                     color: card.ui.muted
                     font.family: "DDetector Nunito"
@@ -233,28 +248,50 @@ Rectangle {
                     font.weight: Font.Bold
                     elide: Text.ElideRight
                 }
+                }
+
             }
             Row {
                 spacing: 6
                 CardButton {
-                    visible: card.unsynced
-                    expandAction: true
-                    text: card.expanded ? "Collapse" : "Full lyrics"
-                    accented: card.expanded
-                    onClicked: card.ui.toggleExpanded(card.row.id)
-                }
-                CardButton {
                     text: "Copy ID"
+                    glyph: "copy"
                     enabled: !!card.actionBackend
                     onClicked: card.actionBackend.copyId(card.row.id)
                 }
                 CardButton {
-                    text: "Yandex"
+                    id: yandexButton
+                    text: "Search in Yandex"
+                    contentItem: Text {
+                        text: "Y"
+                        font.family: "DDetector Nunito"
+                        font.pixelSize: 18
+                        font.weight: Font.Bold
+                        color: yandexButton.accentColor
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                     accented: true
                     enabled: !!card.actionBackend
                     onClicked: card.actionBackend.searchYandex(card.row.title, card.row.artist)
                 }
             }
+                CardButton {
+                    id: lyricsToggle
+                    Layout.leftMargin: 4
+                    opacity: card.unsynced ? 1 : 0
+                    enabled: card.unsynced
+                    expandAction: true
+                    text: card.expanded ? "Collapse" : "Full lyrics"
+                    background: Item {}
+                    contentItem: SiteIcon {
+                        glyph: "chevron-down"
+                        tintColor: lyricsToggle.hovered ? lyricsToggle.accentColor : card.ui.muted
+                        rotation: card.expanded ? 180 : 0
+                        Behavior on rotation { NumberAnimation { duration: 160; easing.type: Easing.InOutQuad } }
+                    }
+                    onClicked: card.ui.toggleExpanded(card.row.id)
+                }
         }
         Rectangle {
             anchors.bottom: parent.bottom
@@ -285,7 +322,7 @@ Rectangle {
         readOnly: true
         activeFocusOnPress: false
         padding: 0
-        width: Math.max(0, linesColumn.width - (card.unsynced ? 12 : 68) - 12)
+        width: Math.max(0, linesColumn.width - (card.unsynced ? 12 : 56) - 12)
         renderType: Text.NativeRendering
         font.family: "DDetector Nunito"
         font.pixelSize: 12
@@ -349,14 +386,23 @@ Rectangle {
                     id: lineHover
                     cursorShape: line.canPlay ? Qt.PointingHandCursor : Qt.ArrowCursor
                 }
+                Rectangle {
+                    anchors.centerIn: timestamp
+                    visible: timestamp.visible
+                    width: timestamp.width - 6
+                    height: timestamp.implicitHeight + 4
+                    radius: 4
+                    color: card.ignored ? Qt.tint(card.ui.surface, "#33640b0b") : card.ui.accentBg
+                }
                 Text {
                     textFormat: Text.PlainText
                     id: timestamp
                     renderType: Text.NativeRendering
                     visible: !card.unsynced
-                    x: 12
+                    x: 4
                     anchors.verticalCenter: parent.verticalCenter
                     width: 46
+                    horizontalAlignment: Text.AlignHCenter
                     text: (line.modelData.ts || "-:--").replace(/\.[0-9]+$/, "")
                     color: card.ignored ? "#c86464" : card.ui.accent
                     opacity: 0.8
@@ -436,7 +482,7 @@ Rectangle {
                     onWidthChanged: Qt.callLater(updateMarks)
                     onContentHeightChanged: Qt.callLater(updateMarks)
                     Component.onCompleted: Qt.callLater(updateMarks)
-                    x: card.unsynced ? 12 : 68
+                    x: card.unsynced ? 12 : 56
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - x - 12
                     font.family: "DDetector Nunito"

@@ -25,7 +25,7 @@ CheckBox {
         y: (control.height - height) / 2
         radius: 11
         color: control.checked ? "#142bfef5" : "#0c0c0e"
-        border.color: control.checked ? "#332bfef5" : "#3397979f"
+        border.color: control.checked ? "#332bfef5" : "#242426"
         Rectangle {
             width: 16
             height: 16

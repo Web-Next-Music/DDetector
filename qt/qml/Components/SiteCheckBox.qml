@@ -7,7 +7,7 @@ CheckBox {
 
     property color accentColor: "#2bfef5"
     property color surfaceColor: "#0c0c0e"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color hoverBorderColor: "#332bfef5"
     property color hoverColor: "#142bfef5"
 

@@ -16,7 +16,7 @@ Control {
     Keys.onReturnPressed: if (keyboardLink) linkActivated(keyboardLink)
     Keys.onSpacePressed: if (keyboardLink) linkActivated(keyboardLink)
     property color textColor: "#999999"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property real backgroundRadius: 6
     padding: 8
     leftPadding: 16

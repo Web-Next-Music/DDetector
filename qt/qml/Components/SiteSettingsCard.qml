@@ -16,7 +16,7 @@ Rectangle {
     implicitHeight: body.implicitHeight + contentPadding * 2
     radius: 14
     color: enabled ? "#171719" : "#101012"
-    border.color: enabled ? "#3397979f" : "#2097979f"
+    border.color: enabled ? "#242426" : "#2097979f"
     Image {
         id: leadingIcon
         objectName: card.objectName ? card.objectName + "LeadingGlyph" : ""

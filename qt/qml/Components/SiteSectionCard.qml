@@ -12,7 +12,7 @@ Rectangle {
     implicitHeight: body.implicitHeight + contentPadding * 2
     radius: 16
     color: "#0c0c0e"
-    border.color: "#3397979f"
+    border.color: "#242426"
 
     ColumnLayout {
         id: body

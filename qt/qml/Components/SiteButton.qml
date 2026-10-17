@@ -18,7 +18,7 @@ Button {
     property color surfaceColor: "#0c0c0e"
     property color hoverColor: "#142bfef5"
     property color accentedColor: hoverColor
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property color accentBorder: "#332bfef5"
     property color hoverBorderColor: accentBorder
     property bool loading: false

@@ -126,7 +126,7 @@ Rectangle {
             implicitHeight: 156
             radius: 8
             color: "#000000"
-            border.color: "#3397979f"
+            border.color: "#242426"
             EmbeddedTerminal {
                 id: terminal
                 anchors.fill: parent

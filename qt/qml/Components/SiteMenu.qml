@@ -5,7 +5,7 @@ import QtQuick.Controls
 Menu {
     id: control
     property color surfaceColor: "#171719"
-    property color borderColor: "#3397979f"
+    property color borderColor: "#242426"
     property real cornerRadius: 10
 
     // Native platform menus bypass our shared delegates and rounded surface.
