@@ -113,6 +113,15 @@ build_appdir() {
         exit 1
     fi
 
+    # linuxdeploy excludes libgpg-error by default, but Homebrew's libgcrypt
+    # needs newer symbols than the distribution library provides.
+    local libgpg_error
+    libgpg_error="$(pkg-config --variable=libdir gpg-error)/libgpg-error.so.0"
+    if [[ ! -f "$libgpg_error" ]]; then
+        echo "Libgpg-error runtime missing at $libgpg_error; install libgpg-error development files in the build toolchain." >&2
+        exit 1
+    fi
+
     local qmake qt_plugins platform_plugins
     qmake="${QMAKE:-$(command -v qmake6)}"
     qt_plugins="$("$qmake" -query QT_INSTALL_PLUGINS)"
@@ -145,6 +154,7 @@ build_appdir() {
         --executable "$appdir/usr/lib/ddetector/ddetector-qt" \
         --executable "$appdir/usr/bin/ffmpeg" \
         --library "$libsecret" \
+        --library "$libgpg_error" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
         --plugin qt
