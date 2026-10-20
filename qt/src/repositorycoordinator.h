@@ -54,7 +54,8 @@ public:
             return QString();
         });
         connect(&config, &Config::repositoryPathChanged, this, [this] {
-            if (m_active) applyRepository();
+            m_active = true;
+                        applyRepository();
         });
         connect(&workspace, &GitWorkspace::activationRequested, this, [this] {
             if (m_active) return;
@@ -64,6 +65,8 @@ public:
         connect(&workspace, &GitWorkspace::changed, this, [this] { syncUploader(); });
         connect(&uploader, &Uploader::stateChanged, this, [this] { syncUploader(); });
         connect(&uploader, &Uploader::completed, &workspace, [&workspace](const QString &) { workspace.refreshTree(); });
+                m_active = true;
+                applyRepository();
     }
     ~RepositoryCoordinator() override {
         if (m_bridge) {

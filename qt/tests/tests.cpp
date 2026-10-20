@@ -293,11 +293,9 @@ private slots:
             Uploader uploader;
             RepositoryCoordinator repositories(config, workspace, uploader, &bridge);
             bridge.setNativePublicationValidator([] { return QString("Terminal is running"); });
-            QVERIFY(!workspace.resolving());
-            QVERIFY(workspace.repositoryPath().isEmpty());
-            QVERIFY(workspace.rootPath().isEmpty());
+            QCOMPARE(workspace.repositoryPath(), config.repositoryPath());
             QVERIFY(uploader.directory().isEmpty());
-            workspace.activate();
+            // Saved paths are validated without opening the Git workspace.
             QTRY_VERIFY(!workspace.resolving());
             QCOMPARE(workspace.rootPath(), QFileInfo(firstRoot.path()).canonicalFilePath());
             bridge.configureNativeRepository();
@@ -1873,10 +1871,8 @@ private slots:
         }
         Config config{QString()}; config.setRepositoryPath(a.path());
         LocalContexts local(config);
-        QVERIFY(!local.workspace.resolving());
-        QVERIFY(local.workspace.repositoryPath().isEmpty());
+        QCOMPARE(local.workspace.repositoryPath(), config.repositoryPath());
         QVERIFY(local.uploader.directory().isEmpty());
-        local.workspace.activate();
         QVERIFY(local.workspace.resolving());
         config.setRepositoryPath(b.path()); QCOMPARE(config.repositoryPath(), a.path());
         QTRY_VERIFY(!local.workspace.resolving()); QCOMPARE(local.uploader.directory(), a.path());
@@ -2359,7 +2355,7 @@ private slots:
         }
         window->setWidth(1200);
         QCoreApplication::processEvents();
-        QVERIFY(local.workspace.repositoryPath().isEmpty());
+        QCOMPARE(local.workspace.repositoryPath(), config.repositoryPath());
         QVERIFY(!workspaceView->property("item").value<QObject *>());
         QCOMPARE(window->property("rightPage").toInt(), 0);
         QVERIFY(!workspaceView->isVisible());
