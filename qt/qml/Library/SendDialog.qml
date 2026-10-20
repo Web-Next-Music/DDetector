@@ -30,7 +30,7 @@ SiteDialog {
     property int durationRequest: -1
     property real replacementDuration: -1
     property bool automaticDuration: false
-    readonly property string durationPlaceholder: replacementDuration > 0 ? String(replacementDuration) : ""
+    readonly property string durationPlaceholder: replacementDuration > 0 ? String(replacementDuration) : "Unknown"
 
     function resetDuration() {
         durationRequest = -1

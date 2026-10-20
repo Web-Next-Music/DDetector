@@ -119,7 +119,8 @@ private slots:
         put(dir.path() + "/list_v2.json", before);
         git(dir.path(), {"add", "--", "list_v2.json"}); git(dir.path(), {"commit", "-qm", "list"});
         const bool remote = mode == "download" || mode == "invalid-download";
-        const bool success = mode == "local" || mode == "download" || mode == "matching-duration";
+        const bool unknown = mode == "missing" || mode == "invalid-local";
+                const bool success = unknown || mode == "local" || mode == "download" || mode == "matching-duration";
         if (!remote && mode != "missing") {
             localAudio(dir.path(), "123");
             if (mode == "invalid-local") {
@@ -159,7 +160,10 @@ private slots:
         QCOMPARE(uploader.error(), QString());
         auto source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
         QCOMPARE(source["tracksStorages"].toArray()[0].toObject()["trackIds"].toArray(),
-                 QJsonArray({456, QJsonObject{{"id", 123}, {"durationMs", 144}}}));
+                 unknown ? QJsonArray({456, QJsonObject{{"id", 123}}})
+                                          : QJsonArray({456, QJsonObject{{"id", 123}, {"durationMs", 144}}}));
+                         if (!remote) QCOMPARE(get(dir.path() + "/tracks/123"), originalAudio);
+                         QVERIFY(git(dir.path(), {"rev-parse", "HEAD"}) != head);
         QCOMPARE(source["tracks"].toObject()["123"].toObject()["durationMs"].toInt(), mode == "matching-duration" ? 144 : 9999);
         if (remote) QCOMPARE(get(dir.path() + "/tracks/123"), body);
         // A measured storage duration must not block ordinary entity edits.
@@ -168,6 +172,7 @@ private slots:
         QCOMPARE(uploader.error(), QString()); QCOMPARE(uploader.action(), "updated");
         source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
         QCOMPARE(source["tracks"].toObject()["123"].toObject()["title"].toString(), "Changed");
+        if (unknown) return;
         const auto after = get(dir.path() + "/list_v2.json");
         uploader.send("123", "Label", "Artist", "http://127.0.0.1:1/never", {{"durationMs", 200}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);

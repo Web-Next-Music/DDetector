@@ -134,7 +134,12 @@ Yandex Music duration. `requestDuration(id, mp3Url)` performs bounded HTTP(S)
 download and the same ffmpeg measurement as Send on a worker thread; without a URL
 it measures local `tracks/<id>`. It emits `durationReady(request, durationMs)`
 (`-1` on failure) without writes or changing Send's busy/error state. Unknown
-replacement duration leaves the placeholder empty. URL edits invalidate the old
+replacement duration displays `Unknown` in the placeholder. With an empty URL,
+Send is list-only: missing or undecodable local audio does not block it, and new
+storage entries omit `durationMs` when measurement is unavailable. Existing local
+audio is never attached or overwritten by a list-only send. With a supplied URL,
+download validation and required duration decoding retain their existing behavior.
+URL edits invalidate the old
 result and debounce a new request; stale results and results after manual duration
 edits cannot replace user input. Previewing a URL downloads the audio; Send downloads
 it again so its normal validation and concurrency checks remain authoritative.

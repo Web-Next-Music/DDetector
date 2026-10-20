@@ -293,7 +293,9 @@ QJsonObject updateList(QJsonObject doc, const QString &id, const QString &url, Q
                         "Track ID cannot be represented exactly in v2 trackIds; original preserved");
                 auto ids = store.value("trackIds").toArray();
                 if (needsDuration) *needsDuration = true;
-                ids.append(QJsonObject{{"id", number[0]}, {"durationMs", durationMs}});
+                QJsonObject entry{{"id", number[0]}};
+                                if (durationMs >= 0) entry.insert("durationMs", durationMs);
+                                ids.append(entry);
                 store.insert("trackIds", ids);
             } else {
                 auto tracks = store.value("tracks").toObject();
@@ -584,8 +586,8 @@ Result perform(const QString &root, const QString &id, const QString &title,
                 }
             }
         }
-        // Preflight routing and metadata before downloading. The placeholder duration
-        // stays in memory; rebuild with decoded audio duration before serializing.
+        // Preflight routing and metadata before downloading; add a storage duration
+        // only when audio can be measured.
         bool needsDuration = false;
         auto updated = updateList(doc.object(), id, github, result.action, -1, &needsDuration);
         auto audioUpdated = updated;
@@ -606,8 +608,15 @@ Result perform(const QString &root, const QString &id, const QString &title,
                         "Cannot prepare audio for duration decoding");
                 path = temporary.fileName();
             }
-            const auto duration = audioDuration(path);
-            require(!metadata.contains("durationMs") || metadata.value("durationMs").toInteger() == duration,
+            qint64 duration = -1;
+            if (!url.isEmpty()) {
+                duration = audioDuration(path);
+            } else {
+                // List-only sends must also work without decodable local audio.
+                try { duration = audioDuration(path); }
+                catch (const std::exception &) {}
+            }
+            require(duration < 0 || !metadata.contains("durationMs") || metadata.value("durationMs").toInteger() == duration,
                     "Requested metadata durationMs conflicts with measured audio duration");
             audioUpdated = updateList(doc.object(), id, github, result.action, duration);
             updated = editMetadata(audioUpdated, id, github, metadata);
