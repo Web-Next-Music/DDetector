@@ -582,10 +582,10 @@ ApplicationWindow {
         }
     }
     Column {
-        anchors.right: parent.right
-        anchors.rightMargin: 8
-        anchors.bottom: panels.bottom
-        anchors.bottomMargin: appUi.panelInset + avatarButton.height + 20
+        parent: rightPanel
+        anchors.horizontalCenter: avatarButton.horizontalCenter
+        anchors.bottom: avatarButton.top
+        anchors.bottomMargin: 12
         spacing: 8
         z: 40
         visible: appUi.showShell
