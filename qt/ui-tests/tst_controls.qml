@@ -126,9 +126,22 @@ Item {
     }
     Component { id: dialogFactory; UI.SiteDialog { title: "Settings"; assetRoot: "qrc:/assets/"; width: 300; contentItem: UI.SiteTextField { Accessible.name: "Token" } } }
 
+    Component { id: iconFactory; UI.SiteIcon { glyph: "search" } }
+
     TestCase {
         name: "SharedControls"
         when: windowShown
+        function test_iconRasterTracksDisplaySize() {
+            const icon = createTemporaryObject(iconFactory, scene);
+            compare(icon.width, 24);
+            compare(icon.height, 24);
+            compare(icon.sourceSize, Qt.size(48, 48));
+            verify(icon.smooth);
+            verify(icon.mipmap);
+            icon.width = 32;
+            icon.height = 32;
+            compare(icon.sourceSize, Qt.size(64, 64));
+        }
         function initTestCase() {
             tryCompare(nunitoBold, "status", FontLoader.Ready);
             tryCompare(nunitoSemiBold, "status", FontLoader.Ready);
@@ -813,6 +826,11 @@ Item {
             keyClick(Qt.Key_Menu);
             keyClick(Qt.Key_F10, Qt.ShiftModifier);
             compare(fakeUi.menus, 2);
+        }
+        function test_resultTextUsesScalableRendering() {
+            const card = createTemporaryObject(cardFactory, scene);
+            compare(findChild(card, "resultTitle").renderType, Text.QtRendering);
+            compare(findChild(card, "lyricWords0").renderType, Text.QtRendering);
         }
         function test_lyricsKeyboardAndLiteralMetadata() {
             const card = createTemporaryObject(cardFactory, scene);

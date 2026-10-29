@@ -17,6 +17,8 @@ Rectangle {
     radius: 14
     color: enabled ? "#171719" : "#101012"
     border.color: enabled ? "#242426" : "#2097979f"
+    // Keep the logical stroke continuous at fractional display scales.
+    border.pixelAligned: false
     Image {
         id: leadingIcon
         objectName: card.objectName ? card.objectName + "LeadingGlyph" : ""

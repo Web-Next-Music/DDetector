@@ -13,6 +13,7 @@ Rectangle {
     radius: 16
     color: "#0c0c0e"
     border.color: "#242426"
+    border.pixelAligned: false
 
     ColumnLayout {
         id: body

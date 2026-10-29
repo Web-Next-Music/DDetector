@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
+
 import DDetector 1.0
 
 ApplicationWindow {
@@ -1134,7 +1135,8 @@ ApplicationWindow {
 
     Item {
         id: panels
-        readonly property real leftPanelWidth: width * 0.40
+        // Keep the split aligned to logical pixels before Qt applies DPR.
+        readonly property real leftPanelWidth: Math.round(width * 0.40)
         visible: appUi.showShell
         enabled: appUi.privileged
         anchors.top: mainHeader.bottom
@@ -1186,17 +1188,13 @@ ApplicationWindow {
             height: Math.max(0, panels.height - panelInset * 2)
             radius: appUi.panelRadius
             color: appUi.surface
-            layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
-            layer.effect: MultiEffect {
-                maskEnabled: true
-                maskSource: rightPanelMask
-            }
-            Rectangle {
-                id: rightPanelMask
+            objectName: "rightPanel"
+            clip: true
+            SiteCornerCover {
                 anchors.fill: parent
+                z: 9
                 radius: rightPanel.radius
-                layer.enabled: true
-                visible: false
+                backgroundColor: appUi.bg
             }
             Rectangle {
                 anchors.fill: parent
@@ -1245,6 +1243,9 @@ ApplicationWindow {
                             Image {
                                 anchors.centerIn: parent
                                 width: 24; height: 24
+                                sourceSize: Qt.size(48, 48)
+                                smooth: true
+                                mipmap: true
                                 source: "qrc:/assets/lucide-" + activityButton.modelData + ".svg"
                                 layer.enabled: true
                                 layer.effect: MultiEffect { brightness: 1; colorization: 1; colorizationColor: appUi.rightPage === activityButton.index ? appUi.accent : activityButton.hovered ? appUi.ink : appUi.muted }
@@ -1496,19 +1497,20 @@ ApplicationWindow {
         visible: true
         height: 80
         radius: appUi.panelRadius
-        border.color: appUi.borderColor
         color: appUi.playerSurface
-        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
-        layer.effect: MultiEffect {
-            maskEnabled: true
-            maskSource: playerPanelMask
+        clip: true
+        SiteCornerCover {
+            anchors.fill: parent
+            z: 9
+            radius: playerPanel.radius
+            backgroundColor: appUi.bg
         }
         Rectangle {
-            id: playerPanelMask
             anchors.fill: parent
+            z: 10
             radius: playerPanel.radius
-            layer.enabled: true
-            visible: false
+            color: "transparent"
+            border.color: appUi.borderColor
         }
         enabled: appUi.privileged && appUi.player.enabled
         TapHandler {
@@ -1562,7 +1564,7 @@ ApplicationWindow {
                     visible: false
                     layer.enabled: true
                 }
-                Image { id: playerCoverImage; anchors.fill: parent; source: appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : ""; sourceSize: Qt.size(104, 104); asynchronous: true; fillMode: Image.PreserveAspectCrop }
+                Image { id: playerCoverImage; anchors.fill: parent; source: appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : ""; sourceSize: Qt.size(Math.ceil(Math.max(104, width * Screen.devicePixelRatio)), Math.ceil(Math.max(104, height * Screen.devicePixelRatio))); asynchronous: true; fillMode: Image.PreserveAspectCrop }
                 Image { anchors.centerIn: parent; width: 20; height: 20; visible: playerCoverImage.status !== Image.Ready; source: "qrc:/assets/track-placeholder.svg" }
             }
             ColumnLayout {

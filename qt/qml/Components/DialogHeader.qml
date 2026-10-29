@@ -30,6 +30,7 @@ Rectangle {
         color: header.surface2
         radius: 12
         border.color: header.borderColor
+        border.pixelAligned: false
     }
     SiteIcon {
         id: headerIcon

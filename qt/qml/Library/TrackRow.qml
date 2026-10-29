@@ -99,7 +99,8 @@ Rectangle {
                 id: cover
                 anchors.fill: parent
                 source: root.inViewport && root.row.cover ? "image://trackcovers/" + encodeURIComponent(root.row.cover) : ""
-                                sourceSize: Qt.size(76, 76)
+                sourceSize: Qt.size(Math.ceil(Math.max(76, width * Screen.devicePixelRatio)),
+                                    Math.ceil(Math.max(76, height * Screen.devicePixelRatio)))
                 asynchronous: true
                 fillMode: Image.PreserveAspectCrop
             }

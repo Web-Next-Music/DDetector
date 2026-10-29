@@ -12,6 +12,12 @@ Image {
     property bool tinted: true
     readonly property bool hasIconSource: iconSource.toString().length > 0
 
+    width: 24
+    height: 24
+    // Supersample SVG edges; Qt additionally applies the current window DPR.
+    sourceSize: Qt.size(Math.ceil(width * 2), Math.ceil(height * 2))
+    smooth: true
+    mipmap: true
     source: hasIconSource ? iconSource : (glyph ? assetRoot + "lucide-" + glyph + ".svg" : "")
     layer.enabled: tinted
     layer.effect: MultiEffect {

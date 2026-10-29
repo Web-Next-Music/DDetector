@@ -678,6 +678,7 @@ Rectangle {
                 radius: 16
                 color: "#0c0c0e"
                 border.color: "#242426"
+                border.pixelAligned: false
                 visible: !!root.job && ["running", "review_required", "error"].indexOf(root.job.status) >= 0
                 readonly property var steps: [
                     {stage: "analysis", label: "Audio analysis", glyph: "music-standard"},

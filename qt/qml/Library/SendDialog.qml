@@ -332,7 +332,8 @@ SiteDialog {
                         objectName: "sendCoverImage"
                         source: dialog.isTrustedFallbackCover(dialog.coverSource)
                                                         ? "image://trackcovers/" + encodeURIComponent(String(dialog.coverSource)) : dialog.coverSource
-                        sourceSize: Qt.size(128, 128)
+                        sourceSize: Qt.size(Math.ceil(Math.max(128, width * Screen.devicePixelRatio)),
+                                                                    Math.ceil(Math.max(128, height * Screen.devicePixelRatio)))
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
                     }

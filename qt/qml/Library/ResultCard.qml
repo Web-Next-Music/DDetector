@@ -149,7 +149,7 @@ Rectangle {
         rightPadding: 4
         cornerRadius: 6
         font.pixelSize: 10
-        textRenderType: Text.NativeRendering
+        textRenderType: Text.QtRendering
         textColor: card.ui.muted
         hoverTextColor: expandAction ? accentColor : card.ui.ink
         accentColor: card.ignored ? card.ui.ignoredColor : card.ui.accent
@@ -208,7 +208,9 @@ Rectangle {
                     id: cover
                     anchors.fill: parent
                     source: card.inViewport && card.row.cover ? "image://trackcovers/" + encodeURIComponent(card.row.cover) : ""
-                                        sourceSize: Qt.size(64, 64)
+                    // Image providers need an explicit physical-pixel request; SVGs do not.
+                    sourceSize: Qt.size(Math.ceil(Math.max(64, width * Screen.devicePixelRatio)),
+                                        Math.ceil(Math.max(64, height * Screen.devicePixelRatio)))
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                 }
@@ -225,7 +227,7 @@ Rectangle {
                     id: trackTitle
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    renderType: Text.NativeRendering
+                    renderType: Text.QtRendering
                     font.hintingPreference: Font.PreferFullHinting
                     objectName: "resultTitle"
                                         text: card.row.title || ""
@@ -238,7 +240,7 @@ Rectangle {
                 Text {
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    renderType: Text.NativeRendering
+                    renderType: Text.QtRendering
                     font.hintingPreference: Font.PreferFullHinting
                     id: trackArtist
                     text: card.row.artist || ""
@@ -323,7 +325,7 @@ Rectangle {
         activeFocusOnPress: false
         padding: 0
         width: Math.max(0, linesColumn.width - (card.unsynced ? 12 : 56) - 12)
-        renderType: Text.NativeRendering
+        renderType: Text.QtRendering
         font.family: "DDetector Nunito"
         font.pixelSize: 12
         font.weight: Font.Bold
@@ -397,7 +399,7 @@ Rectangle {
                 Text {
                     textFormat: Text.PlainText
                     id: timestamp
-                    renderType: Text.NativeRendering
+                    renderType: Text.QtRendering
                     visible: !card.unsynced
                     x: 4
                     anchors.verticalCenter: parent.verticalCenter
@@ -432,7 +434,7 @@ Rectangle {
                 TextEdit {
                     id: words
                     objectName: "lyricWords" + line.lineIndex
-                    renderType: Text.NativeRendering
+                    renderType: Text.QtRendering
                     font.hintingPreference: Font.PreferFullHinting
                     readOnly: true
                     selectByMouse: false
