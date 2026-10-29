@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"ddetector-go/internal/censor"
 	"errors"
 	"fmt"
 	"io"
@@ -60,8 +61,9 @@ func nativeManualFixture(t *testing.T) (*Server, *nativeBackend, *orchestrationP
 	return s, b, processor, calls
 }
 
-func TestNativeUnavailableManualTrackDiscoversWithoutAudio(t *testing.T) {
+func TestNativeUnavailableManualTrackDiscoversWithoutOriginalAudio(t *testing.T) {
 	s, b, p, calls := nativeManualFixture(t)
+	p.waveform = []censor.WaveformPoint{{}}
 	s.yandex.http.Transport = nativeAudioTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/tracks/42" {
 			t.Errorf("unavailable target attempted audio resolution: %s", r.URL.Path)
@@ -70,7 +72,7 @@ func TestNativeUnavailableManualTrackDiscoversWithoutAudio(t *testing.T) {
 	})
 	controlAPI(t, s, map[string]any{"action": "check_track", "track_id": 42}, 200)
 	job := waitCensor(t, s, "review_required")
-	if !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist, second artist" || job.Result != nil || job.Error != "" {
+	if !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist, second artist" || job.Result == nil || len(job.Result.Waveform) != 1 || job.Result.DurationSeconds != 30 || job.Result.Comparison != nil || job.Error != "" {
 		t.Fatalf("invalid metadata-only review: %+v", job)
 	}
 	if len(job.Candidates) == 0 || len(job.Queries) != 1 || job.Queries[0] != "real artist, second artist real title" {
@@ -83,9 +85,14 @@ func TestNativeUnavailableManualTrackDiscoversWithoutAudio(t *testing.T) {
 	}
 	p.mu.Lock()
 	analyzed := len(p.requests)
+	for _, request := range p.requests {
+		if request.Reference != nil || request.Source.URL == "" {
+			t.Errorf("waveform request must use candidate audio without reference: %+v", request)
+		}
+	}
 	p.mu.Unlock()
-	if analyzed != 0 || calls.Load() != 0 {
-		t.Fatal("metadata discovery analyzed audio or contacted public queue")
+	if analyzed != 1 || calls.Load() != 0 {
+		t.Fatal("expected one waveform analysis and no public queue calls")
 	}
 	if err := b.runtime.compareCandidates(context.Background(), nil, &job); !errors.Is(err, ErrCensorConflict) {
 		t.Fatalf("comparison allowed without original: %v", err)
@@ -99,6 +106,7 @@ func TestNativeUnavailableManualTrackDiscoversWithoutAudio(t *testing.T) {
 
 func TestNativeCachedUnavailableManualTrackSkipsYandex(t *testing.T) {
 	s, b, p, calls := nativeManualFixture(t)
+	p.waveform = []censor.WaveformPoint{{}}
 	unavailable := false
 	s.mu.Lock()
 	s.state.Tracks = []Result{{Track: Track{ID: 42, Title: "real title", Artist: "real artist", Available: &unavailable}}}
@@ -110,7 +118,7 @@ func TestNativeCachedUnavailableManualTrackSkipsYandex(t *testing.T) {
 	})
 	controlAPI(t, s, map[string]any{"action": "check_track", "track_id": 42}, 200)
 	job := waitCensor(t, s, "review_required")
-	if job.Request.ID != "manual:yandex:42" || job.Request.Origin != "manual" || !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist" || job.Result != nil || job.Error != "" {
+	if job.Request.ID != "manual:yandex:42" || job.Request.Origin != "manual" || !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist" || job.Result == nil || len(job.Result.Waveform) != 1 || job.Result.DurationSeconds != 30 || job.Result.Comparison != nil || job.Error != "" {
 		t.Fatalf("invalid cached metadata-only review: %+v", job)
 	}
 	if len(job.Candidates) == 0 || len(job.Queries) != 1 || job.Queries[0] != "real artist real title" {
@@ -127,8 +135,13 @@ func TestNativeCachedUnavailableManualTrackSkipsYandex(t *testing.T) {
 	controlAPI(t, s, map[string]any{"action": "approve", "id": job.ID, "candidate_id": job.Candidates[0].ID}, 409)
 	p.mu.Lock()
 	analyzed := len(p.requests)
+	for _, request := range p.requests {
+		if request.Reference != nil || request.Source.URL == "" {
+			t.Errorf("waveform request must use candidate audio without reference: %+v", request)
+		}
+	}
 	p.mu.Unlock()
-	if providerCalls.Load() != 0 || calls.Load() != 0 || analyzed != 0 {
+	if providerCalls.Load() != 0 || calls.Load() != 0 || analyzed != 1 {
 		t.Fatalf("metadata-only discovery made provider/public queue/audio calls: %d/%d/%d", providerCalls.Load(), calls.Load(), analyzed)
 	}
 }

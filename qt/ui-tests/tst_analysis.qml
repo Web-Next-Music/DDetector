@@ -269,7 +269,7 @@ Item {
             tryCompare(item, "candidateId", "first");
             compare(item.originalUnavailable, true);
             compare(findChild(item, "censorPlaybackCard").visible, true);
-            compare(findChild(item, "censorEmptyWaveform").visible, false);
+            compare(findChild(item, "censorEmptyWaveform").visible, true);
             compare(findChild(item, "censorWaveformSeek").enabled, false);
             compare(item.timelineDuration, findChild(item, "censorCandidatePlayer").duration);
             compare(item.originalAudioUrl.toString(), "");
@@ -285,22 +285,116 @@ Item {
             tryCompare(item, "candidateId", "first");
             verify(item.disabledReason("approve").length > 0);
         }
+        function test_unavailableCandidateWaveform_data() {
+            return [{tag: "explicit", explicit: true}, {tag: "request", explicit: false}];
+        }
+        function test_unavailableCandidateWaveform(data) {
+            const item = detector();
+            if (data.explicit) compare(item.analyzeTrack({id: "456", available: false}), "");
+            publishCandidates(item, !data.explicit, [{
+                id: "first", url: "https://example.org/first.mp3", full_audio: true, downloadable: true
+            }]);
+            const waveform = findChild(item, "censorWaveform");
+            const empty = findChild(item, "censorEmptyWaveform");
+            compare(item.originalUnavailable, true);
+            compare(waveform.visible, false);
+            compare(empty.visible, true);
+
+            // Restore analysis publishes visualization on the job, not candidate evidence.
+            const samples = [
+                {start_seconds: 0, end_seconds: 1, min: -0.5, max: 0.75},
+                {start_seconds: 1, end_seconds: 2, min: -0.8, max: 0.4}
+            ];
+            backend.censorState = Object.assign({}, backend.censorState, {
+                jobs: [Object.assign({}, item.job, {result: {waveform: samples, duration_seconds: 2}})]
+            });
+            tryCompare(waveform, "visible", true);
+            compare(empty.visible, false);
+            compare(waveform.samples, samples);
+            compare(waveform.duration, 2);
+            compare(item.waveformData, samples);
+            compare(item.waveformDuration, 2);
+            tryVerify(function() { return waveform.width > 0 && waveform.height > 0 });
+            compare(findChild(item, "censorWaveformSeek").enabled, false);
+            compare(item.originalAudioUrl.toString(), "");
+            verify(!item.candidate.result);
+
+            backend.censorState = Object.assign({}, backend.censorState, {
+                jobs: [Object.assign({}, item.job, {result: {waveform: [], duration_seconds: 0}})]
+            });
+            tryCompare(waveform, "visible", false);
+            compare(empty.visible, true);
+            compare(waveform.samples.length, 0);
+            compare(waveform.duration, 0);
+        }
         function test_unavailableEmptyResults() {
             const item = detector();
-            compare(item.analyzeTrack({id: "456", available: false}), "");
+            compare(item.analyzeTrack({id: "456", title: "Unavailable", artist: "Artist", available: false}), "");
             const status = findChild(item, "censorCandidateStatus");
-            compare(status.visible, true);
-            compare(status.text, "Searching candidates...");
-            compare(findChild(item, "censorPlaybackCard").visible, false);
+            const card = findChild(item, "censorPlaybackCard");
+            const empty = findChild(item, "censorEmptyWaveform");
+            compare(findChild(card, "censorCandidateStatus"), status);
+            const play = findChild(card, "censorPlaybackButton");
+            const time = findChild(card, "censorPlaybackTime");
+            const message = findChild(card, "censorPlaybackMessage");
+            function assertStatusPosition() {
+                verify(status.visible);
+                compare(message.visible, false);
+                const position = status.mapToItem(card, 0, 0);
+                const playPosition = play.mapToItem(card, 0, 0);
+                const timePosition = time.mapToItem(card, 0, 0);
+                verify(position.x >= playPosition.x + play.width);
+                verify(position.x + status.width <= timePosition.x);
+                fuzzyCompare(position.x + status.width / 2, card.width / 2, 1);
+                fuzzyCompare(position.y + status.height / 2, playPosition.y + play.height / 2, 1);
+                verify(position.y + status.height <= card.height);
+                verify(position.y > empty.mapToItem(card, 0, empty.height).y);
+            }
+            tryVerify(function() { return status.width > 0 && play.width > 0 });
+            assertStatusPosition();
+            compare(status.text, "Analyzing - preparing");
+            verify(card.visible);
+            verify(empty.visible);
+            tryVerify(function() { return empty.height >= 100 && card.height > empty.height });
+            compare(findChild(card, "censorPlaybackButton").enabled, false);
+            compare(findChild(card, "censorPreviousCandidate").enabled, false);
+            compare(findChild(card, "censorNextCandidate").enabled, false);
+            compare(findChild(card, "censorPlaybackTime").text, "0.00 s / 0.00 s");
+            compare(findChild(card, "censorWaveformSeek").enabled, false);
             publishCandidates(item, true, [], "running");
-            compare(status.text, "Searching candidates...");
+            compare(status.text, "Analyzing - preparing");
+            for (const stage of ["analysis", "search", "comparison"]) {
+                backend.censorState = Object.assign({}, backend.censorState, {
+                    jobs: [Object.assign({}, item.job, {stage: stage})]
+                });
+                compare(status.text, "Analyzing - " + stage);
+                assertStatusPosition();
+                // Only the card label owns this status; the separate progress header remains.
+                function countStatusLabels(parent) {
+                    let count = parent.objectName === "censorCandidateStatus" ? 1 : 0;
+                    for (const child of parent.children || []) count += countStatusLabels(child);
+                    return count;
+                }
+                compare(countStatusLabels(item), 1);
+                verify(findChild(item, "censorAnalysisProgress").visible);
+                verify(card.visible && empty.visible);
+            }
             publishCandidates(item, true, []);
             compare(status.text, "No candidates found");
+            assertStatusPosition();
             compare(item.candidateId, "");
             item.switchCandidate(1);
             compare(item.playableSelection, false);
             compare(item.playbackError, "");
-            compare(findChild(item, "censorPlaybackCard").visible, false);
+            compare(findChild(item, "censorPlaybackCard").visible, true);
+            publishCandidates(item, true, [{id: "first"}, {id: "second"}]);
+            compare(status.visible, false);
+            compare(message.visible, true);
+            compare(message.text, "Candidate 1 / 2");
+            item.switchCandidate(1);
+            compare(message.text, "Candidate 2 / 2");
+            item.playbackError = "Playback failed";
+            compare(message.text, "Playback failed");
         }
         function test_requestRestoreMetadata() {
             const item = detector();

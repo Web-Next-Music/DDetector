@@ -859,7 +859,7 @@ func (rt *censorRuntime) pipeline(ctx context.Context, q *censor.Queue, j *Censo
 			j.Candidates[n].Result = nil
 			j.Candidates[n].Error = "Manual review/listening only: original Yandex audio is unavailable; comparison and approval are disabled"
 		}
-		return nil
+		return rt.restoreWaveform(ctx, i, j)
 	}
 	result, e := rt.analyze(ctx, q, j, "")
 	if e != nil {
@@ -885,6 +885,49 @@ func (rt *censorRuntime) pipeline(ctx context.Context, q *censor.Queue, j *Censo
 		return e
 	}
 	return rt.compareCandidates(ctx, q, j)
+}
+
+// Candidate audio is only a visualization source, never evidence about the missing original.
+func (rt *censorRuntime) restoreWaveform(ctx context.Context, identity CensorIdentity, j *CensorJob) error {
+	for _, candidate := range j.Candidates {
+		if !censorPlaybackAudio(candidate) {
+			continue
+		}
+		candidateID := candidate.ID
+		var err error
+		switch resolver := rt.backend.(type) {
+		case censorPlaybackResolver:
+			candidate, err = resolver.PlaybackCandidate(ctx, identity, candidate.ID)
+		case censorCandidateResolver:
+			candidate, err = resolver.Candidate(ctx, identity, candidate.ID)
+		default:
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil || candidate.ID != candidateID || !censorPlaybackAudio(candidate) || validateCensorCandidates([]CensorCandidate{candidate}) != nil {
+			continue
+		}
+		processor, err := rt.newProcessor()
+		if err != nil {
+			return nil // Discovery remains usable when audio analysis is unavailable.
+		}
+		j.Stage = "analysis"
+		if err := rt.update(*j); err != nil {
+			return err
+		}
+		result, err := processor.Analyze(ctx, rt.configuredRequest(candidate.URL, ""))
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil || len(result.Waveform) == 0 {
+			continue
+		}
+		j.Result = &censor.Result{Waveform: result.Waveform, DurationSeconds: result.DurationSeconds}
+		return rt.update(*j)
+	}
+	return nil
 }
 
 func (rt *censorRuntime) compareCandidates(ctx context.Context, q *censor.Queue, j *CensorJob) error {

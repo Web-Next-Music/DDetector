@@ -14,6 +14,7 @@ Rectangle {
     property bool pageActive: true
     property var censorState: bridge ? bridge.censorState : ({})
     property var jobs: censorState.jobs || []
+    readonly property string analysisStatus: "Analyzing - " + (job ? job.stage || "preparing" : "preparing")
     property string selectedId: ""
     property string candidateId: ""
     property var selectedDetail: bridge && bridge.censorSelectedJob !== undefined ? bridge.censorSelectedJob : ({})
@@ -476,7 +477,6 @@ Rectangle {
 
                 SiteSettingsCard {
                     objectName: "censorPlaybackCard"
-                    visible: !root.originalUnavailable || !!root.candidate
                     Layout.fillWidth: true
                     compact: true
                     RowLayout {
@@ -501,7 +501,7 @@ Rectangle {
                     }
                     Item {
                         Layout.fillWidth: true; Layout.preferredHeight: visible ? 120 : 0
-                        visible: !root.originalUnavailable && waveform.samples.length > 0
+                        visible: waveform.samples.length > 0
                         Canvas {
                             id: waveform
                             anchors.fill: parent
@@ -546,7 +546,7 @@ Rectangle {
                     Item {
                         objectName: "censorEmptyWaveform"
                         Layout.fillWidth: true; Layout.preferredHeight: 100
-                        visible: !root.originalUnavailable && !waveform.samples.length
+                        visible: !waveform.samples.length
                     }
                     Item {
                         Layout.fillWidth: true
@@ -564,6 +564,7 @@ Rectangle {
                         Label {
                             id: playbackMessage
                             objectName: "censorPlaybackMessage"
+                            visible: !candidateStatus.visible
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.verticalCenter: parent.verticalCenter
                             width: Math.max(0, parent.width - 2 * Math.max(playbackButton.width, playbackTime.width) - 24)
@@ -574,6 +575,20 @@ Rectangle {
                             color: root.playbackError ? "#f4c779" : "#999999"
                             SiteToolTip { text: root.playbackError; visible: playbackMessageHover.hovered && !!root.playbackError }
                             HoverHandler { id: playbackMessageHover }
+                        }
+                        Label {
+                            id: candidateStatus
+                            objectName: "censorCandidateStatus"
+                            anchors.fill: playbackMessage
+                            visible: root.originalUnavailable && !root.candidates.length
+                            text: !root.job || root.job.status === "running" || root.job.status === "pending"
+                                || root.censorState.running === true ? root.analysisStatus : "No candidates found"
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            color: "#999999"
+                            textFormat: Text.PlainText
+                            Accessible.role: Accessible.StaticText
                         }
                         Label {
                             id: playbackTime
@@ -610,21 +625,7 @@ Rectangle {
 
 
                 SiteButton { text: "Undo replacement"; glyph: "undo-2"; visible: !!root.job && !!root.job.replacement; enabled: !root.disabledReason("rollback"); onClicked: root.command("rollback") }
-                Label {
-                    objectName: "censorCandidateStatus"
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    visible: root.originalUnavailable && !root.candidates.length
-                    text: !root.job || root.job.status === "running" || root.job.status === "pending"
-                        || root.censorState.running === true ? "Searching candidates..." : "No candidates found"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    color: "#999999"
-                    textFormat: Text.PlainText
-                    Accessible.role: Accessible.StaticText
-                }
-                Item { Layout.fillWidth: true; visible: !root.originalUnavailable || root.candidates.length > 0 }
+                Item { Layout.fillWidth: true }
                 Item {
                     implicitWidth: approvalButton.implicitWidth
                     implicitHeight: approvalButton.implicitHeight
@@ -695,7 +696,7 @@ Rectangle {
                         Layout.leftMargin: -8; Layout.rightMargin: -8
                         Layout.topMargin: -8
                         Layout.bottomMargin: -8
-                        title: "Analyzing - " + (root.job ? root.job.stage || "preparing" : "preparing")
+                        title: root.analysisStatus
                         icon: "qrc:/assets/lucide-shield-check.svg"
                         closeVisible: false
                     }

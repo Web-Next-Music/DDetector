@@ -20,6 +20,7 @@ type orchestrationProcessor struct {
 	mu       sync.Mutex
 	requests []censor.Request
 	weak     bool
+	waveform []censor.WaveformPoint
 	block    chan struct{}
 	entered  chan struct{}
 	once     sync.Once
@@ -44,6 +45,7 @@ func (p *orchestrationProcessor) Analyze(ctx context.Context, r censor.Request) 
 		}
 	}
 	result := strongFixture()
+	result.Waveform = p.waveform
 	if r.Reference == nil {
 		result.Comparison = nil
 	}
