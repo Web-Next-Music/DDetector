@@ -126,7 +126,7 @@ Item {
             dialog.close()
         }
         function test_providerCoverIsDecodedOnceAndValidated() {
-            const cover = "https://i.scdn.co/image/fixture"
+            const cover = "https://images.genius.com/fixture"
             dialog.openRestore("42", "Title", "Name", "image://trackcovers/" + encodeURIComponent(cover), {artists: [{id: 7, name: "Name"}]})
             compare(dialog.metadataPatch().coverUri, cover)
             compare(dialog.fallbackCoverUrl("image://trackcovers/%ZZ"), "")
@@ -138,12 +138,12 @@ Item {
             compare(dialog.metadataPatch().artists[0].id, "7")
             dialog.close()
         }
-        function test_spotifyCoverPersistence() {
-                    const cover = "https://i.scdn.co/image/cover"
+        function test_geniusCoverPersistence() {
+                    const cover = "https://images.genius.com/cover"
                     dialog.openRestore("42", "Title", "Name", cover, {artists: [{id: 7, name: "Name"}]})
                     compare(dialog.metadataPatch().coverUri, cover)
                     compare(dialog.metadataPatch().artists[0].id, 7)
-                    for (const rejected of ["image://trackcovers/cover", "https://images.genius.com.evil.test/cover", "https://secret@images.genius.com/cover", "https://images.genius.com/cover?secret=1", "https://i.scdn.co.evil.test/image/123"]) {
+                    for (const rejected of ["image://trackcovers/cover", "https://images.genius.com.evil.test/cover", "https://secret@images.genius.com/cover", "https://images.genius.com/cover?secret=1", "https://images.genius.com.evil.test/123"]) {
                         dialog.openRestore("42", "Title", "Name", rejected, {artists: [{id: 7, name: "Name"}]})
                         verify(dialog.metadataPatch().coverUri === undefined)
                     }

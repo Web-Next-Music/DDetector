@@ -7,7 +7,6 @@
 #include <QNetworkAccessManager>
 #include "config.h"
 #include <QTimer>
-#include <QElapsedTimer>
 #include <functional>
 
 class TrackModel final : public QAbstractListModel {
@@ -36,9 +35,6 @@ private:
 class Bridge final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantMap state READ state NOTIFY stateChanged)
-    Q_PROPERTY(QVariantMap spotifyState READ spotifyState NOTIFY spotifyStateChanged)
-    Q_PROPERTY(bool spotifyBusy READ spotifyBusy NOTIFY spotifyBusyChanged)
-    Q_PROPERTY(bool spotifyActionBusy READ spotifyActionBusy NOTIFY spotifyBusyChanged)
         Q_PROPERTY(QVariantMap censorState READ censorState NOTIFY censorStateChanged)
         Q_PROPERTY(bool censorBusy READ censorBusy NOTIFY censorBusyChanged)
     Q_PROPERTY(QVariantMap censorSelectedJob READ censorSelectedJob NOTIFY censorSelectedJobChanged)
@@ -56,13 +52,6 @@ public:
     Bridge(const QUrl &base, const QByteArray &key, QObject *parent = nullptr, Config *config = nullptr,
            qint64 maximumResponseBytes = DefaultMaximumResponseBytes);
     QVariantMap state() const { return m_state.toVariantMap(); }
-    QVariantMap spotifyState() const { return m_spotifyState.toVariantMap(); }
-    bool spotifyBusy() const { return m_spotifyBusy; }
-    bool spotifyActionBusy() const { return m_spotifyActionBusy; }
-    Q_INVOKABLE void connectSpotify();
-    Q_INVOKABLE void disconnectSpotify();
-    Q_INVOKABLE void refreshSpotify();
-    Q_INVOKABLE void setSpotifySettingsVisible(bool visible);
         QVariantMap censorState() const { return m_censorState.toVariantMap(); }
         bool censorBusy() const { return m_censorBusy; }
             Q_INVOKABLE bool nativePublicationBusy() const;
@@ -107,8 +96,6 @@ public:
     }
 signals:
     void stateChanged();
-    void spotifyStateChanged();
-    void spotifyBusyChanged();
         void censorStateChanged();
         void censorBusyChanged();
     void censorSelectedJobChanged();
@@ -122,15 +109,6 @@ private:
     friend class NativeTests;
     void request(const QString &path, const QJsonObject &body = {}, bool get = false, int busyRetries = 0);
     void acceptState(QJsonObject state);
-    void spotifyRequest(const QString &action, const QJsonObject &body = {});
-    void scheduleSpotifyRefresh();
-    QTimer m_spotifyPoll;
-    QElapsedTimer m_spotifyAuthorization;
-    bool m_spotifySettingsVisible = false;
-    int m_spotifyPollDelayMs = 2000;
-    QJsonObject m_spotifyState;
-    bool m_spotifyBusy = false;
-    bool m_spotifyActionBusy = false;
         void censorRequest(const QString &action = {}, const QVariantMap &args = {}, int busyRetries = 0);
         QTimer m_censorPoll;
         QJsonObject m_censorState;

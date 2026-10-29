@@ -150,11 +150,11 @@ def generate(source, icons_only=False):
                 outputs[f"{family}-{style}.ttf"] = stream.getvalue()
         for relative, target in [("fonts/luckystar.otf", "luckystar.otf"), ("ui/Kagami.webp", "Kagami.webp")]:
             outputs[target] = read("public/" + relative)
-        providers = dict(re.findall(r'(github|discord|spotify):\s*"(M[^"\n]+)"', read("src/components/profile/ServiceIcon.tsx").decode()))
-        if set(providers) != {"github", "discord", "spotify"}:
-            raise RuntimeError("ServiceIcon.tsx must supply exactly three provider paths")
+        providers = dict(re.findall(r'(github|discord):\s*"(M[^"\n]+)"', read("src/components/profile/ServiceIcon.tsx").decode()))
+        if set(providers) != {"github", "discord"}:
+            raise RuntimeError("ServiceIcon.tsx must supply both supported provider paths")
         for provider, path in providers.items():
-            color = {"github": "#f0f0f4", "discord": "#5865f2", "spotify": "#1ed760"}[provider]
+            color = {"github": "#f0f0f4", "discord": "#5865f2"}[provider]
             svg = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg", "viewBox": "0 0 24 24", "fill": color})
             ET.SubElement(svg, "path", {"d": path})
             outputs[provider + "-dark.svg"] = (ET.tostring(svg, encoding="unicode") + "\n").encode()
@@ -171,7 +171,7 @@ def asset_path(name):
         return Path("icons/lucide") / name
     if name.endswith((".ttf", ".otf")):
         return Path("fonts") / name
-    if name in {"github-dark.svg", "discord-dark.svg", "spotify-dark.svg"}:
+    if name in {"github-dark.svg", "discord-dark.svg"}:
         return Path("icons/brands") / name
 
     if name == "Kagami.webp":

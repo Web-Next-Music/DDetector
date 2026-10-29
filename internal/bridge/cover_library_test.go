@@ -6,10 +6,9 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
-	"time"
 )
 
-func TestLibrarySpotifyExistingCache(t *testing.T) {
+func TestLibraryGeniURLExistingCache(t *testing.T) {
 	for _, fetch := range []bool{false, true} {
 		t.Run(fmt.Sprint("fetch=", fetch), func(t *testing.T) {
 			s := authorizedTestServer(t)
@@ -25,17 +24,16 @@ func TestLibrarySpotifyExistingCache(t *testing.T) {
 			s.yandex = c
 			s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, `{"tracks":{}}`), nil })
 			calls := 0
-			p := s.spotifyService()
-			p.credentials = spotifyCredentials{ClientID: spotifyEmbeddedClientID, Refresh: "refresh", Access: "access", Expires: time.Now().Add(time.Hour)}
-			p.http.Transport = spotifyTransport(func(r *http.Request) (*http.Response, error) {
+			p := s.coverService()
+			p.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Host == "avatars.yandex.net" {
 					return response(404, "missing"), nil
 				}
 				calls++
-				if r.URL.Host != "api.spotify.com" || r.Header.Get("Authorization") != "Bearer access" {
-					t.Errorf("unexpected Spotify request: %s", r.URL)
+				if r.URL.Host != "api.sv443.net" || r.Header.Get("Authorization") != "" {
+					t.Errorf("unexpected artwork request: %s", r.URL)
 				}
-				return response(200, `{"tracks":{"items":[{"name":"Отсиди","artists":[{"name":"Овсянкин"}],"album":{"images":[{"url":"https://i.scdn.co/image/fixture"}]}}]}}`), nil
+				return response(200, `{"matches":1,"resources":{"image":"https://images.genius.com/fixture.png"}}`), nil
 			})
 			path, release, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
 			if err != nil {
@@ -56,7 +54,7 @@ func TestLibrarySpotifyExistingCache(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 || len(saved.Tracks) != 1 || saved.Tracks[0].Cover == nil || *saved.Tracks[0].Cover != "https://i.scdn.co/image/fixture" {
+			if calls != 1 || len(saved.Tracks) != 1 || saved.Tracks[0].Cover == nil || *saved.Tracks[0].Cover != "https://images.genius.com/fixture.png" {
 				t.Fatalf("fallback not persisted: calls=%d saved=%+v", calls, saved)
 			}
 			got := saved.Tracks[0]

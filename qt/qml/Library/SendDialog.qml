@@ -138,8 +138,8 @@ SiteDialog {
         return raw
     }
     function isTrustedFallbackCover(value) {
-            return /^https:\/\/i\.scdn\.co\/image\/[^/?#\s]+$/.test(String(value))
-        }
+        return /^https:\/\/images\.(?:genius|rapgenius)\.com(?::443)?\/[^?#\s]+$/.test(String(value))
+    }
 
         function metadataPatch() {
         const patch = {}

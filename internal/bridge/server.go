@@ -55,7 +55,7 @@ type pendingLogin struct {
 	Expires        time.Time
 }
 type Server struct {
-	spotify            *spotifyService
+	covers             *coverService
 	mu                 sync.Mutex
 	op                 sync.Mutex
 	refreshMu          sync.Mutex
@@ -140,10 +140,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		failure(w, 403, "invalid host")
 		return
 	}
-	if r.URL.Path == "/api/spotify/callback" {
-		s.spotifyCallback(w, r)
-		return
-	}
+
 	if strings.HasPrefix(r.URL.Path, "/oauth/callback/") {
 		s.callback(w, r)
 		return
@@ -157,10 +154,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		failure(w, 401, "bridge authentication required")
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/spotify/") {
-		s.handleSpotify(w, r)
-		return
-	}
+
 	if strings.HasPrefix(r.URL.Path, "/api/censor/") {
 		s.handleCensor(w, r)
 		return
@@ -328,7 +322,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 		failure(w, 400, "expected provider JSON")
 		return
 	}
-	if in.Provider != "github" && in.Provider != "discord" && in.Provider != "spotify" {
+	if in.Provider != "github" && in.Provider != "discord" {
 		failure(w, 400, "unsupported provider")
 		return
 	}
@@ -662,7 +656,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		s.mu.Unlock()
 	}()
 	present := map[int64]bool{}
-	coverCtx := withCoverBudget(ctx)
+
 	for _, member := range tracks {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -691,7 +685,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		if t.ID == 0 {
 			return errors.New("Yandex metadata missing for library track")
 		}
-		t = s.spotifyFallback(coverCtx, t)
+		t = s.coverFallback(ctx, t)
 		t.AddedAt = member.AddedAt
 		r := old
 		r.Track = t

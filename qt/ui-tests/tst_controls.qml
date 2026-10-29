@@ -322,7 +322,7 @@ Item {
         function test_restoreSuppliedCoverPreview() {
             fakeUploader.busy = false
             const dialog = createTemporaryObject(sendFactory, scene)
-            const cover = "qrc:/assets/spotify-dark.svg"
+            const cover = "qrc:/assets/github-dark.svg"
             dialog.openRestore("456", "Track", "Artist", cover, ({}), "https://example.org/track.mp3")
             tryCompare(dialog, "opened", true)
             const preview = findChild(dialog, "sendCoverPreview")
@@ -339,12 +339,16 @@ Item {
         }
         function test_restorePersistedCover_data() {
             return [
-                                {tag: "spotify", cover: "https://i.scdn.co/image/abc123", original: "", expected: "https://i.scdn.co/image/abc123"},
-                {tag: "yandex-primary", cover: "https://i.scdn.co/image/abc123", original: "avatars.yandex.net/cover/%%", expected: "avatars.yandex.net/cover/%%"},
+                {tag: "genius", cover: "https://images.genius.com/abc123", original: "", expected: "https://images.genius.com/abc123"},
+                {tag: "rapgenius", cover: "https://images.rapgenius.com/abc123", original: "", expected: "https://images.rapgenius.com/abc123"},
+                {tag: "nonstandard-port", cover: "https://images.genius.com:444/abc123", original: "", expected: ""},
+                {tag: "query", cover: "https://images.genius.com/abc123?token=secret", original: "", expected: ""},
+                {tag: "fragment", cover: "https://images.rapgenius.com/abc123#secret", original: "", expected: ""},
+                {tag: "yandex-primary", cover: "https://images.genius.com/abc123", original: "avatars.yandex.net/cover/%%", expected: "avatars.yandex.net/cover/%%"},
                 {tag: "provider", cover: "image://cover/36045842", original: "", expected: ""},
-                {tag: "resource", cover: "qrc:/assets/spotify-dark.svg", original: "", expected: ""},
-                {tag: "credentials", cover: "https://user@i.scdn.co/image/abc123", original: "", expected: ""},
-                {tag: "wrong-host", cover: "https://i.scdn.co.evil/image/abc123", original: "", expected: ""}
+                {tag: "resource", cover: "qrc:/assets/github-dark.svg", original: "", expected: ""},
+                {tag: "credentials", cover: "https://user@images.genius.com/abc123", original: "", expected: ""},
+                {tag: "wrong-host", cover: "https://images.genius.com.evil/abc123", original: "", expected: ""}
             ]
         }
         function test_restorePersistedCover(data) {
@@ -380,7 +384,7 @@ Item {
             const saved = fakeUploader.metadata
             fakeUploader.metadata = {coverUri: "avatars.yandex.net/existing/%%"}
             const dialog = createTemporaryObject(sendFactory, scene)
-            const cover = "https://i.scdn.co/image/cover"
+            const cover = "https://images.genius.com/cover"
             dialog.openRestore("36045842", "Отсиди", "Artist", cover, ({}), "https://example.org/track.mp3")
             tryCompare(dialog, "opened", true)
             compare(dialog.metadataPatch().coverUri, cover)

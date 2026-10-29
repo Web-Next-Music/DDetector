@@ -108,7 +108,7 @@ ApplicationWindow {
         property string userName: userMetadata.full_name || userMetadata.name || userMetadata.preferred_username || (state.user || {}).email || "Account"
     property string avatarUrl: preferredAvatar(state.user || ({}))
     function preferredAvatar(user) {
-        const providers = ["github", "discord", "spotify"];
+        const providers = ["github", "discord"];
         const identities = (user.identities || []).filter(identity => providers.indexOf(identity.provider) >= 0);
         for (const provider of providers) {
             for (const identity of identities) {
@@ -767,8 +767,6 @@ ApplicationWindow {
         accentBorder: appUi.accentBorder
         closeButtonObjectName: "closeSettingsButton"
         closeButtonAccessibleName: "Close settings"
-        onOpened: appUi.backendBridge.setSpotifySettingsVisible(true)
-        onClosed: appUi.backendBridge.setSpotifySettingsVisible(false)
         contentItem: ScrollView {
             id: settingsScroll
             clip: true
@@ -780,62 +778,9 @@ ApplicationWindow {
                 width: settingsScroll.availableWidth
                 spacing: 8
             SiteSettingsCard {
-                objectName: "spotifySettingsCard"
+                id: musicProviderCard
+                readonly property int providerButtonWidth: 110
                 Layout.fillWidth: true
-                id: spotifyCard
-                readonly property color brandGreen: "#1ed760"
-                                readonly property int providerButtonWidth: 110
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 12
-                    Image {
-                        objectName: "spotifyBrandLogo"
-                        Layout.preferredWidth: 32
-                        Layout.preferredHeight: 32
-                        source: "qrc:/assets/spotify-dark.svg"
-                        sourceSize: Qt.size(32, 32)
-                        fillMode: Image.PreserveAspectFit
-                        Accessible.ignored: true
-                    }
-                    Label {
-                        text: "Spotify"
-                        color: appUi.ink
-                        font.pixelSize: 16
-                        font.bold: true
-                    }
-                    Item { Layout.fillWidth: true }
-                    SiteButton {
-                        objectName: "spotifyConnectButton"
-                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
-                        readonly property bool connected: appUi.backendBridge.spotifyState.connected === true
-                        text: connected ? "Disconnect" : "Connect"
-                        implicitHeight: 36
-                        leftPadding: 20
-                        rightPadding: 20
-                        cornerRadius: height / 2
-                        textColor: "#000000"
-                        hoverTextColor: textColor
-                        surfaceColor: connected ? appUi.ignoredColor : spotifyCard.brandGreen
-                        hoverColor: down ? Qt.darker(surfaceColor, 1.15) : Qt.lighter(surfaceColor, 1.08)
-                        borderColor: "transparent"
-                        hoverBorderColor: "transparent"
-                        accentBorder: "transparent"
-                        loading: appUi.backendBridge.spotifyActionBusy
-                                 || appUi.backendBridge.spotifyState.connected === undefined
-                        onClicked: {
-                            if (connected) appUi.backendBridge.disconnectSpotify();
-                            else appUi.backendBridge.connectSpotify();
-                        }
-                    }
-
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-                    Layout.alignment: Qt.AlignHCenter
-                    color: appUi.borderColor
-                    Accessible.ignored: true
-                }
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
@@ -858,7 +803,7 @@ ApplicationWindow {
                     }
                     SiteButton {
                         objectName: "yandexConnectButton"
-                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
+                        Layout.preferredWidth: musicProviderCard.providerButtonWidth
                         text: "Connect"
                         visible: !appUi.config.musicToken
                         implicitHeight: 36
@@ -876,7 +821,7 @@ ApplicationWindow {
                     }
                     SiteButton {
                         objectName: "yandexClearButton"
-                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
+                        Layout.preferredWidth: musicProviderCard.providerButtonWidth
                         text: "Clear"
                         visible: !!appUi.config.musicToken
                         implicitHeight: 36
@@ -894,17 +839,7 @@ ApplicationWindow {
                     }
                 }
 
-                Label {
-                    Layout.fillWidth: true
-                    visible: !!text
-                    text: appUi.backendBridge.spotifyState.error || ""
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WordWrap
-                    color: appUi.ignoredColor
-                    font.family: "DDetector Nunito"
-                    font.pixelSize: 14
-                    font.weight: Font.Medium
-                }
+
             }
             SiteSettingsCard {
                 Layout.fillWidth: true
@@ -1741,10 +1676,6 @@ ApplicationWindow {
                         {
                             provider: "discord",
                             name: "Discord"
-                        },
-                        {
-                            provider: "spotify",
-                            name: "Spotify"
                         }
                     ]
                     SmallButton {

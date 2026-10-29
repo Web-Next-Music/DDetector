@@ -86,7 +86,7 @@ private slots:
         QVERIFY2(dialog, qPrintable(component.errorString()));
         dialog->setProperty("parent", QVariant::fromValue(window.contentItem()));
         window.show();
-        const QString cover = "https://i.scdn.co/image/fixture";
+        const QString cover = "https://images.genius.com/fixture";
         const QVariantMap original{{"artists", QVariantList{QVariantMap{{"id", 4622996}, {"name", QString::fromUtf8("Овсянкин")}}}}};
         const QString source = noCover ? QString() : preview ? "image://cover/" + QString::fromLatin1(QUrl::toPercentEncoding(cover)) : cover;
         QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
@@ -217,7 +217,7 @@ private slots:
         QVERIFY(uploader.error().contains("Reopen Restore to retry the API"));
         QVERIFY(!uploader.busy());
         QVariantMap patch{{"title", "Fixture"}, {"coverUri", "example.org/cover"},
-            {"artists", QVariantList{QVariantMap{{"id", "spotify-id"}, {"name", "Artist"}}}}};
+            {"artists", QVariantList{QVariantMap{{"id", "genius-id"}, {"name", "Artist"}}}}};
         uploader.send("36045842", "Label", "Name", "https://example.org/audio", patch, {}, true);
         QVERIFY(uploader.error().contains("positive numeric Yandex artist IDs"));
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
@@ -417,12 +417,12 @@ private slots:
         QVERIFY(readme.contains("href=\"https://music.yandex.ru/artist/42\">geoxantes</a>"));
         QCOMPARE(readme.count("https://music.yandex.ru/track/136797648"), 1);
     }
-    void spotifyPersistedCover() {
+    void geniusPersistedCover() {
         QTemporaryDir dir; init(dir.path());
         put(dir.path() + "/list_v2.json", R"({"sources":[]})");
-        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "Spotify fixture"});
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "Genius fixture"});
         Uploader uploader(dir.path());
-        const QString cover = "https://i.scdn.co/image/ab67616d0000b273123abc";
+        const QString cover = "https://images.genius.com/ab67616d0000b273123abc";
         uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {}, {{"coverUri", cover}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
@@ -439,7 +439,7 @@ private slots:
         };
         QCOMPARE(persistedCover(), cover.mid(8));
         // Same canonical audio URL: a requested cover patch must not be skipped.
-        const QString replacement = "https://i.scdn.co/image/def456";
+        const QString replacement = "https://images.genius.com/def456";
         uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {}, {{"coverUri", replacement}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());

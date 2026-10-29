@@ -80,8 +80,8 @@ bool CoverImageProvider::isSafeUrl(const QUrl &url) {
         && (((url.host() == "avatars.mds.yandex.net" || url.host() == "avatars.mds.yandex.ru"
               || url.host() == "avatars.yandex.net" || url.host() == "avatars.yandex.ru")
              && (url.path().startsWith("/get-music/") || url.path().startsWith("/get-music-content/")))
-            || (url.host() == "i.scdn.co" && url.path().startsWith("/image/")
-                && url.path().size() > QStringLiteral("/image/").size()));
+            || ((url.host() == "images.genius.com" || url.host() == "images.rapgenius.com")
+                && url.path().startsWith("/") && url.path().size() > 1));
 }
 struct CoverImageProvider::State {
     QMutex mutex;

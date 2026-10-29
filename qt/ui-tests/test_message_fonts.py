@@ -16,7 +16,6 @@ class MessageFontTests(unittest.TestCase):
             for prop in properties
         }
         messages = (
-            ("App/Main.qml", 'text: appUi.backendBridge.spotifyState.error || ""'),
             ("App/Main.qml", 'text: appUi.state.error || ""'),
             ("Git/terminal.qml", 'text: root.terminalSession ? root.terminalSession.error : ""'),
             ("Git/GitWorkspace.qml", 'text: root.available ? root.workspaceBackend.error : ""'),

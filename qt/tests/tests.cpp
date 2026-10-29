@@ -144,7 +144,6 @@ struct LocalContexts {
 class NativeTests final : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
-    QUrl spotifyOpenedUrl;
 public:
     static int runSignalFlushChild(const QString &path) {
         PosixShutdown shutdown;
@@ -168,180 +167,6 @@ public:
         return result == 0 && shutdown.wasRequested() && quitting && flushed ? 0 : 13;
     }
 private slots:
-    void captureSpotifyUrl(const QUrl &url) { spotifyOpenedUrl = url; }
-    void spotifyAuthSettings() {
-        MockBackend server;
-        const QString redirect = "http://127.0.0.1:43821/api/spotify/callback";
-        QJsonObject state{{"configured", true}, {"connected", false}, {"client_id", ""},
-            {"redirect_uri", redirect}, {"error", ""}, {"access_token", "must-not-be-exposed"}};
-        QString authorization = "https://accounts.spotify.com/authorize?state=test";
-        int connects = 0, disconnects = 0;
-        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
-            if (!request.contains(" /api/spotify/")) return std::nullopt;
-            QJsonObject response = state;
-            if (request.startsWith("POST /api/spotify/connect ")) {
-                ++connects;
-                const auto body = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
-                if (!body.isEmpty()) return QByteArray("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
-                response = {{"authorization_url", authorization}};
-            } else if (request.startsWith("POST /api/spotify/disconnect ")) {
-                ++disconnects;
-                state.insert("connected", false);
-                response = {{"ok", true}};
-            }
-            const auto bytes = QJsonDocument(response).toJson(QJsonDocument::Compact);
-            return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
-                + QByteArray::number(bytes.size()) + "\r\n\r\n" + bytes;
-        };
-        Bridge bridge(server.url(), "spotify-test-key");
-        bridge.m_poll.stop(); bridge.m_censorPoll.stop();
-        QSignalSpy toasts(&bridge, &Bridge::toast);
-        QSignalSpy spotifyChanges(&bridge, &Bridge::spotifyStateChanged);
-        bridge.refreshSpotify();
-        QVERIFY(bridge.spotifyBusy());
-        bridge.disconnectSpotify(); // Busy requests cannot race state refreshes.
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(disconnects, 0);
-        QCOMPARE(bridge.spotifyState().value("redirect_uri").toString(), redirect);
-        QVERIFY(!bridge.spotifyState().contains("access_token"));
-        QCOMPARE(spotifyChanges.count(), 1);
-        bridge.refreshSpotify();
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(spotifyChanges.count(), 1);
-        QVERIFY(!bridge.m_spotifyPoll.isActive());
-        QDesktopServices::setUrlHandler("https", this, "captureSpotifyUrl");
-        struct ResetHandler { ~ResetHandler() { QDesktopServices::unsetUrlHandler("https"); } } resetHandler;
-        spotifyOpenedUrl.clear();
-        bridge.connectSpotify();
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(spotifyOpenedUrl, QUrl(authorization));
-        QCOMPARE(connects, 1);
-        QVERIFY(bridge.spotifyState().value("configured").toBool());
-        QVERIFY(bridge.m_spotifyAuthorization.isValid());
-        QVERIFY(bridge.m_spotifyPoll.isActive());
-        QTimer::singleShot(20, &server, [&] { state.insert("connected", true); });
-        bridge.m_spotifyPoll.start(40);
-        QTRY_VERIFY(bridge.spotifyState().value("connected").toBool());
-        QVERIFY(!bridge.m_spotifyAuthorization.isValid());
-        QVERIFY(!bridge.m_spotifyPoll.isActive());
-        const int connectedChanges = spotifyChanges.count();
-        bridge.setSpotifySettingsVisible(true);
-        bridge.m_spotifyPoll.start(20);
-        QTest::qWait(100);
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(spotifyChanges.count(), connectedChanges);
-        bridge.setSpotifySettingsVisible(false);
-        QVERIFY(!bridge.m_spotifyPoll.isActive());
-        for (const QString &unsafe : {QString("http://accounts.spotify.com/authorize?x=1"),
-             QString("https://accounts.spotify.com.evil.test/authorize?x=1"),
-             QString("https://user@accounts.spotify.com/authorize?x=1"),
-             QString("https://accounts.spotify.com/api/token?x=1"),
-             QString("https://accounts.spotify.com:444/authorize?x=1"),
-             QString("https://accounts.spotify.com/authorize?x=1#fragment")}) {
-            authorization = unsafe;
-            spotifyOpenedUrl.clear();
-            bridge.connectSpotify();
-            QTRY_VERIFY(!bridge.spotifyBusy());
-            QVERIFY(spotifyOpenedUrl.isEmpty());
-            QCOMPARE(bridge.spotifyState().value("error").toString(), QString("Invalid Spotify authorization URL"));
-        }
-        state.insert("connected", true);
-        bridge.refreshSpotify();
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QVERIFY(bridge.spotifyState().value("connected").toBool());
-        bridge.disconnectSpotify();
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(disconnects, 1);
-        QVERIFY(!bridge.spotifyState().value("connected").toBool());
-        QVERIFY(!bridge.m_spotifyAuthorization.isValid());
-        QVERIFY(!bridge.m_spotifyPoll.isActive());
-        for (const auto &request : server.requests) {
-            if (!request.contains(" /api/spotify/")) continue;
-            QVERIFY(request.contains("Authorization: Bearer spotify-test-key\r\n"));
-            QVERIFY(!request.contains("/api/spotify/callback"));
-        }
-        QVERIFY(!toasts.isEmpty());
-
-        Config config{QString()};
-        MusicPlayer player;
-        LocalContexts local(config);
-        QQmlApplicationEngine engine;
-        local.attach(engine, config, bridge, player);
-        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
-        engine.load(QUrl("qrc:/Main.qml"));
-        QVERIFY(!engine.rootObjects().isEmpty());
-        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-        QVERIFY(window);
-        window->resize(1200, 750);
-        QTest::qWait(100);
-        // Track settings interactions separately from existing library-render warnings.
-        warnings.clear();
-        auto dialog = window->findChild<QObject *>("settingsDialog");
-        QVERIFY(dialog);
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QVERIFY(!window->findChild<QObject *>("spotifyClientId"));
-        QVERIFY(!window->findChild<QObject *>("spotifyRedirectUri"));
-        QVERIFY(!window->findChild<QObject *>("spotifyCopyRedirectButton"));
-        auto button = window->findChild<QObject *>("spotifyConnectButton");
-        QVERIFY(button);
-        auto card = window->findChild<QQuickItem *>("spotifySettingsCard");
-        auto logo = window->findChild<QQuickItem *>("spotifyBrandLogo");
-        auto repository = window->findChild<QQuickItem *>("repositoryPathInput");
-        QVERIFY(card && logo && repository);
-        QTRY_COMPARE(card->y(), 0.0);
-        const auto settingsItems = card->parentItem()->childItems();
-        QCOMPARE(settingsItems.first(), card);
-        QVERIFY(card->mapToScene(QPointF()).y() < repository->mapToScene(QPointF()).y());
-        QCOMPARE(logo->property("source").toUrl(), QUrl("qrc:/assets/spotify-dark.svg"));
-        QTRY_COMPARE(logo->property("status").toInt(), 1); // Image.Ready
-        QCOMPARE(logo->width(), 32.0);
-        QCOMPARE(logo->height(), 32.0);
-        auto layer = qvariant_cast<QObject *>(logo->property("layer"));
-        QVERIFY(layer);
-        QVERIFY(!layer->property("enabled").toBool());
-        QVERIFY(!layer->property("effect").value<QObject *>());
-        QVERIFY(card->property("glyph").toString().isEmpty());
-        QCOMPARE(button->property("text").toString(), QString("Connect"));
-        QVERIFY(button->property("enabled").toBool());
-        QVERIFY(!window->findChild<QObject *>("spotifyRefreshButton"));
-        QVERIFY(!window->findChild<QObject *>("spotifyConnectionStatus"));
-        QCOMPARE(button->property("surfaceColor").value<QColor>(), QColor("#1ed760"));
-        QCOMPARE(button->property("textColor").value<QColor>(), QColor("#000000"));
-        QCOMPARE(button->property("borderColor").value<QColor>(), QColor(Qt::transparent));
-        QCOMPARE(button->property("cornerRadius").toReal(), button->property("height").toReal() / 2);
-        state.insert("client_id", "unknown");
-        bridge.refreshSpotify();
-        QVERIFY(bridge.spotifyBusy());
-        QVERIFY(!bridge.spotifyActionBusy());
-        QVERIFY(button->property("enabled").toBool());
-        QVERIFY(!button->property("loading").toBool());
-        QCOMPARE(button->property("opacity").toReal(), 1.0);
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QVERIFY(button->property("enabled").toBool());
-        authorization = "https://accounts.spotify.com/authorize?state=test";
-        spotifyOpenedUrl.clear();
-        QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
-        QVERIFY(bridge.spotifyActionBusy());
-        QVERIFY(button->property("loading").toBool());
-        QVERIFY(!button->property("enabled").toBool());
-        QCOMPARE(button->property("opacity").toReal(), 1.0);
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QVERIFY(!button->property("loading").toBool());
-        QCOMPARE(spotifyOpenedUrl, QUrl(authorization));
-        state.insert("connected", true);
-        bridge.refreshSpotify();
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(button->property("text").toString(), QString("Disconnect"));
-        QCOMPARE(button->property("textColor").value<QColor>(), QColor("#000000"));
-        QCOMPARE(button->property("surfaceColor").value<QColor>(), QColor("#dc5050"));
-        QCOMPARE(button->property("borderColor").value<QColor>(), QColor(Qt::transparent));
-        QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
-        QTRY_VERIFY(!bridge.spotifyBusy());
-        QCOMPARE(button->property("text").toString(), QString("Connect"));
-        QVERIFY(dialog->property("height").toReal() < window->height());
-        QCOMPARE(warnings.count(), 0);
-    }
     void censorBridgeAndView() {
         MockBackend server;
         QJsonObject censor{{"configured", true}, {"paused", false}, {"settings", QJsonObject{}},
@@ -2645,8 +2470,8 @@ private slots:
         };
         const QVariantMap metadata{{"avatar_url", "https://example.com/metadata.png"}};
         const QList<QPair<QVariantMap, QString>> cases{
-            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("spotify", "https://example.com/spotify.png"), identity("discord", "https://example.com/discord.png"), identity("github", "https://example.com/github.png")}}}, "https://example.com/github.png"},
-            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("spotify", "https://example.com/spotify.png"), identity("discord", "https://example.com/discord.png")}}}, "https://example.com/discord.png"},
+            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("discord", "https://example.com/discord.png"), identity("github", "https://example.com/github.png")}}}, "https://example.com/github.png"},
+            {{{"user_metadata", metadata}, {"identities", QVariantList{identity("discord", "https://example.com/discord.png")}}}, "https://example.com/discord.png"},
             {{{"user_metadata", metadata}, {"identities", QVariantList{identity("github", "")}}}, ""},
             {{{"user_metadata", metadata}}, "https://example.com/metadata.png"}
         };
@@ -2876,7 +2701,7 @@ private slots:
         QCoreApplication::processEvents();
         auto discord = visualChild(window->contentItem(), "login-discord");
         QVERIFY(discord); QVERIFY(QMetaObject::invokeMethod(discord, "clicked"));
-        bridge.login("spotify");
+        bridge.login("github");
         QCOMPARE(bridge.pendingProvider(), QString("discord"));
         QTRY_VERIFY(std::any_of(server.requests.cbegin(), server.requests.cend(),
             [](const QByteArray &req) { return req.startsWith("POST /api/login "); }));

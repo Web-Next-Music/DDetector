@@ -194,7 +194,7 @@ func TestPKCERefreshLogout(t *testing.T) {
 			w.WriteHeader(404)
 		}
 	})
-	for _, provider := range []string{"github", "discord", "spotify"} {
+	for _, provider := range []string{"github", "discord"} {
 		w := api(s, "POST", "/api/login", `{"provider":"`+provider+`"}`, "bridge-key")
 		if w.Code != 200 {
 			t.Fatal(w.Body)
