@@ -3,6 +3,13 @@
 Unless noted otherwise, these assets originate from `/home/admin/Documents/Git/Next-Music-Website`.
 No assets are downloaded at application startup.
 
+## Yandex Music logo
+
+`icons/brands/yandex-music.svg` is copied without modification from the
+user-provided `/home/admin/Desktop/Untitled.svg` on 2026-10-30.
+It is provider brand artwork, not a Lucide or Simple Icons asset;
+all rights belong to the respective owner.
+
 ## Directory layout
 
 - `icons/lucide/`: Lucide controls, including protected activity icons

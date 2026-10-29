@@ -783,6 +783,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 id: spotifyCard
                 readonly property color brandGreen: "#1ed760"
+                                readonly property int providerButtonWidth: 110
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
@@ -804,6 +805,7 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                     SiteButton {
                         objectName: "spotifyConnectButton"
+                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
                         readonly property bool connected: appUi.backendBridge.spotifyState.connected === true
                         text: connected ? "Disconnect" : "Connect"
                         implicitHeight: 36
@@ -824,6 +826,71 @@ ApplicationWindow {
                             else appUi.backendBridge.connectSpotify();
                         }
                     }
+
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    Layout.alignment: Qt.AlignHCenter
+                    color: appUi.borderColor
+                    Accessible.ignored: true
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Image {
+                        objectName: "yandexBrandLogo"
+                        Layout.preferredWidth: 32
+                        Layout.preferredHeight: 32
+                        source: "qrc:/assets/yandex-music.svg"
+                        sourceSize: Qt.size(32, 32)
+                        fillMode: Image.PreserveAspectFit
+                        Accessible.ignored: true
+                    }
+                    Label {
+                        text: "Yandex Music"
+                        color: appUi.ink
+                        font.pixelSize: 16
+                        font.bold: true
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                    SiteButton {
+                        objectName: "yandexConnectButton"
+                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
+                        text: "Connect"
+                        visible: !appUi.config.musicToken
+                        implicitHeight: 36
+                        leftPadding: 20
+                        rightPadding: 20
+                        cornerRadius: height / 2
+                        textColor: "#000000"
+                        hoverTextColor: textColor
+                        surfaceColor: "#FFFF00"
+                        hoverColor: Qt.darker(surfaceColor, down ? 1.2 : 1.08)
+                        borderColor: "transparent"
+                        hoverBorderColor: "transparent"
+                        accentBorder: "transparent"
+                        onClicked: musicTokenDialog.open()
+                    }
+                    SiteButton {
+                        objectName: "yandexClearButton"
+                                                Layout.preferredWidth: spotifyCard.providerButtonWidth
+                        text: "Clear"
+                        visible: !!appUi.config.musicToken
+                        implicitHeight: 36
+                        leftPadding: 20
+                        rightPadding: 20
+                        cornerRadius: height / 2
+                        textColor: "#000000"
+                        hoverTextColor: textColor
+                        surfaceColor: appUi.ignoredColor
+                        hoverColor: down ? Qt.darker(surfaceColor, 1.15) : Qt.lighter(surfaceColor, 1.08)
+                        borderColor: "transparent"
+                        hoverBorderColor: "transparent"
+                        accentBorder: "transparent"
+                        onClicked: appUi.config.musicToken = ""
+                    }
                 }
 
                 Label {
@@ -837,7 +904,6 @@ ApplicationWindow {
                     font.pixelSize: 14
                     font.weight: Font.Medium
                 }
-
             }
             SiteSettingsCard {
                 Layout.fillWidth: true
@@ -897,39 +963,6 @@ ApplicationWindow {
                             onTriggered: repositoryPathInput.applyPath(true)
                         }
 
-                }
-            }
-            SiteSettingsCard {
-                objectName: "musicTokenCard"
-                Layout.fillWidth: true
-                title: "Yandex Music"
-                glyph: "music-standard"
-                SiteTextField {
-                        id: musicToken
-                        font.pixelSize: appUi.font.pixelSize
-                        Accessible.name: "Yandex Music OAuth token"
-                        objectName: "musicTokenSetting"
-                        Layout.fillWidth: true
-                        implicitHeight: 36
-                        leftPadding: 12
-                        rightPadding: 12
-                        placeholderText: "OAuth token"
-                        placeholderTextColor: appUi.muted
-                        echoMode: TextInput.Password
-                        selectByMouse: true
-                        color: appUi.ink
-                        selectionColor: appUi.accentBg
-                        selectedTextColor: appUi.ink
-
-                        text: appUi.config.musicToken
-                        onTextEdited: tokenApplyTimer.restart()
-                        onAccepted: { tokenApplyTimer.stop(); appUi.config.musicToken = text.trim(); }
-                        onEditingFinished: { tokenApplyTimer.stop(); appUi.config.musicToken = text.trim(); }
-                        Timer {
-                            id: tokenApplyTimer
-                            interval: 800
-                            onTriggered: appUi.config.musicToken = musicToken.text.trim()
-                        }
                 }
             }
             Rectangle {
@@ -995,6 +1028,68 @@ ApplicationWindow {
                     onToggled: appUi.config.approveSoundEnabled = checked
                 }
             }
+            }
+        }
+    }
+    SiteDialog {
+        id: musicTokenDialog
+        objectName: "musicTokenDialog"
+        title: "Yandex Music"
+        width: Math.min(appUi.width - 32, 440)
+        surface: appUi.surface
+        surface2: appUi.surface2
+        borderColor: appUi.borderColor
+        ink: appUi.ink
+        muted: appUi.muted
+        accentBg: appUi.accentBg
+        accentBorder: appUi.accentBorder
+        closeButtonAccessibleName: "Close Yandex Music token"
+        onOpened: {
+            musicToken.text = appUi.config.musicToken;
+            musicToken.forceActiveFocus();
+        }
+        onClosed: musicToken.text = ""
+        onAccepted: appUi.config.musicToken = musicToken.text.trim()
+        contentItem: ColumnLayout {
+            spacing: 8
+            SiteSettingsCard {
+                Layout.fillWidth: true
+                title: "OAuth token"
+                SiteTextField {
+                    id: musicToken
+                    objectName: "musicTokenSetting"
+                    Accessible.name: "Yandex Music OAuth token"
+                    Layout.fillWidth: true
+                    implicitHeight: 36
+                    leftPadding: 12
+                    rightPadding: 12
+                    font.pixelSize: appUi.font.pixelSize
+                    placeholderText: "OAuth token"
+                    placeholderTextColor: appUi.muted
+                    echoMode: TextInput.Password
+                    selectByMouse: true
+                    color: appUi.ink
+                    selectionColor: appUi.accentBg
+                    selectedTextColor: appUi.ink
+                    onAccepted: {
+                        if (text.trim()) musicTokenDialog.accept();
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                SiteButton {
+                    text: "Cancel"
+                    onClicked: musicTokenDialog.reject()
+                }
+                SiteButton {
+                    objectName: "saveMusicTokenButton"
+                    text: "Save"
+                    accented: true
+                    enabled: !!musicToken.text.trim()
+                    onClicked: musicTokenDialog.accept()
+                }
             }
         }
     }
