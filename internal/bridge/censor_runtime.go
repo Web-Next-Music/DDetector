@@ -85,6 +85,7 @@ type censorRuntime struct {
 	disk                  censorDiskState
 	running, paused       bool
 	failure               string
+	storageFailure        string
 	queue                 *censor.Queue
 	cancel                context.CancelFunc
 	done                  chan struct{}
@@ -169,7 +170,7 @@ func (rt *censorRuntime) persistLocked() error {
 	}
 	rt.progressDirty = false
 	if e := rt.lockStorageLocked(); e != nil {
-		rt.failure = "Censor storage is unavailable or owned by another process"
+		rt.storageFailure = "Censor storage is unavailable or owned by another process"
 		if rt.cancel != nil {
 			rt.cancel()
 		}
@@ -221,6 +222,9 @@ func (rt *censorRuntime) snapshot() CensorState {
 		b.mu.Unlock()
 	}
 	msg := rt.failure
+	if msg == "" {
+		msg = rt.storageFailure
+	}
 	if msg == "" {
 		msg = rt.lastError
 	}
@@ -826,6 +830,14 @@ func (rt *censorRuntime) search(ctx context.Context, i CensorIdentity, j *Censor
 	}
 	return nil
 }
+
+// Only an authorized native manual resolver may opt into metadata-only discovery.
+func (rt *censorRuntime) metadataOnlyRequest(r CensorRequest) bool {
+	_, native := rt.backend.(*nativeBackend)
+	id, err := nativeTrackID("manual", r.ID)
+	return native && err == nil && id == r.TrackID && r.Origin == "manual" && r.OriginalUnavailable && r.OriginalURL == "" && validCensorRequestSource(r, false) && len(censorQueries(r)) > 0
+}
+
 func (rt *censorRuntime) pipeline(ctx context.Context, q *censor.Queue, j *CensorJob) error {
 	i, err := rt.identity(ctx)
 	if err != nil {
@@ -833,6 +845,21 @@ func (rt *censorRuntime) pipeline(ctx context.Context, q *censor.Queue, j *Censo
 	}
 	if err = rt.resolveRequest(ctx, i, j); err != nil {
 		return err
+	}
+	if rt.metadataOnlyRequest(j.Request) {
+		j.Result = nil
+		j.Stage = "search"
+		if err := rt.update(*j); err != nil {
+			return err
+		}
+		if err := rt.search(ctx, i, j, censorQueries(j.Request)); err != nil {
+			return err
+		}
+		for n := range j.Candidates {
+			j.Candidates[n].Result = nil
+			j.Candidates[n].Error = "Manual review/listening only: original Yandex audio is unavailable; comparison and approval are disabled"
+		}
+		return nil
 	}
 	result, e := rt.analyze(ctx, q, j, "")
 	if e != nil {
@@ -861,6 +888,9 @@ func (rt *censorRuntime) pipeline(ctx context.Context, q *censor.Queue, j *Censo
 }
 
 func (rt *censorRuntime) compareCandidates(ctx context.Context, q *censor.Queue, j *CensorJob) error {
+	if rt.metadataOnlyRequest(j.Request) {
+		return ErrCensorConflict
+	}
 	j.Stage = "comparison"
 	total, completed := 0, 0
 	for _, candidate := range j.Candidates {

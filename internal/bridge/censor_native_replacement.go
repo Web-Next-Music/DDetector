@@ -829,7 +829,7 @@ func nativeURL(template string, v any) (string, error) {
 	if s == "" {
 		return "", ErrCensorConflict
 	}
-	if template != "" {
+	if template != "" && !strings.Contains(s, "://") {
 		s = strings.ReplaceAll(template, "%%", s)
 		if !strings.Contains(s, "://") {
 			s = "https://" + s
@@ -851,7 +851,7 @@ func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64)
 	if expected != old {
 		return nil, nil, ErrCensorConflict
 	}
-	if expected == published {
+	if expected == published && durationMs <= 0 {
 		return legacy, v2, nil
 	}
 	exists := expected != ""
@@ -881,6 +881,9 @@ func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64)
 		for _, rawStore := range stores {
 			sourceFound := false
 			replacement := map[string]any{"url": published}
+			if durationMs > 0 {
+				replacement["durationMs"] = durationMs
+			}
 			preserve := func(entry any) {
 				sourceFound = true
 				if metadata, ok := entry.(map[string]any); ok {
@@ -915,7 +918,16 @@ func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64)
 							return nil, nil, ErrCensorConflict
 						}
 						found = true
-						preserve(entry)
+						if expected == published {
+							metadata, ok := entry.(map[string]any)
+							if !ok {
+								metadata = map[string]any{"id": entry}
+							}
+							metadata["durationMs"] = durationMs
+							keep = append(keep, metadata)
+						} else {
+							preserve(entry)
+						}
 					} else {
 						keep = append(keep, entry)
 					}
@@ -933,8 +945,17 @@ func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64)
 						return nil, nil, ErrCensorConflict
 					}
 					found = true
-					preserve(entry)
-					delete(mapping, id)
+					if expected == published {
+						metadata, ok := entry.(map[string]any)
+						if !ok {
+							metadata = map[string]any{"url": entry}
+						}
+						metadata["durationMs"] = durationMs
+						mapping[id] = metadata
+					} else {
+						preserve(entry)
+						delete(mapping, id)
+					}
 				}
 			}
 			if sourceFound {
@@ -1018,9 +1039,9 @@ func nativeLists(legacy, v2 []byte, id, old, published string, durationMs int64)
 					return nil, nil, ErrCensorConflict
 				}
 				if _, templated := target["urlTemplate"]; templated {
-					tracks[id] = id
+					tracks[id] = map[string]any{"url": id, "durationMs": durationMs}
 				} else {
-					tracks[id] = published
+					tracks[id] = map[string]any{"url": published, "durationMs": durationMs}
 				}
 			}
 		}

@@ -55,6 +55,7 @@ type pendingLogin struct {
 	Expires        time.Time
 }
 type Server struct {
+	spotify            *spotifyService
 	mu                 sync.Mutex
 	op                 sync.Mutex
 	refreshMu          sync.Mutex
@@ -139,6 +140,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		failure(w, 403, "invalid host")
 		return
 	}
+	if r.URL.Path == "/api/spotify/callback" {
+		s.spotifyCallback(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/oauth/callback/") {
 		s.callback(w, r)
 		return
@@ -150,6 +155,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	expected := "Bearer " + s.key
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
 		failure(w, 401, "bridge authentication required")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/spotify/") {
+		s.handleSpotify(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/censor/") {
@@ -620,7 +629,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		if t.ID <= 0 {
 			return errors.New("invalid Supabase library track ID")
 		}
-		if _, ok := cached[t.ID]; !ok || fetch {
+		if old, ok := cached[t.ID]; !ok || fetch || old.Available == nil {
 			missing = append(missing, strconv.FormatInt(t.ID, 10))
 		}
 	}
@@ -653,6 +662,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		s.mu.Unlock()
 	}()
 	present := map[int64]bool{}
+	coverCtx := withCoverBudget(ctx)
 	for _, member := range tracks {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -662,11 +672,26 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		old, ok := cached[id]
 		t := old.Track
 		if fresh, exists := metadata[id]; exists {
+			// Deleted tracks can return only an ID and an availability signal.
+			// Keep cached display metadata, but use the fresh tri-state signal.
+			if fresh.Title == "" {
+				fresh.Title = t.Title
+			}
+			if fresh.Artist == "" {
+				fresh.Artist = t.Artist
+			}
+			if len(fresh.Artists) == 0 {
+				fresh.Artists = t.Artists
+			}
+			if fresh.Cover == nil {
+				fresh.Cover = t.Cover
+			}
 			t = fresh
 		}
 		if t.ID == 0 {
 			return errors.New("Yandex metadata missing for library track")
 		}
+		t = s.spotifyFallback(coverCtx, t)
 		t.AddedAt = member.AddedAt
 		r := old
 		r.Track = t

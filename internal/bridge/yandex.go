@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -126,10 +127,16 @@ func (c *yandexClient) metadata(ctx context.Context, ids []string) (map[int64]Tr
 		var batch []struct {
 			ID      yandexID `json:"id"`
 			Title   string   `json:"title"`
+			ISRC    string   `json:"isrc"`
 			Cover   string   `json:"coverUri"`
-			Artists []struct {
-				Name string `json:"name"`
-			} `json:"artists"`
+			OGImage string   `json:"ogImage"`
+			Albums  []struct {
+				Cover   string `json:"coverUri"`
+				OGImage string `json:"ogImage"`
+			} `json:"albums"`
+			Available *bool           `json:"available"`
+			Error     json.RawMessage `json:"error"`
+			Artists   []TrackArtist   `json:"artists"`
 		}
 		if err := c.request(ctx, "POST", "/tracks", url.Values{"track-ids": {strings.Join(ids[start:end], ",")}}.Encode(), &batch); err != nil {
 			return nil, err
@@ -140,18 +147,54 @@ func (c *yandexClient) metadata(ctx context.Context, ids []string) (map[int64]Tr
 			for _, a := range v.Artists {
 				names = append(names, a.Name)
 			}
-			t := Track{ID: id, Title: v.Title, Artist: strings.Join(names, ", ")}
-			if v.Cover != "" {
-				cover := "https://" + strings.ReplaceAll(v.Cover, "%%", "200x200")
-				u, e := url.Parse(cover)
-				if e == nil && u.User == nil && u.Host != "" {
-					t.Cover = &cover
-				}
+			t := Track{Artists: v.Artists, ID: id, Title: v.Title, Artist: strings.Join(names, ", "), ISRC: normalizeISRC(v.ISRC), Available: v.Available}
+			// These per-track markers explicitly report missing catalog rights or deletion.
+			// Request failures and unrecognized errors are not availability signals.
+			var trackError string
+			if t.Available == nil && json.Unmarshal(v.Error, &trackError) == nil && (trackError == "not-found" || trackError == "no-rights") {
+				available := false
+				t.Available = &available
 			}
+			covers := []string{v.Cover, v.OGImage}
+			for _, album := range v.Albums {
+				covers = append(covers, album.Cover, album.OGImage)
+			}
+			t.Cover = yandexCoverURL(covers...)
 			out[id] = t
 		}
 	}
 	return out, nil
+}
+
+var isrcPattern = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$`)
+
+func normalizeISRC(raw string) string {
+	isrc := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(raw), "-", ""))
+	if !isrcPattern.MatchString(isrc) {
+		return ""
+	}
+	return isrc
+}
+
+// Only use artwork attached to this track or its albums, never a fuzzy search match.
+func yandexCoverURL(candidates ...string) *string {
+	for _, raw := range candidates {
+		cover := strings.TrimSpace(raw)
+		if cover == "" {
+			continue
+		}
+		if strings.HasPrefix(cover, "//") {
+			cover = "https:" + cover
+		} else if !strings.Contains(cover, "://") {
+			cover = "https://" + cover
+		}
+		cover = strings.ReplaceAll(cover, "%%", "200x200")
+		u, err := url.Parse(cover)
+		if err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+			return &cover
+		}
+	}
+	return nil
 }
 
 func (c *yandexClient) supplement(ctx context.Context, id int64) ([]Lyric, error) {

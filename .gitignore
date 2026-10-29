@@ -1,5 +1,6 @@
 /build/
 /dist/
+/ddetector
 /Testing/
 /.ruff_cache/
 __pycache__/

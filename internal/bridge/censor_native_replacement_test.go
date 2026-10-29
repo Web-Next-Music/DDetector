@@ -70,8 +70,8 @@ func TestNativeNewTrackSourceGate(t *testing.T) {
 	}
 	input := []byte(`{"sources":[{"supportedVersions":">=2.0.0","tracksStorages":[{"urlTemplate":"new.example/%%","tracks":{"1":1}}]}]}`)
 	_, out, err := nativeLists(nil, input, "42", "", published, 123456)
-	if err != nil || !bytes.Contains(out, []byte(`"42":"42"`)) {
-		t.Fatalf("templated bare ID behavior: %s %v", out, err)
+	if err != nil || !bytes.Contains(out, []byte(`"42":{"durationMs":123456,"url":"42"}`)) {
+		t.Fatalf("templated mapping duration: %s %v", out, err)
 	}
 }
 
@@ -524,7 +524,7 @@ func TestNativeV2FormattingPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := strings.Replace(input, `"42":"https://old.example/42",`, "", 1)
-	expected = strings.Replace(expected, ` } ] } ]`, ` }, {"tracks":{"42":{"url":"https://published.example/42"}}} ] } ]`, 1)
+	expected = strings.Replace(expected, ` } ] } ]`, ` }, {"tracks":{"42":{"durationMs":123456,"url":"https://published.example/42"}}} ] } ]`, 1)
 	if string(out) != expected {
 		t.Fatalf("format changed\ngot: %s\nwant: %s", out, expected)
 	}

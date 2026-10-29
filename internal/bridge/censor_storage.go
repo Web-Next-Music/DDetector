@@ -87,6 +87,7 @@ func checkCensorDir(dir string, create bool) error {
 // runtime lock also covers review/publication while no engine worker is active.
 func (rt *censorRuntime) lockStorageLocked() error {
 	if rt.lock != nil {
+		rt.storageFailure = ""
 		return nil
 	}
 	if e := checkCensorDir(filepath.Dir(rt.dir), true); e != nil {
@@ -117,6 +118,9 @@ func (rt *censorRuntime) lockStorageLocked() error {
 		return errors.New("censor runtime changed in another process; reopen before modifying")
 	}
 	rt.lock = f
+	// Acquisition failures are retryable, but only after privacy, ownership and
+	// the durable state version have all been checked again.
+	rt.storageFailure = ""
 	return nil
 }
 func (rt *censorRuntime) releaseStorage() error {

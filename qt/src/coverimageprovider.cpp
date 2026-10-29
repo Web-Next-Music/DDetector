@@ -77,9 +77,11 @@ bool CoverImageProvider::isSafeUrl(const QUrl &url) {
     // Covers are public CDN objects: never accept API endpoints, credentials or arbitrary hosts.
     return url.isValid() && url.scheme() == "https" && url.userInfo().isEmpty()
         && (url.port(-1) == -1 || url.port() == 443) && !url.hasQuery() && !url.hasFragment()
-        && (url.host() == "avatars.mds.yandex.net" || url.host() == "avatars.mds.yandex.ru"
-            || url.host() == "avatars.yandex.net" || url.host() == "avatars.yandex.ru")
-        && (url.path().startsWith("/get-music/") || url.path().startsWith("/get-music-content/"));
+        && (((url.host() == "avatars.mds.yandex.net" || url.host() == "avatars.mds.yandex.ru"
+              || url.host() == "avatars.yandex.net" || url.host() == "avatars.yandex.ru")
+             && (url.path().startsWith("/get-music/") || url.path().startsWith("/get-music-content/")))
+            || (url.host() == "i.scdn.co" && url.path().startsWith("/image/")
+                && url.path().size() > QStringLiteral("/image/").size()));
 }
 struct CoverImageProvider::State {
     QMutex mutex;

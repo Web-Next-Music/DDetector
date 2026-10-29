@@ -83,14 +83,28 @@ Item {
         property string status: "List: added · committed"
         signal completed(string action)
         signal stateChanged()
+        signal metadataReady(int request, string id, var metadata, string error)
+        property int metadataSerial: 0
+        property var metadataResponse: ({artists: [{id: "4622996", name: "Artist"}]})
+        function requestMetadata(id) {
+            const request = ++metadataSerial
+            const response = metadataResponse
+            Qt.callLater(function() { metadataReady(request, id, response, "") })
+            return request
+        }
         signal durationReady(int request, double durationMs)
         property int durationRequest: 0
-        function requestDuration(id, url) { return ++durationRequest }
+        property var extractionRequests: []
+        function requestDuration(id, url) {
+            extractionRequests = extractionRequests.concat([{id: id, url: url}])
+            return ++durationRequest
+        }
         property var metadata: ({title: "Existing", artists: [{id: "42", name: "Artist"}], coverUri: "example.org/cover", durationMs: 123000})
-        function trackMetadata(id) { return metadata }
+        property string metadataTrackId: ""
+        function trackMetadata(id) { metadataTrackId = id; return metadata }
         property var lastSend: ({})
-        function send(id, title, artist, url, patch, publication) {
-            lastSend = {id: id, title: title, artist: artist, url: url, patch: patch, publication: publication}
+        function send(id, title, artist, url, patch, publication, restore) {
+            lastSend = {id: id, title: title, artist: artist, url: url, patch: patch, publication: publication, restore: restore}
             busy = true; stateChanged();
         }
     }
@@ -119,7 +133,17 @@ Item {
             tryCompare(nunitoBold, "status", FontLoader.Ready);
             tryCompare(nunitoSemiBold, "status", FontLoader.Ready);
         }
-        function init() { fakeUi.plays = 0; fakeUi.choices = 0; fakeUi.menus = 0; fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0; }
+        function init() {
+            fakeUi.plays = 0; fakeUi.choices = 0; fakeUi.menus = 0
+            fakeUi.selectedId = ""; fakeUi.expanded = ({}); fakePlayer.plays = 0
+            fakeUploader.busy = false
+            fakeUploader.error = ""
+            fakeUploader.metadata = ({title: "Existing", artists: [{id: "42", name: "Artist"}], coverUri: "example.org/cover", durationMs: 123000})
+            fakeUploader.metadataResponse = ({artists: [{id: "4622996", name: "Artist"}]})
+            fakeUploader.metadataTrackId = ""
+            fakeUploader.lastSend = ({})
+            fakeUploader.extractionRequests = []
+        }
         function test_diffBudgetBoundaries() {
             const diff = createTemporaryObject(diffFactory, scene);
             const chars = diff.maxPreviewChars;
@@ -249,7 +273,226 @@ Item {
             compare(spinner.visible, true);
             button.loading = false;
             compare(spinner.visible, false);
-            compare(button.enabled, true);
+            tryCompare(button, "enabled", true);
+        }
+        function test_restoreBaselineArtistsWithoutCover_data() {
+            return [
+                {tag: "original-metadata", local: {}, original: {title: "Original", artists: [{id: "42", name: "Original artist"}]}, expected: [{id: "42", name: "Original artist"}]},
+                {tag: "dataset-priority", local: {artists: [{id: "43", name: "Dataset artist"}]}, original: {artists: [{id: "42", name: "Original artist"}]}, expected: [{id: "43", name: "Dataset artist"}]},
+                {tag: "manual-fallback", local: {}, original: {}, expected: [{id: "44", name: "Manual artist"}]}
+            ]
+        }
+        function test_restoreBaselineArtistsWithoutCover(data) {
+            fakeUploader.busy = false
+            const saved = fakeUploader.metadata
+            fakeUploader.metadata = data.local
+            if (data.tag === "manual-fallback")
+                fakeUploader.metadataResponse = {artists: data.expected}
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openRestore("36045842", "Label title", "Label artist", "", data.original, "https://example.org/track.mp3")
+            tryCompare(dialog, "opened", true)
+            tryCompare(dialog, "metadataRequest", -1)
+            compare(dialog.metadataError, "")
+            compare(dialog.metadataPatch().artists, data.expected)
+            verify(dialog.metadataPatch().coverUri === undefined)
+            compare(findChild(dialog, "sendTrackButton").enabled, true)
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(fakeUploader.lastSend.restore, true)
+            compare(fakeUploader.lastSend.patch.artists, data.expected)
+            verify(fakeUploader.lastSend.patch.coverUri === undefined)
+            compare(dialog.originalMetadata, data.original)
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            fakeUploader.metadata = saved
+        }
+        function test_restoreSuppliedCoverPreview() {
+            fakeUploader.busy = false
+            const dialog = createTemporaryObject(sendFactory, scene)
+            const cover = "qrc:/assets/spotify-dark.svg"
+            dialog.openRestore("456", "Track", "Artist", cover, ({}), "https://example.org/track.mp3")
+            tryCompare(dialog, "opened", true)
+            const preview = findChild(dialog, "sendCoverPreview")
+            const image = findChild(dialog, "sendCoverImage")
+            compare(preview.visible, true)
+            compare(image.source.toString(), cover)
+            tryCompare(image, "status", Image.Ready)
+            dialog.close()
+            dialog.openRestore("456", "Track", "Artist", "", ({}))
+            tryCompare(dialog, "opened", true)
+            compare(preview.visible, false)
+            compare(image.source.toString(), "")
+            dialog.close()
+        }
+        function test_restorePersistedCover_data() {
+            return [
+                                {tag: "spotify", cover: "https://i.scdn.co/image/abc123", original: "", expected: "https://i.scdn.co/image/abc123"},
+                {tag: "yandex-primary", cover: "https://i.scdn.co/image/abc123", original: "avatars.yandex.net/cover/%%", expected: "avatars.yandex.net/cover/%%"},
+                {tag: "provider", cover: "image://cover/36045842", original: "", expected: ""},
+                {tag: "resource", cover: "qrc:/assets/spotify-dark.svg", original: "", expected: ""},
+                {tag: "credentials", cover: "https://user@i.scdn.co/image/abc123", original: "", expected: ""},
+                {tag: "wrong-host", cover: "https://i.scdn.co.evil/image/abc123", original: "", expected: ""}
+            ]
+        }
+        function test_restorePersistedCover(data) {
+            fakeUploader.busy = false
+            const saved = fakeUploader.metadata
+            fakeUploader.metadata = ({})
+            const dialog = createTemporaryObject(sendFactory, scene)
+            const metadata = {title: "Отсиди"}
+            if (data.original) metadata.coverUri = data.original
+            dialog.openRestore("36045842", "Отсиди", "Artist", data.cover, metadata, "https://example.org/track.mp3")
+            tryCompare(dialog, "opened", true)
+            compare(String(dialog.originalMetadata.coverUri || ""), data.original)
+            compare(String(metadata.coverUri || ""), data.original)
+            const expectedPatch = {title: "Отсиди", artists: [{id: "4622996", name: "Artist"}]}
+            if (data.original || data.expected) expectedPatch.coverUri = data.original || data.expected
+            compare(JSON.stringify(dialog.metadataPatch()), JSON.stringify(expectedPatch))
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(String(fakeUploader.lastSend.publication.coverUri || ""), data.original)
+            compare(JSON.stringify(fakeUploader.lastSend.patch), JSON.stringify(expectedPatch))
+            compare(fakeUploader.lastSend.restore, true)
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            dialog.openRestore("789", "Other", "Artist", "", ({}))
+            compare(String(dialog.originalMetadata.coverUri || ""), "")
+            tryVerify(function() { return dialog.restoreArtists.length > 0 })
+            compare(JSON.stringify(dialog.metadataPatch()), '{"title":"Other","artists":[{"id":"4622996","name":"Artist"}]}')
+            dialog.close()
+            fakeUploader.metadata = saved
+        }
+        function test_restoreCoverExplicitOverride() {
+            fakeUploader.busy = false
+            const saved = fakeUploader.metadata
+            fakeUploader.metadata = {coverUri: "avatars.yandex.net/existing/%%"}
+            const dialog = createTemporaryObject(sendFactory, scene)
+            const cover = "https://i.scdn.co/image/cover"
+            dialog.openRestore("36045842", "Отсиди", "Artist", cover, ({}), "https://example.org/track.mp3")
+            tryCompare(dialog, "opened", true)
+            compare(dialog.metadataPatch().coverUri, cover)
+            findChild(dialog, "editMetadata").checked = true
+            findChild(dialog, "editCover").checked = true
+            // Explicitly selecting the existing value must also beat the fallback.
+            compare(dialog.metadataPatch().coverUri, fakeUploader.metadata.coverUri)
+            findChild(dialog, "metadataCover").text = "avatars.yandex.net/manual/%%"
+            findChild(dialog, "sendTrackButton").clicked()
+            compare(fakeUploader.lastSend.patch.coverUri, "avatars.yandex.net/manual/%%")
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            fakeUploader.metadata = saved
+        }
+        function test_restoreCandidateUrlPrefill() {
+            fakeUploader.busy = false
+            fakeUploader.extractionRequests = []
+            const dialog = createTemporaryObject(sendFactory, scene)
+            verify(dialog !== null)
+            const metadata = {title: "Original title", durationMs: 234567}
+            const mp3Url = "https://example.org/candidate.mp3"
+            dialog.openRestore("456", "Original title", "Original artist", "", metadata, mp3Url)
+            tryCompare(dialog, "opened", true)
+            compare(dialog.restoreMode, true)
+            compare(dialog.trackId, "456")
+            compare(dialog.originalMetadata, metadata)
+            compare(findChild(dialog, "sendTitle").text, "Original title")
+            compare(findChild(dialog, "sendArtist").text, "Original artist")
+            compare(findChild(dialog, "sendUrl").text, mp3Url)
+            compare(findChild(dialog, "sendUrl").visible, true)
+            compare(findChild(dialog, "sendTrackButton").enabled, true)
+            verify(fakeUploader.extractionRequests.length > 0)
+            compare(fakeUploader.extractionRequests[fakeUploader.extractionRequests.length - 1],
+                    {id: "456", url: mp3Url})
+            compare(dialog.durationRequest, fakeUploader.durationRequest)
+            verify(dialog.durationRequest > 0)
+            dialog.close()
+        }
+        function test_restoreInputAndPayload() {
+            fakeUploader.busy = false
+            const saved = fakeUploader.metadata
+            const dialog = createTemporaryObject(sendFactory, scene)
+            dialog.openTrack("123", "Old title", "Old artist", "", {durationMs: 234567})
+            tryCompare(dialog, "opened", true)
+            const staleRequest = dialog.durationRequest
+            dialog.openRestore()
+            compare(dialog.restoreMode, true)
+            compare(dialog.trackId, "")
+            compare(findChild(dialog, "sendTitle").text, "")
+            compare(findChild(dialog, "sendArtist").text, "")
+            compare(findChild(dialog, "sendUrl").text, "")
+            compare(JSON.stringify(dialog.originalMetadata), "{}")
+            const input = findChild(dialog, "restoreTrackId")
+            const button = findChild(dialog, "sendTrackButton")
+            verify(input.visible)
+            const before = fakeUploader.lastSend
+            const url = findChild(dialog, "sendUrl")
+            url.text = "https://example.org/restored.mp3"
+            for (const invalid of ["", "0", "-1", "1.5", "1e3", "https://music.yandex.ru/track/123", "9007199254740992"]) {
+                input.text = invalid
+                compare(button.enabled, false)
+                button.clicked()
+                compare(fakeUploader.lastSend, before)
+            }
+            input.text = "9007199254740991"
+            tryCompare(button, "enabled", true)
+            compare(dialog.trackId, "9007199254740991")
+            for (const emptyUrl of ["", "   "]) {
+                url.text = emptyUrl
+                compare(button.enabled, false)
+                button.clicked()
+                compare(fakeUploader.lastSend, before)
+            }
+            url.text = "https://example.org/restored.mp3"
+            tryCompare(button, "enabled", true)
+            fakeUploader.metadata = {title: "Restored baseline", durationMs: 1200}
+            input.text = "00456"
+            compare(dialog.trackId, "456")
+            compare(fakeUploader.metadataTrackId, "456")
+            compare(findChild(dialog, "metadataTitle").text, "Restored baseline")
+            fakeUploader.durationReady(staleRequest, 9999)
+            compare(findChild(dialog, "metadataDuration").text, "1200")
+            findChild(dialog, "editMetadata").checked = true
+            findChild(dialog, "editTitle").checked = true
+            findChild(dialog, "metadataTitle").text = "Discard this edit"
+            fakeUploader.metadata = {title: "Next baseline"}
+            input.text = "789"
+            compare(dialog.opened, true)
+            compare(findChild(dialog, "metadataTitle").text, "Next baseline")
+            compare(findChild(dialog, "editMetadata").checked, false)
+            compare(dialog.replacementDuration, -1)
+            findChild(dialog, "sendTitle").text = "Restored track"
+            findChild(dialog, "sendArtist").text = "Artist"
+            findChild(dialog, "sendUrl").text = "https://example.org/restored.mp3"
+            findChild(dialog, "editMetadata").checked = true
+            findChild(dialog, "editTitle").checked = true
+            findChild(dialog, "metadataTitle").text = "Metadata title"
+            tryCompare(button, "enabled", true)
+            button.clicked()
+            compare(fakeUploader.lastSend.id, "789")
+            compare(fakeUploader.lastSend.title, "Restored track")
+            compare(fakeUploader.lastSend.artist, "Artist")
+            compare(fakeUploader.lastSend.url, "https://example.org/restored.mp3")
+            compare(JSON.stringify(fakeUploader.lastSend.patch), '{"title":"Metadata title","artists":[{"id":"4622996","name":"Artist"}]}')
+            compare(JSON.stringify(fakeUploader.lastSend.publication), "{}")
+            fakeUploader.busy = false
+            dialog.sending = false
+            dialog.close()
+            dialog.openTrack("123", "Track", "Artist", "")
+            compare(dialog.restoreMode, false)
+            compare(input.visible, false)
+            compare(button.text, "Send")
+            compare(url.text, "")
+            tryCompare(button, "enabled", true)
+            dialog.close()
+            dialog.openRestore("456", "Context title", "Context artist", "", {title: "Context title"})
+            compare(dialog.restoreMode, true)
+            compare(dialog.trackId, "456")
+            compare(input.text, "456")
+            compare(findChild(dialog, "sendTitle").text, "Context title")
+            compare(findChild(dialog, "sendArtist").text, "Context artist")
+            compare(button.enabled, false)
+            dialog.close()
+            fakeUploader.metadata = saved
         }
         function test_sendReplacementDuration_data() {
             return [

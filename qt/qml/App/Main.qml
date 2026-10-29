@@ -83,6 +83,19 @@ ApplicationWindow {
     property string selectedId: ""
     property var expanded: ({})
     property var menuTrack: ({})
+    property var pendingAnalysisTrack: null
+    function analyzeLibraryTrack(track) {
+        pendingAnalysisTrack = Object.assign({}, track)
+        rightPage = 2
+        launchPendingAnalysis()
+    }
+    function launchPendingAnalysis() {
+        if (!pendingAnalysisTrack || !censorLoader.item) return
+        const track = pendingAnalysisTrack
+        pendingAnalysisTrack = null
+        const error = censorLoader.item.analyzeTrack(track)
+        if (error) notify(error)
+    }
     property bool menuFullLyrics: false
     property bool menuFromPlayer: false
     property var toastQueue: []
@@ -257,6 +270,30 @@ ApplicationWindow {
             green: true
             enabled: appUi.player.enabled && !appUi.player.busy
             onTriggered: appUi.player.playTrack(appUi.menuTrack.id)
+        }
+        SiteMenuItem {
+            objectName: "restoreTrackEntry"
+            text: "Restore"
+            glyph: "undo-2"
+            accented: true
+            accentColor: "#3b82f6"
+            accentBackground: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.12)
+            visible: !appUi.menuFromPlayer && appUi.menuTrack.available === false
+            enabled: !!appUi.uploader && !appUi.uploader.busy && String(appUi.menuTrack.id || "").length > 0
+            onTriggered: sendDialog.openRestore(appUi.menuTrack.id, appUi.menuTrack.title,
+                                                appUi.menuTrack.artist, appUi.menuTrack.cover || "", appUi.menuTrack)
+        }
+        SiteMenuItem {
+            objectName: "analyzeTrackEntry"
+            text: "Analyze"
+            glyph: "search"
+            accentColor: appUi.accent
+            accentBackground: appUi.accentBg
+            textColor: appUi.ink
+            mutedColor: appUi.muted
+            visible: !appUi.menuFromPlayer
+            enabled: appUi.privileged && !appUi.backendBridge.censorBusy
+            onTriggered: appUi.analyzeLibraryTrack(appUi.menuTrack)
         }
         SiteMenuSeparator {
             borderColor: appUi.borderColor
@@ -729,8 +766,79 @@ ApplicationWindow {
         accentBorder: appUi.accentBorder
         closeButtonObjectName: "closeSettingsButton"
         closeButtonAccessibleName: "Close settings"
-        contentItem: ColumnLayout {
-            spacing: 8
+        onOpened: appUi.backendBridge.setSpotifySettingsVisible(true)
+        onClosed: appUi.backendBridge.setSpotifySettingsVisible(false)
+        contentItem: ScrollView {
+            id: settingsScroll
+            clip: true
+            implicitHeight: Math.min(settingsBody.implicitHeight, appUi.height - 140)
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ColumnLayout {
+                id: settingsBody
+                width: settingsScroll.availableWidth
+                spacing: 8
+            SiteSettingsCard {
+                objectName: "spotifySettingsCard"
+                Layout.fillWidth: true
+                id: spotifyCard
+                readonly property color brandGreen: "#1ed760"
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Image {
+                        objectName: "spotifyBrandLogo"
+                        Layout.preferredWidth: 32
+                        Layout.preferredHeight: 32
+                        source: "qrc:/assets/spotify-dark.svg"
+                        sourceSize: Qt.size(32, 32)
+                        fillMode: Image.PreserveAspectFit
+                        Accessible.ignored: true
+                    }
+                    Label {
+                        text: "Spotify"
+                        color: appUi.ink
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    SiteButton {
+                        objectName: "spotifyConnectButton"
+                        readonly property bool connected: appUi.backendBridge.spotifyState.connected === true
+                        text: connected ? "Disconnect" : "Connect"
+                        implicitHeight: 36
+                        leftPadding: 20
+                        rightPadding: 20
+                        cornerRadius: height / 2
+                        textColor: "#000000"
+                        hoverTextColor: textColor
+                        surfaceColor: connected ? appUi.ignoredColor : spotifyCard.brandGreen
+                        hoverColor: down ? Qt.darker(surfaceColor, 1.15) : Qt.lighter(surfaceColor, 1.08)
+                        borderColor: "transparent"
+                        hoverBorderColor: "transparent"
+                        accentBorder: "transparent"
+                        loading: appUi.backendBridge.spotifyActionBusy
+                                 || appUi.backendBridge.spotifyState.connected === undefined
+                        onClicked: {
+                            if (connected) appUi.backendBridge.disconnectSpotify();
+                            else appUi.backendBridge.connectSpotify();
+                        }
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: !!text
+                    text: appUi.backendBridge.spotifyState.error || ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: appUi.ignoredColor
+                    font.family: "DDetector Nunito"
+                    font.pixelSize: 14
+                    font.weight: Font.Medium
+                }
+
+            }
             SiteSettingsCard {
                 Layout.fillWidth: true
                 title: "Git repository"
@@ -886,6 +994,7 @@ ApplicationWindow {
                     checked: appUi.config.approveSoundEnabled
                     onToggled: appUi.config.approveSoundEnabled = checked
                 }
+            }
             }
         }
     }
@@ -1102,7 +1211,9 @@ ApplicationWindow {
                 }
             }
             Loader {
+                id: censorLoader
                 objectName: "censorDetectorLoader"
+                onLoaded: appUi.launchPendingAnalysis()
                 property bool visited: false
                 onVisibleChanged: if (visible) visited = true
                 anchors.left: parent.left
@@ -1407,7 +1518,9 @@ ApplicationWindow {
                     Text { textFormat: Text.PlainText; text: playerPanel.timeLabel(appUi.player.duration); color: "#888888"; font.pixelSize: 11 }
                 }
             }
+
             PlayerButton {
+                id: sendButton
                 anchors.right: volumeButton.left
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
@@ -1415,7 +1528,7 @@ ApplicationWindow {
                 Accessible.name: "Send"
                 SiteToolTip { text: "Send track" }
                 enabled: appUi.player.trackId !== "" && (!!appUi.uploader) && !appUi.uploader.busy
-                onClicked: sendDialog.openTrack(appUi.player.trackId, appUi.player.title, appUi.player.artist, appUi.player.cover ? "image://trackcovers/" + encodeURIComponent(appUi.player.cover) : "", appUi.player.metadata)
+                onClicked: sendDialog.openTrack(appUi.player.trackId, appUi.player.title, appUi.player.artist, appUi.player.cover || "", appUi.player.metadata)
             }
             PlayerButton {
                 id: volumeButton
@@ -1606,7 +1719,9 @@ ApplicationWindow {
                     text: appUi.state.error || ""
                     visible: text !== "" && !text.startsWith("Lyrics acquisition failed")
                     color: appUi.ignoredColor
-                    font.pixelSize: 13
+                    font.family: "DDetector Nunito"
+                    font.pixelSize: 14
+                    font.weight: Font.Medium
                 }
             }
 

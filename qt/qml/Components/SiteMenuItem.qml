@@ -8,6 +8,7 @@ MenuItem {
     property string glyph: ""
     property bool danger: false
     property bool green: false
+    property bool accented: false
     property color textColor: "#f0f0f4"
     property color mutedColor: "#999999"
     property color accentColor: "#2bfef5"
@@ -32,14 +33,14 @@ MenuItem {
             Layout.preferredWidth: 16
             Layout.preferredHeight: 16
             glyph: control.glyph
-            tintColor: control.green ? control.greenColor : control.danger ? control.dangerColor : control.highlighted ? control.accentColor : control.mutedColor
+            tintColor: control.green ? control.greenColor : control.danger ? control.dangerColor : (control.highlighted || control.accented) ? control.accentColor : control.mutedColor
         }
         Text {
             textFormat: Text.PlainText
             Layout.fillWidth: true
             text: control.text
             font: control.font
-            color: control.green ? control.greenColor : control.danger ? control.dangerColor : control.highlighted ? control.accentColor : control.textColor
+            color: control.green ? control.greenColor : control.danger ? control.dangerColor : (control.highlighted || control.accented) ? control.accentColor : control.textColor
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }

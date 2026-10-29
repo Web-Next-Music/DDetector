@@ -6,13 +6,31 @@ import (
 	"time"
 )
 
+var ErrCensorBusy = errors.New("Censor processing is busy; wait for the active operation to finish and retry")
+
+type censorRuntimeFailure struct{ message string }
+
+func (e *censorRuntimeFailure) Error() string { return e.message }
+func (e *censorRuntimeFailure) Unwrap() error { return ErrCensorUnavailable }
+
+// Caller holds rt.mu. Runtime failures must remain blocking, but are not stale selections.
+func (rt *censorRuntime) commandAdmissionErrorLocked() error {
+	if rt.failure != "" {
+		return &censorRuntimeFailure{message: rt.failure}
+	}
+	if rt.commandActive {
+		return ErrCensorBusy
+	}
+	return nil
+}
+
 // Heavy commands outlive the HTTP request, but never the authenticated runtime.
 // This keeps full-audio comparison inside the existing Qt/server request deadlines.
 func (rt *censorRuntime) startCommand(id string, work func(context.Context, CensorIdentity) error) error {
 	rt.mu.Lock()
-	if rt.commandActive || rt.failure != "" {
+	if err := rt.commandAdmissionErrorLocked(); err != nil {
 		rt.mu.Unlock()
-		return ErrCensorConflict
+		return err
 	}
 	ctx, cancel := context.WithTimeout(rt.server.lifecycle, 30*time.Minute)
 	rt.commandActive = true

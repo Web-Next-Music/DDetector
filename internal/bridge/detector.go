@@ -20,12 +20,20 @@ type Line struct {
 	IsDrug bool    `json:"isDrug"`
 	Parts  []Part  `json:"parts"`
 }
+type TrackArtist struct {
+	ID   yandexID `json:"id,omitempty"`
+	Name string   `json:"name"`
+}
 type Track struct {
-	ID      int64   `json:"id"`
-	Title   string  `json:"title"`
-	Artist  string  `json:"artist"`
-	Cover   *string `json:"cover"`
-	AddedAt *string `json:"added_at"`
+	Artists []TrackArtist `json:"artists,omitempty"`
+	ID      int64         `json:"id"`
+	Title   string        `json:"title"`
+	Artist  string        `json:"artist"`
+	ISRC    string        `json:"isrc,omitempty"`
+	Cover   *string       `json:"cover"`
+	AddedAt *string       `json:"added_at"`
+	// Nil means Yandex availability is unknown, including legacy cached tracks.
+	Available *bool `json:"available,omitempty"`
 }
 type Result struct {
 	Track

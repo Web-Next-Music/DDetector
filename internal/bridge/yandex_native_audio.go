@@ -34,6 +34,15 @@ func (t nativeYandexTrack) artist() string {
 	return strings.Join(names, ", ")
 }
 func (c *yandexClient) nativeTrack(ctx context.Context, id int64) (nativeYandexTrack, error) {
+	t, err := c.nativeTrackMetadata(ctx, id)
+	if err == nil && t.Available != nil && !*t.Available {
+		return nativeYandexTrack{}, errors.New("Yandex track is unavailable for this account")
+	}
+	return t, err
+}
+
+// Metadata remains useful for discovery even when the account cannot play audio.
+func (c *yandexClient) nativeTrackMetadata(ctx context.Context, id int64) (nativeYandexTrack, error) {
 	var tracks []nativeYandexTrack
 	if id <= 0 {
 		return nativeYandexTrack{}, ErrCensorNotFound
@@ -43,9 +52,7 @@ func (c *yandexClient) nativeTrack(ctx context.Context, id int64) (nativeYandexT
 	}
 	for _, t := range tracks {
 		if string(t.ID) == strconv.FormatInt(id, 10) {
-			if t.Available != nil && !*t.Available {
-				return nativeYandexTrack{}, errors.New("Yandex track is unavailable for this account")
-			}
+
 			return t, nil
 		}
 	}

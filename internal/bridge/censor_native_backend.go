@@ -153,7 +153,8 @@ func (rt *censorRuntime) resolveRequest(ctx context.Context, i CensorIdentity, j
 		if e != nil {
 			return e
 		}
-		if r.ID != j.Request.ID || r.TrackID != j.Request.TrackID || validateCensorRequests([]CensorRequest{r}) != nil {
+		metadataOnly := rt.metadataOnlyRequest(r)
+		if r.ID != j.Request.ID || r.TrackID != j.Request.TrackID || (!metadataOnly && validateCensorRequests([]CensorRequest{r}) != nil) {
 			return ErrCensorConflict
 		}
 		j.Request = r
@@ -241,13 +242,41 @@ func (b *nativeBackend) Request(ctx context.Context, i CensorIdentity, opaque st
 	if !found {
 		return CensorRequest{}, ErrCensorNotFound
 	}
+	// Only the current account's authorized library snapshot may bypass the
+	// provider; persisted jobs and caller input are not metadata authorities.
+	s := rt.server
+	s.mu.Lock()
+	if s.censorRuntime != rt || s.session == nil || s.session.User.ID != i.UserID || s.closing || s.logoutPending > 0 {
+		s.mu.Unlock()
+		return CensorRequest{}, ErrCensorDenied
+	}
+	var cached CensorRequest
+	if s.state.HasAccess && s.state.User != nil && s.state.User.ID == i.UserID {
+		for _, t := range s.state.Tracks {
+			if t.ID == id && t.Available != nil && !*t.Available && strings.TrimSpace(t.Title) != "" && strings.TrimSpace(t.Artist) != "" {
+				cached = CensorRequest{ID: opaque, TrackID: id, Origin: "manual", Title: t.Title, Artist: t.Artist, OriginalUnavailable: true}
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if rt.metadataOnlyRequest(cached) {
+		return cached, nil
+	}
 	provider, err := b.yandex()
 	if err != nil {
 		return CensorRequest{}, err
 	}
-	r, err := b.requestAudio(ctx, provider, id)
+	t, err := provider.nativeTrackMetadata(ctx, id)
 	if err != nil {
 		return CensorRequest{}, err
+	}
+	r := CensorRequest{TrackID: id, Title: t.Title, Artist: t.artist(), OriginalUnavailable: t.Available != nil && !*t.Available}
+	if !r.OriginalUnavailable {
+		r.OriginalURL, err = provider.nativeFullMP3(ctx, id)
+		if err != nil {
+			return CensorRequest{}, err
+		}
 	}
 	if !b.currentAccount(i) {
 		return CensorRequest{}, ErrCensorDenied
@@ -290,9 +319,13 @@ func (b *nativeBackend) checkTrack(ctx context.Context, i CensorIdentity, trackI
 			break
 		}
 	}
-	if rt.running || rt.commandActive || rt.failure != "" {
+	if err := rt.commandAdmissionErrorLocked(); err != nil {
 		rt.mu.Unlock()
-		return ErrCensorConflict
+		return err
+	}
+	if rt.running {
+		rt.mu.Unlock()
+		return ErrCensorBusy
 	}
 	if index == -1 && len(rt.disk.Jobs) >= 1000 {
 		rt.mu.Unlock()

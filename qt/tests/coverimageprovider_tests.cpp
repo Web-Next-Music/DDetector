@@ -149,7 +149,14 @@ private slots:
     void safeUrls() {
         QVERIFY(CoverImageProvider::isSafeUrl(QUrl("https://avatars.mds.yandex.net/get-music/123/cover/200x200")));
         QVERIFY(CoverImageProvider::isSafeUrl(QUrl("https://avatars.yandex.net/get-music-content/123/cover/200x200")));
+        QVERIFY(CoverImageProvider::isSafeUrl(QUrl("https://i.scdn.co/image/cover123")));
         for (const QString &url : {
+                 QString("https://i.scdn.co.evil.test/image/cover123"),
+                 QString("https://i.scdn.co/image/"),
+                 QString("https://i.scdn.co/other/cover123"),
+                 QString("https://api.spotify.com/image/cover123"),
+                 QString("http://i.scdn.co/image/cover123"),
+                 QString("https://secret@i.scdn.co/image/cover123"),
                  QString("http://avatars.mds.yandex.net/get-music/1"),
                  QString("https://token@avatars.mds.yandex.net/get-music/1"),
                  QString("https://avatars.mds.yandex.net:444/get-music/1"),

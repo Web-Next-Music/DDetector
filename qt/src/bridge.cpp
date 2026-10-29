@@ -131,6 +131,12 @@ Bridge::Bridge(const QUrl &base, const QByteArray &key, QObject *parent, Config 
         }
     });
 
+    m_spotifyPoll.setSingleShot(true);
+    connect(&m_spotifyPoll, &QTimer::timeout, this, [this] {
+        if (m_spotifyAuthorization.isValid() && m_spotifyAuthorization.elapsed() >= 10 * 60 * 1000)
+            m_spotifyAuthorization.invalidate();
+        if (m_spotifySettingsVisible || m_spotifyAuthorization.isValid()) refreshSpotify();
+    });
     m_yandexRetry.setSingleShot(true);
     connect(&m_yandexRetry, &QTimer::timeout, this, &Bridge::syncYandexToken);
     connect(&m_poll, &QTimer::timeout, this, [this] { request("/api/state", {}, true); });
@@ -358,6 +364,13 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QJsonParseError parse;
         const auto doc = QJsonDocument::fromJson(transfer->data, &parse);
+        if (get && status == 409 && !transfer->oversized && parse.error == QJsonParseError::NoError
+            && doc.isObject() && doc.object().value("error").toString() == "another operation is running") {
+            // Preserve snapshots during operation-lock contention; the next normal poll
+            // retries state and any still-needed detail using the current generations.
+            reply->deleteLater();
+            return;
+        }
         if (!get && status == 409 && doc.object().value("error").toString().contains("operation") && busyRetries < 8) {
             reply->deleteLater();
             QTimer::singleShot(150, this, [this, action, args, busyRetries] { censorRequest(action, args, busyRetries + 1); });
@@ -433,6 +446,109 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
         if (ok && action != "native_configure") configureNativeRepository();
         reply->deleteLater();
         if (!get || generation != m_censorGeneration) censorRequest();
+    });
+}
+
+void Bridge::connectSpotify() { spotifyRequest("connect"); }
+
+void Bridge::disconnectSpotify() { spotifyRequest("disconnect"); }
+void Bridge::refreshSpotify() { spotifyRequest("state"); }
+
+void Bridge::setSpotifySettingsVisible(bool visible) {
+    if (m_spotifySettingsVisible == visible) return;
+    m_spotifySettingsVisible = visible;
+    if (visible) refreshSpotify();
+    else scheduleSpotifyRefresh();
+}
+
+void Bridge::scheduleSpotifyRefresh() {
+    m_spotifyPoll.stop();
+    constexpr int authorizationLifetimeMs = 10 * 60 * 1000;
+    if (m_spotifyAuthorization.isValid() && m_spotifyAuthorization.elapsed() >= authorizationLifetimeMs)
+        m_spotifyAuthorization.invalidate();
+    if (m_spotifyBusy || (!m_spotifySettingsVisible && !m_spotifyAuthorization.isValid())) return;
+    int delay = m_spotifyPollDelayMs;
+    if (m_spotifyAuthorization.isValid())
+        delay = qMin(delay, int(authorizationLifetimeMs - m_spotifyAuthorization.elapsed()));
+    m_spotifyPoll.start(qMax(1, delay));
+}
+
+void Bridge::spotifyRequest(const QString &action, const QJsonObject &body) {
+    // Never route browser callbacks or arbitrary paths through the bearer bridge.
+    if (m_spotifyBusy || (action != "state" && action != "connect" && action != "disconnect")) return;
+    m_spotifyPoll.stop();
+    const bool get = action == "state";
+    m_spotifyBusy = true;
+    m_spotifyActionBusy = !get;
+    emit spotifyBusyChanged();
+    QNetworkRequest req(m_base.resolved(QUrl("/api/spotify/" + action)));
+    req.setRawHeader("Authorization", "Bearer " + m_key);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    const int deadlineMs = get ? m_requestDeadlineMs : m_postDeadlineMs;
+    req.setTransferTimeout(deadlineMs);
+    auto reply = get ? m_network.get(req) : m_network.post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    constexpr qint64 limit = 64 * 1024;
+    reply->setReadBufferSize(limit + 1);
+    const auto bytes = std::make_shared<QByteArray>();
+    auto drain = [reply, bytes] {
+        if (reply->isOpen()) bytes->append(reply->read(qMax(qint64(0), limit + 1 - bytes->size())));
+        if (bytes->size() > limit || reply->header(QNetworkRequest::ContentLengthHeader).toLongLong() > limit)
+            reply->abort();
+    };
+    connect(reply, &QIODevice::readyRead, reply, drain);
+    auto deadline = new QTimer(reply);
+    deadline->setSingleShot(true);
+    connect(deadline, &QTimer::timeout, reply, &QNetworkReply::abort);
+    deadline->start(deadlineMs);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, bytes, drain, deadline, action, get] {
+        deadline->stop();
+        drain();
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(*bytes, &parseError);
+        const auto object = document.object();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const auto previousState = m_spotifyState;
+        QString error;
+        if (reply->error() != QNetworkReply::NoError || status != 200)
+            error = QStringLiteral("Spotify request failed (HTTP %1). Please try again.").arg(status);
+        else if (bytes->size() > 64 * 1024 || parseError.error != QJsonParseError::NoError || !document.isObject())
+            error = "Invalid Spotify response";
+        else if (get) {
+            if (!object.value("configured").isBool() || !object.value("connected").isBool()
+                || !object.value("client_id").isString() || !object.value("redirect_uri").isString()
+                || !object.value("error").isString()) error = "Invalid Spotify state response";
+            else {
+                // Expose only public state, even if a future backend adds credentials.
+                for (const auto &key : {"configured", "connected", "client_id", "redirect_uri", "error"})
+                    m_spotifyState.insert(key, object.value(key));
+                if (object.value("connected").toBool()) m_spotifyAuthorization.invalidate();
+            }
+        } else if (action == "connect") {
+            const QUrl url(object.value("authorization_url").toString(), QUrl::StrictMode);
+            if (!url.isValid() || url.scheme() != "https" || url.host() != "accounts.spotify.com"
+                || !url.userInfo().isEmpty() || (url.port(-1) != -1 && url.port() != 443)
+                || url.path() != "/authorize" || url.hasFragment() || !url.hasQuery())
+                error = "Invalid Spotify authorization URL";
+            else if (!QDesktopServices::openUrl(url)) error = "Unable to open Spotify in the system browser";
+            else {
+                m_spotifyAuthorization.start();
+                emit toast("Complete Spotify authorization in your browser");
+            }
+        } else if (!object.value("ok").toBool()) error = "Invalid Spotify disconnect response";
+        else m_spotifyAuthorization.invalidate();
+        if (!error.isEmpty()) {
+            m_spotifyState.insert("error", error);
+            if (!get) emit toast(error);
+        }
+        if (m_spotifyState != previousState) emit spotifyStateChanged();
+        m_spotifyPollDelayMs = error.isEmpty() ? 2000 : qMin(m_spotifyPollDelayMs * 2, 30000);
+        m_spotifyBusy = false;
+        m_spotifyActionBusy = false;
+        emit spotifyBusyChanged();
+        reply->deleteLater();
+        if (!get && error.isEmpty()) refreshSpotify();
+        else scheduleSpotifyRefresh();
     });
 }
 
@@ -635,7 +751,7 @@ void Bridge::acceptState(QJsonObject state) {
             if (id.isEmpty() || publicIds.contains(id)) continue;
             publicIds.insert(id);
             QJsonObject publicTrack;
-            for (const auto &name : {"id", "title", "artist", "cover", "added_at", "status", "ignored", "lyrics", "lines", "allLines"})
+            for (const auto &name : {"id", "title", "artist", "artists", "cover", "available", "added_at", "status", "ignored", "lyrics", "lines", "allLines"})
                 if (track.contains(name)) publicTrack.insert(name, track.value(name));
             publicTracks.append(publicTrack);
         }

@@ -11,6 +11,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#ifdef UPLOADER_QML_INTEGRATION
+#include <QQmlEngine>
+#include <QQmlComponent>
+#include <QQuickWindow>
+#include <QQuickItem>
+#endif
 
 class UploaderTests final : public QObject {
     Q_OBJECT
@@ -42,15 +48,241 @@ class UploaderTests final : public QObject {
         git(root, {"add", "--", "tracks/" + id});
         git(root, {"commit", "-qm", "fixture audio"});
     }
+    static QByteArray defaultReadme() {
+        return QString("# Tracks\n## Автоматически подменяемые треки\n<table><tbody>\n</tbody></table>\n").toUtf8();
+    }
     static void init(const QString &root) {
         git(root, {"init", "-q"});
         git(root, {"config", "user.name", "Uploader Test"});
         git(root, {"config", "user.email", "uploader@example.invalid"});
-        put(root + "/README.md", "# Tracks\n");
+        put(root + "/README.md", defaultReadme());
         git(root, {"add", "--", "README.md"});
         git(root, {"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-qm", "initial"});
     }
 private slots:
+#ifdef UPLOADER_QML_INTEGRATION
+    void sendDialogPersistsArtwork_data() {
+        QTest::addColumn<bool>("restore");
+        QTest::addColumn<bool>("preview");
+        QTest::addColumn<bool>("noCover");
+        QTest::newRow("restore-async") << true << false << false;
+        QTest::newRow("restore-preview") << true << true << false;
+        QTest::newRow("send-preview") << false << true << false;
+        QTest::newRow("restore-no-cover") << true << false << true;
+    }
+    void sendDialogPersistsArtwork() {
+        QFETCH(bool, restore);
+        QFETCH(bool, preview);
+        QFETCH(bool, noCover);
+        QTemporaryDir dir; init(dir.path());
+        localAudio(dir.path(), "36045842");
+        Uploader uploader(dir.path());
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/SendDialog.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        QScopedPointer<QObject> dialog(component.createWithInitialProperties({{"uploadBackend", QVariant::fromValue(&uploader)}}));
+        QVERIFY2(dialog, qPrintable(component.errorString()));
+        dialog->setProperty("parent", QVariant::fromValue(window.contentItem()));
+        window.show();
+        const QString cover = "https://i.scdn.co/image/fixture";
+        const QVariantMap original{{"artists", QVariantList{QVariantMap{{"id", 4622996}, {"name", QString::fromUtf8("Овсянкин")}}}}};
+        const QString source = noCover ? QString() : preview ? "image://cover/" + QString::fromLatin1(QUrl::toPercentEncoding(cover)) : cover;
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                socket->readAll();
+                const auto body = tinyMp3();
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                socket->disconnectFromHost();
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+        const QString audioUrl = "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio";
+        auto invoke = [&](const char *method) {
+            if (restore) return QMetaObject::invokeMethod(dialog.data(), method,
+                Q_ARG(QVariant, "36045842"), Q_ARG(QVariant, QString::fromUtf8("Отсиди")),
+                Q_ARG(QVariant, QString::fromUtf8("Овсянкин")), Q_ARG(QVariant, source),
+                Q_ARG(QVariant, original), Q_ARG(QVariant, audioUrl));
+            return QMetaObject::invokeMethod(dialog.data(), method,
+                Q_ARG(QVariant, "36045842"), Q_ARG(QVariant, QString::fromUtf8("Отсиди")),
+                Q_ARG(QVariant, QString::fromUtf8("Овсянкин")), Q_ARG(QVariant, source), Q_ARG(QVariant, original));
+        };
+        QVERIFY(invoke(restore ? "openRestore" : "openTrack"));
+        if (restore) {
+            auto url = dialog->findChild<QObject *>("sendUrl"); QVERIFY(url);
+            url->setProperty("text", audioUrl);
+        }
+        QVERIFY(!dialog->findChild<QObject *>("editMetadata")->property("checked").toBool());
+        QVERIFY(dialog->property("canSend").toBool());
+        auto button = dialog->findChild<QObject *>("sendTrackButton"); QVERIFY(button);
+        QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto sources = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray();
+        QVERIFY(!sources.isEmpty());
+        const auto saved = sources[0].toObject()["tracks"].toObject()["36045842"].toObject()["coverUri"].toString();
+        QCOMPARE(saved, noCover ? QString() : cover.mid(8));
+        QCOMPARE(get(dir.path() + "/README.md").contains(cover.toUtf8()), !noCover);
+    }
+#endif
+    void restoreInsertion_data() {
+        QTest::addColumn<bool>("restore");
+        QTest::addColumn<QByteArray>("insertion");
+        QTest::addColumn<QVariant>("artistId");
+        QTest::newRow("restore-null-numeric-id") << true << QByteArray("\"insertionIndex\":null,") << QVariant(4622996);
+        QTest::newRow("restore-absent-string-id") << true << QByteArray() << QVariant("4622996");
+        QTest::newRow("restore-edited-id") << true << QByteArray() << QVariant("4622997");
+        QTest::newRow("restore-numeric-insertion") << true << QByteArray("\"insertionIndex\":-5,") << QVariant(4622996.0);
+        QTest::newRow("ordinary-send-null") << false << QByteArray("\"insertionIndex\":null,") << QVariant("4622996");
+        QTest::newRow("ordinary-send-absent") << false << QByteArray() << QVariant("4622996");
+        QTest::newRow("ordinary-send-numeric") << false << QByteArray("\"insertionIndex\":-5,") << QVariant("4622996");
+    }
+    void restoreInsertion() {
+        QFETCH(bool, restore);
+        QFETCH(QByteArray, insertion);
+        QFETCH(QVariant, artistId);
+        QTemporaryDir dir; init(dir.path());
+        put(dir.path() + "/list_v2.json", QByteArray(R"({"sources":[{"supportedVersions":">=2.0.0","tracks":{"36045842":{"__fckCensor":{)")
+            + insertion + R"("keep":true}}}}]})");
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "metadata fixture"});
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto body = tinyMp3();
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, body] {
+                socket->readAll();
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                socket->disconnectFromHost();
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+        // Restore's projected API baseline (metadata editing off), matching the reported track.
+        QVariantMap patch{{"title", QString::fromUtf8("Отсиди")},
+            {"artists", QVariantList{
+                QVariantMap{{"id", artistId}, {"name", QString::fromUtf8("Овсянкин")}},
+                QVariantMap{{"id", "77"}, {"name", "Second"}}}}};
+        Uploader uploader(dir.path());
+        uploader.send("36045842", "Fixture", "Fixture artist",
+            "http://127.0.0.1:" + QString::number(server.serverPort()) + "/audio", patch, {}, restore);
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto source = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray()[0].toObject();
+        const auto track = source["tracks"].toObject()["36045842"].toObject();
+        QCOMPARE(track["title"].toString(), QString::fromUtf8("Отсиди"));
+        const auto options = track["__fckCensor"].toObject();
+        QCOMPARE(options["keep"].toBool(), true);
+        const bool numeric = insertion.contains("-5");
+                QCOMPARE(options.contains("insertionIndex"), !restore || numeric);
+                if (numeric) QCOMPARE(options["insertionIndex"].toInt(), -5);
+                else if (!restore) QVERIFY(options["insertionIndex"].isNull());
+                QVERIFY(!track.contains("coverUri"));
+        const auto artist = track["artists"].toArray()[0].toObject();
+        QCOMPARE(artist["id"], QJsonValue::fromVariant(artistId));
+        QCOMPARE(artist["entity"].toString(), restore ? QString("artist") : QString());
+        QCOMPARE(track["artists"].toArray().size(), 2);
+        QCOMPARE(track["artists"].toArray()[1].toObject()["id"].toString(), QString("77"));
+        QVERIFY(get(dir.path() + "/README.md").contains("https://music.yandex.ru/artist/" + artistId.toString().toUtf8()));
+        if (restore) QVERIFY(track["durationMs"].toInteger() > 0);
+    }
+    void artistValidation_data() {
+        QTest::addColumn<QVariant>("secondId");
+        QTest::addColumn<QString>("error");
+        QTest::newRow("numeric-string-duplicate") << QVariant("4622996") << QString("Duplicate artist ID 4622996");
+        QTest::newRow("numeric-duplicate") << QVariant(4622996.0) << QString("Duplicate artist ID 4622996");
+        QTest::newRow("invalid") << QVariant("bad id") << QString("Invalid artist ID for Second");
+        QTest::newRow("fractional") << QVariant(7.5) << QString("Invalid artist ID for Second");
+        QTest::newRow("empty") << QVariant("") << QString("Yandex artist IDs are unavailable");
+    }
+    void artistValidation() {
+        QFETCH(QVariant, secondId);
+        QFETCH(QString, error);
+        QTemporaryDir dir; init(dir.path());
+        Uploader uploader(dir.path());
+        uploader.send("36045842", "Отсиди", "Овсянкин", "https://example.test/audio.mp3",
+            {{"title", "Отсиди"}, {"artists", QVariantList{
+                QVariantMap{{"id", 4622996}, {"name", "Овсянкин"}},
+                QVariantMap{{"id", secondId}, {"name", "Second"}}}}}, {}, true);
+        QVERIFY2(uploader.error().contains(error), qPrintable(uploader.error()));
+        QVERIFY(!uploader.busy());
+        QVERIFY(git(dir.path(), {"status", "--porcelain"}).isEmpty());
+    }
+    void restoreRequiresIdentity() {
+        QTemporaryDir dir; init(dir.path());
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        Uploader uploader(dir.path());
+        uploader.send("36045842", "Label", "Name", "https://example.org/audio", {}, {}, true);
+        QVERIFY(uploader.error().contains("Reopen Restore to retry the API"));
+        QVERIFY(!uploader.busy());
+        QVariantMap patch{{"title", "Fixture"}, {"coverUri", "example.org/cover"},
+            {"artists", QVariantList{QVariantMap{{"id", "spotify-id"}, {"name", "Artist"}}}}};
+        uploader.send("36045842", "Label", "Name", "https://example.org/audio", patch, {}, true);
+        QVERIFY(uploader.error().contains("positive numeric Yandex artist IDs"));
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        QVERIFY(git(dir.path(), {"status", "--porcelain"}).isEmpty());
+    }
+    void sectionRouting_data() {
+        QTest::addColumn<QByteArray>("eol");
+        for (const auto &eol : {QByteArray("\n"), QByteArray("\r\n")})
+            QTest::newRow(eol.toHex().constData()) << eol;
+    }
+    void sectionRouting() {
+        QFETCH(QByteArray, eol);
+        QTemporaryDir dir; init(dir.path());
+        git(dir.path(), {"config", "core.autocrlf", "false"});
+        const auto table = [&eol](const QString &heading, const QByteArray &title) {
+            return "## " + heading.toUtf8() + eol + "<table>" + eol + "<tbody>" + eol
+                + "\t<tr><td>Before</td></tr>  " + eol
+                + "\t<tr><td>Unclosed row" + eol
+                + "\t<tr><td><a href=\"https://music.yandex.ru/track/123\">" + title + "</a></td></tr>" + eol
+                + "\t<tr><td>After</td></tr>" + eol + "</tbody>" + eol + "</table>" + eol;
+        };
+        const auto normal = table(QStringLiteral("Автоматически подменяемые треки"), "Normal");
+        const auto other = table(QStringLiteral("Other tracks"), "Other");
+        const QByteArray prefix = QByteArray::fromHex("efbbbf") + "# Catalog" + eol;
+        const QByteArray suffix = "## Other" + eol + "Untouched  ";
+        put(dir.path() + "/README.md", prefix + normal + other + suffix);
+        put(dir.path() + "/list_v2.json", R"({"sources":[]})");
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "routing fixture"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Changed", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto result = get(dir.path() + "/README.md");
+        QVERIFY(result.startsWith(prefix)); QVERIFY(result.endsWith(suffix));
+        QVERIFY(result.contains(other));
+        QCOMPARE(result.count(">Changed</a>"), 1);
+        QCOMPARE(result.count("\t<tr><td>Before</td></tr>  " + eol), 2);
+        QCOMPARE(result.count("\t<tr><td>After</td></tr>" + eol), 2);
+        QCOMPARE(result.count("\t<tr><td>Unclosed row" + eol), 2);
+        if (eol == "\r\n") QVERIFY(!QByteArray(result).replace("\r\n", "").contains('\n'));
+    }
+    void missingSection_data() {
+        QTest::addColumn<bool>("malformed");
+        QTest::newRow("absent") << false;
+        QTest::newRow("malformed") << true;
+    }
+    void missingSection() {
+        QFETCH(bool, malformed);
+        QTemporaryDir dir; init(dir.path());
+        QByteArray before = "# Catalog\r\n";
+        if (malformed) before += QString("## Автоматически подменяемые треки\r\n<table><tr><td>Broken</td></tr></table>\r\n").toUtf8();
+        before += "## Other\r\n<table><tbody></tbody></table>\r\n";
+        const QByteArray list = R"({"sources":[]})";
+        put(dir.path() + "/README.md", before); put(dir.path() + "/list_v2.json", list);
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "missing section fixture"});
+        const auto head = git(dir.path(), {"rev-parse", "HEAD"});
+        Uploader uploader(dir.path());
+        uploader.send("123", "Song", "Artist");
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QVERIFY(uploader.error().contains("missing or malformed table"));
+        QCOMPARE(get(dir.path() + "/README.md"), before);
+        QCOMPARE(get(dir.path() + "/list_v2.json"), list);
+        QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
+        QVERIFY(git(dir.path(), {"status", "--porcelain"}).isEmpty());
+    }
     void readmeTable_data() {
         QTest::addColumn<QByteArray>("eol");
         QTest::addColumn<bool>("metadata");
@@ -103,6 +335,61 @@ private slots:
         QCOMPARE(uploader.action(), "skipped");
         QCOMPARE(get(dir.path() + "/README.md"), changed);
     }
+    void rowFormatting_data() {
+        QTest::addColumn<QByteArray>("unit");
+        QTest::addColumn<QByteArray>("eol");
+        QTest::addColumn<bool>("cover");
+        QTest::addColumn<bool>("emptyTable");
+        for (const auto &unit : {QByteArray("\t"), QByteArray("  "), QByteArray("    ")})
+            for (const auto &eol : {QByteArray("\n"), QByteArray("\r\n")})
+                for (bool cover : {false, true})
+                    for (bool emptyTable : {false, true})
+                        QTest::newRow((unit.toHex() + "-" + eol.toHex() + (cover ? "-cover" : "-empty-cover")
+                            + (emptyTable ? "-empty-table" : "-rows")).constData()) << unit << eol << cover << emptyTable;
+    }
+    void rowFormatting() {
+        QFETCH(QByteArray, unit); QFETCH(QByteArray, eol); QFETCH(bool, cover); QFETCH(bool, emptyTable);
+        QTemporaryDir dir; init(dir.path());
+        git(dir.path(), {"config", "core.autocrlf", "false"});
+        const QByteArray existing = unit.repeated(2) + "<tr>" + eol + unit.repeated(3)
+            + "<td>Keep</td>" + eol + unit.repeated(2) + "</tr>" + eol;
+        const QByteArray prefix = QByteArray::fromHex("efbbbf") + "# Catalog" + eol
+            + QString("## Автоматически подменяемые треки").toUtf8() + eol
+            + "<table>" + eol + unit + "<tbody>" + eol + (emptyTable ? QByteArray() : existing);
+        const QByteArray suffix = unit + "</tbody>" + eol + "</table>" + eol
+            + "## Other" + eol + "Do not change  " + eol;
+        put(dir.path() + "/README.md", prefix + suffix);
+        put(dir.path() + "/list_v2.json", R"({"sources":[]})");
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "formatting fixture"});
+        Uploader uploader(dir.path());
+        const QVariantMap publication = cover ? QVariantMap{{"coverUri", "example.org/cover/%%"}} : QVariantMap();
+        const auto expectedRow = [&](const QByteArray &title) {
+            QByteArray row = unit.repeated(2) + "<tr>" + eol;
+            if (cover) row += unit.repeated(3) + "<td>" + eol + unit.repeated(4)
+                + "<img width=\"40px\" height=\"40px\" src=\"https://example.org/cover/100x100\" alt=\"" + title
+                + "\">" + eol + unit.repeated(3) + "</td>" + eol;
+            else row += unit.repeated(3) + "<td></td>" + eol;
+            row += unit.repeated(3) + "<td>" + eol + unit.repeated(4)
+                + "<a href=\"https://music.yandex.ru/track/36045842\">" + title + "</a>" + eol
+                + unit.repeated(3) + "</td>" + eol + unit.repeated(3) + "<td>" + eol
+                + unit.repeated(4) + "Artist without ID" + eol + unit.repeated(3) + "</td>" + eol
+                + unit.repeated(2) + "</tr>" + eol;
+            return row;
+        };
+        for (const auto &title : {QByteArray("First"), QByteArray("Changed")}) {
+            uploader.send("36045842", QString::fromUtf8(title), "Artist without ID", {},
+                          {{"title", QString::fromUtf8(title)}}, publication);
+            QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+            QCOMPARE(uploader.error(), QString());
+            const auto result = get(dir.path() + "/README.md");
+            const auto row = expectedRow(title);
+            QCOMPARE(result, prefix + row + suffix);
+            for (auto line : row.split('\n')) {
+                if (line.endsWith('\r')) line.chop(1);
+                QVERIFY(!line.endsWith(' ')); QVERIFY(!line.endsWith('\t'));
+            }
+        }
+    }
     void publicationMetadata() {
         QTemporaryDir dir; init(dir.path());
         put(dir.path() + "/README.md", QString("## Автоматически подменяемые треки\n<table>\n\t<tbody>\n\t</tbody>\n</table>\n").toUtf8());
@@ -129,6 +416,54 @@ private slots:
         QVERIFY(readme.contains("src=\"https://example.org/override/100x100\""));
         QVERIFY(readme.contains("href=\"https://music.yandex.ru/artist/42\">geoxantes</a>"));
         QCOMPARE(readme.count("https://music.yandex.ru/track/136797648"), 1);
+    }
+    void spotifyPersistedCover() {
+        QTemporaryDir dir; init(dir.path());
+        put(dir.path() + "/list_v2.json", R"({"sources":[]})");
+        git(dir.path(), {"add", "."}); git(dir.path(), {"commit", "-qm", "Spotify fixture"});
+        Uploader uploader(dir.path());
+        const QString cover = "https://i.scdn.co/image/ab67616d0000b273123abc";
+        uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {}, {{"coverUri", cover}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto readme = get(dir.path() + "/README.md");
+        QVERIFY(readme.contains("src=\"" + cover.toUtf8() + "\""));
+        QVERIFY(readme.contains(QStringLiteral("Отсиди").toUtf8()));
+        const auto persistedCover = [&] {
+            const auto list = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object();
+            for (const auto source : list.value("sources").toArray()) {
+                const auto track = source.toObject().value("tracks").toObject().value("36045842").toObject();
+                if (track.contains("coverUri")) return track.value("coverUri").toString();
+            }
+            return QString();
+        };
+        QCOMPARE(persistedCover(), cover.mid(8));
+        // Same canonical audio URL: a requested cover patch must not be skipped.
+        const QString replacement = "https://i.scdn.co/image/def456";
+        uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {}, {{"coverUri", replacement}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        QCOMPARE(uploader.action(), QString("updated"));
+        QCOMPARE(persistedCover(), replacement.mid(8));
+        const auto repeated = get(dir.path() + "/README.md");
+        QVERIFY(repeated.contains("src=\"" + replacement.toUtf8() + "\""));
+        QVERIFY(!repeated.contains(cover.toUtf8()));
+        QCOMPARE(repeated.count("https://music.yandex.ru/track/36045842"), 1);
+        // An explicit user override wins over the publication snapshot.
+        uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {},
+                      {{"coverUri", "avatars.yandex.net/cover/%%"}}, {{"coverUri", cover}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        const auto updated = get(dir.path() + "/README.md");
+        QVERIFY(updated.contains("src=\"https://avatars.yandex.net/cover/100x100\""));
+        QVERIFY(!updated.contains(cover.toUtf8()));
+        QCOMPARE(persistedCover(), QString("avatars.yandex.net/cover/%%"));
+        uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {},
+                      {{"coverUri", "avatars.yandex.net/cover/%%"}});
+        QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
+        QCOMPARE(uploader.error(), QString());
+        QCOMPARE(uploader.action(), QString("skipped"));
+        QCOMPARE(get(dir.path() + "/README.md"), updated);
     }
     void durationPreview_data() {
         QTest::addColumn<QString>("mode");
@@ -359,7 +694,7 @@ private slots:
         QVERIFY(!uploader.busy()); QVERIFY(!uploader.error().isEmpty());
         QVERIFY(!QFile::exists(dir.path() + "/list_v2.json"));
         QVERIFY(!QFile::exists(dir.path() + "/tracks"));
-        QCOMPARE(get(dir.path() + "/README.md"), QByteArray("# Tracks\n"));
+        QCOMPARE(get(dir.path() + "/README.md"), defaultReadme());
     }
     void metadataShadowing_data() {
         QTest::addColumn<QByteArray>("sources");
@@ -463,7 +798,7 @@ private slots:
         const QByteArray prefix = bom + "{" + eol + "    \"unknown\": {\"keep\": 123}," + eol + "    \"sources\": [" + eol
             + "{\"supportedVersions\":\">0.0.0\",\"tracksStorages\":[{\"tracks\":{\"1\":\"https://old.example/1\"}}]}";
         const QByteArray suffix = " \t" + eol + "    ]" + eol + "}" + eol + " \t";
-        const QByteArray readme = bom + "# Tracks  " + eol + eol + "trailing spaces \t";
+        const QByteArray readme = bom + QByteArray(defaultReadme()).replace("\n", eol) + "trailing spaces \t";
         put(dir.path() + "/list_v2.json", prefix + suffix);
         put(dir.path() + "/README.md", readme);
         git(dir.path(), {"add", "--", "list_v2.json", "README.md"});
@@ -480,8 +815,10 @@ private slots:
         QCOMPARE(sources[1].toObject().value("supportedVersions").toString(), ">=2.0.0");
         QCOMPARE(sources[1].toObject().value("tracksStorages").toArray()[0].toObject().value("tracks").toObject().value("2").toString(),
                  QString("https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/tracks/2"));
-        QCOMPARE(get(dir.path() + "/README.md"), readme + eol + "- [Song - Artist](https://music.yandex.ru/track/2)" + eol);
-        QVERIFY(get(dir.path() + "/README.md").startsWith(readme));
+        const auto changedReadme = get(dir.path() + "/README.md");
+        QVERIFY(changedReadme.startsWith(bom + "# Tracks" + eol));
+        QVERIFY(changedReadme.endsWith("trailing spaces \t"));
+        QVERIFY(changedReadme.contains("https://music.yandex.ru/track/2"));
         QVERIFY(get(dir.path() + "/list_v2.json").startsWith(prefix));
         uploader.send("1", "Updated", "Artist");
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
@@ -770,5 +1107,9 @@ private slots:
         QVERIFY(!uploader.error().isEmpty()); QVERIFY(!QFile::exists(dir.path() + "/tracks/44"));
     }
 };
+#ifdef UPLOADER_QML_INTEGRATION
+QTEST_MAIN(UploaderTests)
+#else
 QTEST_GUILESS_MAIN(UploaderTests)
+#endif
 #include "uploader_tests.moc"

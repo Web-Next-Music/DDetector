@@ -313,7 +313,7 @@ QJsonObject updateList(QJsonObject doc, const QString &id, const QString &url, Q
 
 // Optional metadata belongs to the same source as the intended audio storage.
 QJsonObject editMetadata(QJsonObject doc, const QString &id, const QString &url,
-                         const QJsonObject &patch) {
+                         const QJsonObject &patch, bool restore = false) {
     if (patch.isEmpty()) return doc;
     auto sources = doc.value("sources").toArray();
     int target = -1;
@@ -358,12 +358,15 @@ QJsonObject editMetadata(QJsonObject doc, const QString &id, const QString &url,
                 auto preserved = old.toObject();
                 preserved.insert("name", artist.value("name")); artist = preserved; break;
             }
-            artists[i] = artist;
+            if (restore) artist.insert("entity", "artist");
+                        artists[i] = artist;
         }
         changes.insert("artists", artists);
         require(!track.contains("__fckCensor") || track.value("__fckCensor").isObject(), "Invalid insertion metadata");
         auto options = track.value("__fckCensor").toObject();
-        if (!options.contains("insertionIndex")) options.insert("insertionIndex", QJsonValue::Null);
+        if (restore) {
+            if (options.value("insertionIndex").isNull()) options.remove("insertionIndex");
+        } else if (!options.contains("insertionIndex")) options.insert("insertionIndex", QJsonValue::Null);
         track.insert("__fckCensor", options);
     }
     for (auto it = changes.begin(); it != changes.end(); ++it) track.insert(it.key(), it.value());
@@ -373,11 +376,12 @@ QJsonObject editMetadata(QJsonObject doc, const QString &id, const QString &url,
 QString updateReadme(QString text, const QString &id, const QString &title,
                      const QString &artist, const QJsonObject &list, QJsonObject track) {
     const QString eol = newline(text);
-    const QRegularExpression heading("^##[ \\t]+Автоматически подменяемые треки[ \\t]*\\r?$",
+    const QString sectionName = QStringLiteral("Автоматически подменяемые треки");
+    const QRegularExpression heading("(?:\\A|(?<=[\\r\\n]))##[ \\t]+" + QRegularExpression::escape(sectionName) + "[ \\t]*(?=[\\r\\n]|\\z)",
                                      QRegularExpression::MultilineOption);
     const auto section = heading.match(text);
     if (section.hasMatch()) {
-        const auto next = QRegularExpression("^#{1,2}[ \\t]+", QRegularExpression::MultilineOption)
+        const auto next = QRegularExpression("(?:\\A|(?<=[\\r\\n]))#{1,2}[ \\t]+", QRegularExpression::MultilineOption)
                               .match(text, section.capturedEnd());
         const auto limit = next.hasMatch() ? next.capturedStart() : text.size();
         const QString body = text.mid(section.capturedEnd(), limit - section.capturedEnd());
@@ -416,13 +420,35 @@ QString updateReadme(QString text, const QString &id, const QString &title,
                 }
                 const QString image = cover.isEmpty() ? QString() : "<img width=\"40px\" height=\"40px\" src=\""
                     + cover.toHtmlEscaped() + "\" alt=\"" + title.toHtmlEscaped() + "\">";
-                const QString row = QStringList{"\t\t<tr>", "\t\t\t<td>", "\t\t\t\t" + image,
-                    "\t\t\t</td>", "\t\t\t<td>", "\t\t\t\t<a href=\"https://music.yandex.ru/track/"
-                    + id + "\">" + title.toHtmlEscaped() + "</a>", "\t\t\t</td>", "\t\t\t<td>",
-                    "\t\t\t\t" + (artists.isEmpty() ? artist.toHtmlEscaped() : artists.join(", ")),
-                    "\t\t\t</td>", "\t\t</tr>"}.join(eol);
+                const auto indentation = [&html](const QString &tag) {
+                    const auto match = QRegularExpression("(?:\\A|(?<=[\\r\\n]))([ \\t]*)<" + tag + "\\b",
+                        QRegularExpression::CaseInsensitiveOption).match(html);
+                    return match.hasMatch() ? match.captured(1) : QString();
+                };
+                const QString tbodyIndent = indentation("/?tbody");
+                QString rowIndent = indentation("tr");
+                QString cellIndent = indentation("td");
+                QString unit;
+                if (!rowIndent.isNull() && !cellIndent.isNull() && cellIndent.startsWith(rowIndent))
+                    unit = cellIndent.mid(rowIndent.size());
+                if (unit.isEmpty() && !rowIndent.isNull() && rowIndent.startsWith(tbodyIndent))
+                    unit = rowIndent.mid(tbodyIndent.size());
+                if (unit.isEmpty()) unit = tbodyIndent.isEmpty() ? QStringLiteral("    ") : tbodyIndent;
+                if (rowIndent.isNull()) rowIndent = tbodyIndent + unit;
+                if (cellIndent.isNull()) cellIndent = rowIndent + unit;
+                const QString contentIndent = cellIndent + unit;
+                QStringList lines{rowIndent + "<tr>"};
+                const auto cell = [&](const QString &content) {
+                    if (content.isEmpty()) lines << cellIndent + "<td></td>";
+                    else lines << cellIndent + "<td>" << contentIndent + content << cellIndent + "</td>";
+                };
+                cell(image);
+                cell("<a href=\"https://music.yandex.ru/track/" + id + "\">" + title.toHtmlEscaped() + "</a>");
+                cell(artists.isEmpty() ? artist.toHtmlEscaped() : artists.join(", "));
+                lines << rowIndent + "</tr>";
+                const QString row = lines.join(eol);
                 const auto offset = section.capturedEnd() + table.capturedStart();
-                auto rows = QRegularExpression("[ \\t]*<tr\\b[^>]*>.*?</tr>[^\\S\\r\\n]*",
+                auto rows = QRegularExpression("[ \\t]*<tr\\b[^>]*>(?:(?!</?tr\\b).)*</tr>[^\\S\\r\\n]*",
                     QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption
                     | QRegularExpression::CaseInsensitiveOption).globalMatch(html);
                 const QRegularExpression link("href\\s*=\\s*[\"']https://music\\.yandex\\.ru/track/"
@@ -441,11 +467,8 @@ QString updateReadme(QString text, const QString &id, const QString &title,
             }
         }
     }
-    // Legacy/custom READMEs have no safely identifiable tracks table to edit.
-    if (!text.isEmpty() && !text.endsWith('\n') && !text.endsWith('\r')
-        && text != QString(QChar(0xfeff))) text += eol;
-    return text + "- [" + title.toHtmlEscaped() + " - " + artist.toHtmlEscaped()
-        + "](https://music.yandex.ru/track/" + id + ")" + eol;
+    require(false, "README.md: missing or malformed table in section: " + sectionName);
+    return text;
 }
 QJsonObject validateMetadata(const QVariantMap &metadata) {
     auto patch = QJsonObject::fromVariantMap(metadata);
@@ -460,7 +483,11 @@ QJsonObject validateMetadata(const QVariantMap &metadata) {
             QSet<QString> ids;
             for (const auto entry : value.toArray()) {
                 const auto artist = entry.toObject(); const auto id = trackID(artist);
-                require(artist.size() == 2 && QRegularExpression("\\A[A-Za-z0-9_-]{1,128}\\z").match(id).hasMatch() && !ids.contains(id), "Artist IDs must be valid and unique");
+                require(artist.size() == 2 && artist.contains("id") && artist.contains("name"),
+                        "Artist metadata must contain only id and name; reopen the dialog to reload metadata");
+                require(QRegularExpression("\\A[A-Za-z0-9_-]{1,128}\\z").match(id).hasMatch(),
+                        "Invalid artist ID for " + artist.value("name").toString() + ": enter a valid artist ID");
+                require(!ids.contains(id), "Duplicate artist ID " + id + ": enter a unique ID for each artist");
                 require(artist.value("name").isString() && !artist.value("name").toString().trimmed().isEmpty() && artist.value("name").toString().size() <= 4096 && !artist.value("name").toString().contains(QChar(0)) && !artist.value("name").toString().contains('\n') && !artist.value("name").toString().contains('\r'), "Artist names are required (maximum 4096 characters)");
                 ids.insert(id);
             }
@@ -586,7 +613,7 @@ QString patchJSON(const QString &text, const QJsonValue &before, const QJsonValu
 }
 Result perform(const QString &root, const QString &id, const QString &title,
                const QString &artist, const QString &url, const QJsonObject &metadata,
-                              const QJsonObject &publicationMetadata) {
+                              const QJsonObject &publicationMetadata, bool restore = false) {
     Result result;
     bool saved = false, overwritten = false;
     try {
@@ -669,7 +696,7 @@ Result perform(const QString &root, const QString &id, const QString &title,
         bool needsDuration = false;
         auto updated = updateList(doc.object(), id, github, result.action, -1, &needsDuration);
         auto audioUpdated = updated;
-        updated = editMetadata(updated, id, github, metadata);
+        updated = editMetadata(updated, id, github, metadata, restore);
         if (updated != audioUpdated && result.action == "skipped") result.action = "updated";
         QByteArray audio;
         if (!url.isEmpty()) {
@@ -678,7 +705,7 @@ Result perform(const QString &root, const QString &id, const QString &title,
                     !source.host().isEmpty() && source.userInfo().isEmpty(), "MP3 URL must be HTTP(S), without credentials");
             audio = download(source);
         }
-        if (needsDuration) {
+        if (needsDuration || (restore && !metadata.contains("durationMs"))) {
             QTemporaryFile temporary;
             QString path = root + "/tracks/" + id;
             if (!audio.isEmpty()) {
@@ -697,7 +724,9 @@ Result perform(const QString &root, const QString &id, const QString &title,
             require(duration < 0 || !metadata.contains("durationMs") || metadata.value("durationMs").toInteger() == duration,
                     "Requested metadata durationMs conflicts with measured audio duration");
             audioUpdated = updateList(doc.object(), id, github, result.action, duration);
-            updated = editMetadata(audioUpdated, id, github, metadata);
+            auto measuredMetadata = metadata;
+                        if (restore && !needsDuration && duration > 0) measuredMetadata.insert("durationMs", duration);
+                        updated = editMetadata(audioUpdated, id, github, measuredMetadata, restore);
             if (updated != audioUpdated && result.action == "skipped") result.action = "updated";
         }
         // Exclude surrounding whitespace from the recursive JSON patch.
@@ -764,7 +793,7 @@ bool Uploader::setDirectory(QString directory) {
     return true;
 }
 void Uploader::send(QString id, QString title, QString artist, QString url, QVariantMap metadata,
-                    QVariantMap publicationMetadata) {
+                    QVariantMap publicationMetadata, bool restore) {
     if (m_busy) return;
     if (m_sendValidator) {
         const auto rejection = m_sendValidator(id);
@@ -789,15 +818,36 @@ void Uploader::send(QString id, QString title, QString artist, QString url, QVar
         emit stateChanged(); return;
     }
     QJsonObject patch;
-    try { patch = validateMetadata(metadata); }
+    try {
+            if (restore) {
+                for (const auto entry : QJsonObject::fromVariantMap(metadata).value("artists").toArray())
+                    require(!trackID(entry).isEmpty(),
+                            "Yandex artist IDs are unavailable. Reopen Restore to retry the Yandex metadata API.");
+            }
+            patch = validateMetadata(metadata);
+            if (restore) {
+                require(!url.trimmed().isEmpty(), "Restore requires an HTTP(S) MP3 URL");
+                require(patch.contains("title") && patch.contains("artists"),
+                        "Restore requires Yandex title and artist metadata. Reopen Restore to retry the API.");
+
+                for (const auto entry : patch.value("artists").toArray()) {
+                    const auto id = trackID(entry);
+                    bool ok = false;
+                    const auto number = id.toULongLong(&ok);
+                    require(ok && number > 0 && number <= 9007199254740991ULL &&
+                            QRegularExpression("\\A[0-9]+\\z").match(id).hasMatch(),
+                            "Restore requires positive numeric Yandex artist IDs, not names or IDs from another provider");
+                }
+            }
+        }
     catch (const std::exception &error) { m_error = QString::fromUtf8(error.what()); m_action.clear(); m_status = "Invalid metadata"; emit stateChanged(); return; }
     m_busy = true; m_error.clear(); m_action.clear(); m_status = "Sending…";
     emit stateChanged();
     auto result = std::make_shared<Result>();
     const auto root = m_directory;
     const auto publication = QJsonObject::fromVariantMap(publicationMetadata);
-    m_worker = QThread::create([root, id, title, artist, url = url.trimmed(), patch, publication, result] {
-        *result = perform(root, id, title, artist, url, patch, publication);
+    m_worker = QThread::create([root, id, title, artist, url = url.trimmed(), patch, publication, restore, result] {
+        *result = perform(root, id, title, artist, url, patch, publication, restore);
     });
     connect(m_worker, &QThread::finished, this, [this, result] {
         m_worker->deleteLater(); m_worker = nullptr;
@@ -850,4 +900,37 @@ QVariantMap Uploader::trackMetadata(QString id) const {
         }
     } catch (const std::exception &) {}
     return {};
+}
+
+int Uploader::requestMetadata(QString id) {
+    const int request = ++m_metadataRequest;
+    if (!QRegularExpression("\\A[1-9][0-9]{0,15}\\z").match(id).hasMatch()) {
+        QTimer::singleShot(0, this, [this, request, id] {
+            emit metadataReady(request, id, {}, "Invalid Yandex track ID");
+        });
+        return request;
+    }
+    auto network = new QNetworkAccessManager(this);
+    QNetworkRequest query(QUrl("https://api.music.yandex.net/tracks?track-ids=" + id));
+    query.setTransferTimeout(15000);
+    auto reply = network->get(query);
+    connect(reply, &QNetworkReply::readyRead, reply, [reply] {
+        if (reply->bytesAvailable() > 1024 * 1024) reply->abort();
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, network, reply, request, id] {
+        QVariantMap metadata;
+        QString error;
+        const auto bytes = reply->readAll();
+        if (reply->error() == QNetworkReply::NoError && bytes.size() <= 1024 * 1024) {
+            const auto tracks = QJsonDocument::fromJson(bytes).object().value("result").toArray();
+            for (const auto value : tracks) {
+                const auto track = value.toObject();
+                if (trackID(track.value("id")) == id) { metadata = track.toVariantMap(); break; }
+            }
+        }
+        if (metadata.isEmpty()) error = "Cannot retrieve Yandex track metadata. Check your connection and reopen Restore.";
+        emit metadataReady(request, id, metadata, error);
+        network->deleteLater();
+    });
+    return request;
 }

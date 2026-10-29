@@ -111,7 +111,9 @@ Rectangle {
             visible: !!root.terminalSession && !!root.terminalSession.error
             text: root.terminalSession ? root.terminalSession.error : ""
             color: "#ff8585"
-            font.pixelSize: 12
+            font.family: "DDetector Nunito"
+            font.pixelSize: 14
+            font.weight: Font.Medium
             elide: Text.ElideRight
             SiteToolTip {
                 visible: errorHover.hovered && parent.visible && text.length > 0

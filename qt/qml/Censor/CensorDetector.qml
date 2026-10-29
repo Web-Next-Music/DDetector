@@ -46,7 +46,9 @@ Rectangle {
     readonly property int candidateIndex: candidates.findIndex(c => c.id === candidateId)
     function switchCandidate(step) {
         if (!candidates.length) return;
-        const next = (candidateIndex + 1 + step + candidates.length + 1) % (candidates.length + 1) - 1;
+        const next = originalUnavailable
+                    ? (candidateIndex + step + candidates.length) % candidates.length
+                    : (candidateIndex + 1 + step + candidates.length + 1) % (candidates.length + 1) - 1;
         const position = timelinePosition;
         const resume = playing;
         candidateId = next < 0 ? "" : candidates[next].id;
@@ -59,12 +61,27 @@ Rectangle {
         return Math.max(0, Math.min(1, fraction)) * waveformDuration * 1000;
     }
     function waveformSeek(fraction) {
-        if (!(waveformDuration > 0) || !original.source.toString() || !isFinite(fraction)) return;
+        if (originalUnavailable || !(waveformDuration > 0) || !original.source.toString() || !isFinite(fraction)) return;
         seek(waveformTarget(fraction));
     }
-    readonly property string currentTrackId: normalPlayer ? String(normalPlayer.trackId || "") : ""
-    readonly property string currentTitle: normalPlayer ? normalPlayer.title || "Select a track in the player" : job ? job.request.title || "Original recording" : "Select a track in the player"
-    readonly property string currentArtist: normalPlayer ? normalPlayer.artist || "" : job ? job.request.artist || "" : ""
+    property var explicitTargetTrack: null
+    readonly property bool originalUnavailable: (!!explicitTargetTrack && explicitTargetTrack.available === false)
+            || !!(job && job.request && job.request.original_unavailable === true)
+        readonly property bool restoreTarget: originalUnavailable
+        readonly property var restoreMetadata: explicitTargetTrack || (job && job.request ? job.request : {})
+            readonly property string restoreTrackId: String(explicitTargetTrack ? explicitTargetTrack.id : restoreMetadata.track_id || "")
+        function selectUnavailableCandidate() {
+            if (originalUnavailable && !candidates.some(c => c.id === candidateId))
+                candidateId = candidates.length ? candidates[0].id : "";
+        }
+        onCandidatesChanged: selectUnavailableCandidate()
+        onOriginalUnavailableChanged: { updateOriginalSource(); selectUnavailableCandidate(); }
+    readonly property string playerTrackId: normalPlayer ? String(normalPlayer.trackId || "") : ""
+    readonly property string currentTrackId: explicitTargetTrack ? explicitTargetTrack.id : playerTrackId
+    readonly property string currentTitle: explicitTargetTrack ? explicitTargetTrack.title || "Original recording" : normalPlayer ? normalPlayer.title || "Select a track in the player" : job ? job.request.title || "Original recording" : "Select a track in the player"
+    readonly property string currentArtist: explicitTargetTrack ? explicitTargetTrack.artist || "" : normalPlayer ? normalPlayer.artist || "" : job ? job.request.artist || "" : ""
+    onPlayerTrackIdChanged: explicitTargetTrack = null
+    onNormalPlayerChanged: explicitTargetTrack = null
     property url originalAudioUrl: ""
     property string playbackError: ""
     property url resolvedCandidateUrl: ""
@@ -86,20 +103,22 @@ Rectangle {
         }
     }
     property real pendingPosition: 0
-    readonly property bool playableSelection: candidateId ? playableCandidate(candidate) : originalAudioUrl.toString().length > 0
+    readonly property bool playableSelection: candidateId ? playableCandidate(candidate) : !originalUnavailable && originalAudioUrl.toString().length > 0
     readonly property real timelinePosition: listenCandidate ? Math.max(0, replacement.position + offsetMs) : original.position
-    readonly property real timelineDuration: original.duration > 0 ? original.duration : waveformDuration * 1000
+    readonly property real timelineDuration: originalUnavailable ? replacement.duration : original.duration > 0 ? original.duration : waveformDuration * 1000
     function syncCurrentTrack() {
-        if (!normalPlayer) return;
+        if (!normalPlayer && !explicitTargetTrack) return;
         const matching = jobs.find(j => j.request && String(j.request.track_id) === currentTrackId);
         const next = matching ? matching.id : "";
         if (selectedId !== next) selectedId = next;
         updateOriginalSource();
     }
     function updateOriginalSource() {
-        const url = normalPlayer && normalPlayer.streamUrl ? normalPlayer.streamUrl.toString() : "";
+        if (originalUnavailable) { originalAudioUrl = ""; return; }
+        const url = normalPlayer && playerTrackId === currentTrackId && normalPlayer.streamUrl ? normalPlayer.streamUrl.toString() : "";
         if (url) originalAudioUrl = url;
-        else if (job && (!normalPlayer || String(job.request.track_id) === currentTrackId) && job.request.original_url) originalAudioUrl = job.request.original_url;
+        else if (job && job.request && (!normalPlayer || explicitTargetTrack || String(job.request.track_id) === currentTrackId) && job.request.original_url) originalAudioUrl = job.request.original_url;
+        else originalAudioUrl = "";
     }
     onCurrentTrackIdChanged: {
         stopPlayers(); originalAudioUrl = ""; selectedId = ""; syncCurrentTrack();
@@ -186,11 +205,11 @@ Rectangle {
     property bool playing: false
     property bool clockTime: false
     readonly property bool listenCandidate: candidateId.length > 0 && playableCandidate(candidate)
-    property real offsetMs: comparison && comparison.comparable ? Number(comparison.offset_seconds || 0) * 1000 : 0
+    property real offsetMs: !originalUnavailable && comparison && comparison.comparable ? Number(comparison.offset_seconds || 0) * 1000 : 0
     property var retryableErrors: jobs.filter(j => (j.status === "failed" || !!j.error)
         && !j.publication_key && ["running", "publishing", "rolling_back", "succeeded"].indexOf(j.status) < 0)
     color: "#09090b"
-    onSelectedIdChanged: { candidateId = ""; stopPlayers(); approveDialog.close(); if (bridge && bridge.censorSelectJob !== undefined) bridge.censorSelectJob(selectedId); }
+    onSelectedIdChanged: { candidateId = ""; selectUnavailableCandidate(); stopPlayers(); approveDialog.close(); if (bridge && bridge.censorSelectJob !== undefined) bridge.censorSelectJob(selectedId); }
     onCandidateIdChanged: { playing = false; resolvingPlayback = false; ++playbackRequestId; resolvedCandidateUrl = ""; playbackError = ""; original.pause(); replacement.stop(); approveDialog.close(); }
     onJobChanged: { updateOriginalSource(); if (!job) approveDialog.close(); }
     onCandidateChanged: if (!candidate) { replacement.stop(); approveDialog.close(); }
@@ -252,8 +271,17 @@ Rectangle {
         if (c.confidence < Number((censorState.settings || {}).min_confidence || 0.75)) return "The selected candidate's comparison confidence is below the configured minimum";
         return "";
     }
-    function currentTrackError() {
-        const id = normalPlayer ? String(normalPlayer.trackId || "") : "";
+    function analyzeTrack(track) {
+        if (!track || typeof track !== "object") return "Select a Yandex library track first";
+        const id = String(track.id || "");
+        const reason = disabledReason("check_track", id);
+        if (reason) return reason;
+        explicitTargetTrack = Object.assign({}, track, { id: id, title: String(track.title || ""), artist: String(track.artist || "") });
+        syncCurrentTrack();
+        return command("check_track");
+    }
+    function currentTrackError(trackId) {
+        const id = trackId === undefined ? currentTrackId : trackId;
         if (!/^[0-9]+$/.test(id) || !(Number(id) > 0)) return "Select a current Yandex track first";
         if (!Number.isSafeInteger(Number(id))) return "Track ID exceeds JavaScript's safe integer range; manual analysis is unavailable";
         return "";
@@ -262,7 +290,13 @@ Rectangle {
         return request && request.origin === "manual" ? "Manual Yandex analysis (not a public request)"
             : request && request.origin === "reported_tracks" ? "Reported public request" : "Request";
     }
-    function disabledReason(action) {
+    function disabledReason(action, trackId) {
+        if (action === "restore") {
+            if (!restoreTarget) return "Select a track confirmed unavailable by Yandex";
+            if (!uploadBackend) return "Upload backend is not configured";
+            if (uploadBackend.busy) return "Wait for the current Send operation to finish";
+            return currentTrackError(restoreTrackId);
+        }
         if (action === "send_candidate") {
             if (!uploadBackend) return "Upload backend is not configured";
             if (censorState.native === true && censorState.native_repository_ready !== true) return "Configure and validate the Git repository first";
@@ -273,9 +307,9 @@ Rectangle {
             return "";
         }
         if (action === "check_track") {
-            if (!bridge || censorState.native !== true) return "Manual current-track analysis requires the native backend";
+            if (!bridge || typeof bridge.censorCommand !== "function" || censorState.native !== true) return "Manual current-track analysis requires the native backend";
             if (busy || backendBusy || censorState.running || retryIds.length) return "Wait for current analysis or commands to finish";
-            return currentTrackError();
+            return currentTrackError(trackId);
         }
         if (!bridge || !configured) return "Censor Detector is not configured or authorized";
         if (action === "settings") return "";
@@ -303,16 +337,18 @@ Rectangle {
         return "";
     }
     function command(action, extra) {
-        if (disabledReason(action)) return;
+        const reason = disabledReason(action);
+        if (reason) return reason;
         if (action === "pause" || action === "stop") retryIds = [];
         let args = {};
-        if (action === "check_track") args.track_id = String(normalPlayer.trackId);
+        if (action === "check_track") args.track_id = currentTrackId;
         if (["retry", "analyze", "search", "approve", "reject", "defer", "rollback"].indexOf(action) >= 0 && job) {
             args.id = job.id; args.request_id = job.request.id; args.track_id = job.request.track_id;
         }
         if (action === "approve" && candidate) args.candidate_id = candidate.id;
         if (extra) for (const key in extra) args[key] = extra[key];
         bridge.censorCommand(action, args);
+        return "";
     }
     function retryErrors() {
         if (disabledReason("retry_errors")) return;
@@ -322,7 +358,7 @@ Rectangle {
     function seek(ms) {
         const position = Math.max(0, Math.min(timelineDuration > 0 ? timelineDuration : ms, ms));
         pendingPosition = position;
-        if (original.duration > 0) original.position = position;
+        if (!originalUnavailable && original.duration > 0) original.position = position;
         if (replacement.duration > 0) replacement.position = Math.min(replacement.duration, candidatePosition(position));
     }
     function seconds(value) { return Number(value || 0).toFixed(2) + " s"; }
@@ -359,7 +395,7 @@ Rectangle {
         onDurationChanged: if (duration > 0) position = Math.min(duration, root.pendingPosition)
         onPlaybackStateChanged: if (playbackState === MediaPlayer.PlayingState) root.pauseMainPlayer()
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && !root.listenCandidate) root.playing = false
-        onErrorOccurred: function(error, errorString) { if (!root.listenCandidate) { root.playbackError = errorString; root.playing = false; } }
+        onErrorOccurred: function(error, errorString) { if (!root.originalUnavailable && !root.listenCandidate) { root.playbackError = errorString; root.playing = false; } }
     }
     MediaPlayer {
         id: replacement
@@ -411,6 +447,16 @@ Rectangle {
             spacing: 10
 
             SiteQuote {
+                objectName: "censorRuntimeError"
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: root.censorState.error || ""
+                textFormat: Text.PlainText
+                textColor: "#dc5050"
+                borderColor: textColor
+                Accessible.role: Accessible.AlertMessage
+            }
+            SiteQuote {
                 objectName: "censorVpnWarning"
                 Layout.fillWidth: true
                 visible: root.ipCountry.length > 0 && root.ipCountry !== "RU"
@@ -427,7 +473,10 @@ Rectangle {
 
 
 
+
                 SiteSettingsCard {
+                    objectName: "censorPlaybackCard"
+                    visible: !root.originalUnavailable || !!root.candidate
                     Layout.fillWidth: true
                     compact: true
                     RowLayout {
@@ -452,7 +501,7 @@ Rectangle {
                     }
                     Item {
                         Layout.fillWidth: true; Layout.preferredHeight: visible ? 120 : 0
-                        visible: waveform.samples.length > 0
+                        visible: !root.originalUnavailable && waveform.samples.length > 0
                         Canvas {
                             id: waveform
                             anchors.fill: parent
@@ -489,7 +538,7 @@ Rectangle {
                         }
                         MouseArea {
                             objectName: "censorWaveformSeek"
-                            anchors.fill: parent; enabled: original.source.toString().length > 0 && waveform.duration > 0
+                            anchors.fill: parent; enabled: !root.originalUnavailable && original.source.toString().length > 0 && waveform.duration > 0
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: function(mouse) { root.waveformSeek(mouse.x / width); }
                         }
@@ -497,7 +546,7 @@ Rectangle {
                     Item {
                         objectName: "censorEmptyWaveform"
                         Layout.fillWidth: true; Layout.preferredHeight: 100
-                        visible: !waveform.samples.length
+                        visible: !root.originalUnavailable && !waveform.samples.length
                     }
                     Item {
                         Layout.fillWidth: true
@@ -561,7 +610,21 @@ Rectangle {
 
 
                 SiteButton { text: "Undo replacement"; glyph: "undo-2"; visible: !!root.job && !!root.job.replacement; enabled: !root.disabledReason("rollback"); onClicked: root.command("rollback") }
-                Item { Layout.fillWidth: true }
+                Label {
+                    objectName: "censorCandidateStatus"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    visible: root.originalUnavailable && !root.candidates.length
+                    text: !root.job || root.job.status === "running" || root.job.status === "pending"
+                        || root.censorState.running === true ? "Searching candidates..." : "No candidates found"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    color: "#999999"
+                    textFormat: Text.PlainText
+                    Accessible.role: Accessible.StaticText
+                }
+                Item { Layout.fillWidth: true; visible: !root.originalUnavailable || root.candidates.length > 0 }
                 Item {
                     implicitWidth: approvalButton.implicitWidth
                     implicitHeight: approvalButton.implicitHeight
@@ -569,9 +632,27 @@ Rectangle {
                     SiteButton {
                         id: approvalButton
                         anchors.fill: parent
-                        objectName: "censorReviewApproval"; text: "Approve"; glyph: "check"; accented: true
-                        enabled: !root.disabledReason("send_candidate")
+                        objectName: "censorReviewApproval"
+                        text: root.restoreTarget ? "Restore" : "Approve"
+                        glyph: root.restoreTarget ? "undo-2" : "check"
+                        accented: true
+                        accentColor: root.restoreTarget ? "#3b82f6" : "#2bfef5"
+                        accentedColor: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.08)
+                        accentBorder: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.2)
+                        enabled: !root.disabledReason(root.restoreTarget ? "restore" : "send_candidate")
                         onClicked: {
+                            if (root.restoreTarget) {
+                                const track = root.restoreMetadata;
+                                const selected = root.candidate;
+                                const metadata = selected ? selected.metadata || ({}) : ({});
+                                const mp3Url = root.playableCandidate(selected)
+                                    ? root.resolvedCandidateUrl.toString() || selected.url || "" : "";
+                                approveDialog.openRestore(root.restoreTrackId,
+                                    track.title || (selected ? selected.title || "" : ""),
+                                    track.artist || (selected ? selected.artist || "" : ""),
+                                    track.cover || metadata.coverUri || metadata.cover || "", track, mp3Url);
+                                return;
+                            }
                             const request = root.job.request;
                             const cover = root.normalPlayer && String(root.normalPlayer.trackId || "") === String(request.track_id)
                                 && root.normalPlayer.cover ? "image://trackcovers/" + encodeURIComponent(root.normalPlayer.cover) : "";
@@ -584,7 +665,8 @@ Rectangle {
                     }
                     SiteToolTip {
                         visible: approvalHover.hovered || approvalButton.activeFocus
-                        text: root.disabledReason("send_candidate") || "Review and send this replacement"
+                        text: root.disabledReason(root.restoreTarget ? "restore" : "send_candidate")
+                                                    || (root.restoreTarget ? "Restore this unavailable track" : "Review and send this replacement")
                     }
                 }
             }
@@ -620,6 +702,7 @@ Rectangle {
                     model: analysisCard.steps
                     delegate: SiteSettingsCard {
                         id: stepRow
+                        visible: modelData.stage !== "analysis" || !root.originalUnavailable
                         required property var modelData
                         required property int index
                         Layout.fillWidth: true

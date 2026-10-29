@@ -140,6 +140,11 @@ func validCensorQuery(q string) bool {
 	return true
 }
 func censorFailure(w http.ResponseWriter, err error) {
+	var runtimeFailure *censorRuntimeFailure
+	if errors.As(err, &runtimeFailure) {
+		failure(w, http.StatusServiceUnavailable, runtimeFailure.Error())
+		return
+	}
 	var resource *censorResourceError
 	if errors.As(err, &resource) {
 		status := http.StatusNotImplemented
@@ -158,6 +163,8 @@ func censorFailure(w http.ResponseWriter, err error) {
 		failure(w, 400, "invalid censor control parameters")
 	case errors.Is(err, ErrCensorDenied):
 		failure(w, 403, "censor access denied")
+	case errors.Is(err, ErrCensorBusy):
+		failure(w, http.StatusConflict, ErrCensorBusy.Error())
 	case errors.Is(err, ErrCensorSettingsBusy):
 		failure(w, http.StatusConflict, ErrCensorSettingsBusy.Error())
 	case errors.Is(err, ErrCensorConflict):

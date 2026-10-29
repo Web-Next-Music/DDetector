@@ -891,6 +891,9 @@ Item {
                 text: root.available ? root.workspaceBackend.error : ""
                 visible: !!text
                 color: "#ff8585"
+                font.family: "DDetector Nunito"
+                font.pixelSize: 14
+                font.weight: Font.Medium
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }

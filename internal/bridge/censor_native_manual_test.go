@@ -60,6 +60,121 @@ func nativeManualFixture(t *testing.T) (*Server, *nativeBackend, *orchestrationP
 	return s, b, processor, calls
 }
 
+func TestNativeUnavailableManualTrackDiscoversWithoutAudio(t *testing.T) {
+	s, b, p, calls := nativeManualFixture(t)
+	s.yandex.http.Transport = nativeAudioTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/tracks/42" {
+			t.Errorf("unavailable target attempted audio resolution: %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"result":[{"id":42,"title":"real title","artists":[{"name":"real artist"},{"name":"second artist"}],"available":false}]}`)), Request: r}, nil
+	})
+	controlAPI(t, s, map[string]any{"action": "check_track", "track_id": 42}, 200)
+	job := waitCensor(t, s, "review_required")
+	if !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist, second artist" || job.Result != nil || job.Error != "" {
+		t.Fatalf("invalid metadata-only review: %+v", job)
+	}
+	if len(job.Candidates) == 0 || len(job.Queries) != 1 || job.Queries[0] != "real artist, second artist real title" {
+		t.Fatalf("discovery not populated: %+v", job)
+	}
+	for _, c := range job.Candidates {
+		if c.Result != nil || !strings.Contains(c.Error, "original Yandex audio is unavailable") {
+			t.Fatalf("candidate has fabricated evidence: %+v", c)
+		}
+	}
+	p.mu.Lock()
+	analyzed := len(p.requests)
+	p.mu.Unlock()
+	if analyzed != 0 || calls.Load() != 0 {
+		t.Fatal("metadata discovery analyzed audio or contacted public queue")
+	}
+	if err := b.runtime.compareCandidates(context.Background(), nil, &job); !errors.Is(err, ErrCensorConflict) {
+		t.Fatalf("comparison allowed without original: %v", err)
+	}
+	controlAPI(t, s, map[string]any{"action": "approve", "id": job.ID, "candidate_id": job.Candidates[0].ID}, 409)
+	// Audio consumers must still reject unavailable provider tracks.
+	if _, err := s.yandex.nativeTrack(context.Background(), 42); err == nil {
+		t.Fatal("normal audio resolver accepted unavailable track")
+	}
+}
+
+func TestNativeCachedUnavailableManualTrackSkipsYandex(t *testing.T) {
+	s, b, p, calls := nativeManualFixture(t)
+	unavailable := false
+	s.mu.Lock()
+	s.state.Tracks = []Result{{Track: Track{ID: 42, Title: "real title", Artist: "real artist", Available: &unavailable}}}
+	s.mu.Unlock()
+	var providerCalls atomic.Int64
+	s.yandex.http.Transport = nativeAudioTransport(func(r *http.Request) (*http.Response, error) {
+		providerCalls.Add(1)
+		return nil, errors.New("Yandex network request failed")
+	})
+	controlAPI(t, s, map[string]any{"action": "check_track", "track_id": 42}, 200)
+	job := waitCensor(t, s, "review_required")
+	if job.Request.ID != "manual:yandex:42" || job.Request.Origin != "manual" || !job.Request.OriginalUnavailable || job.Request.OriginalURL != "" || job.Request.Title != "real title" || job.Request.Artist != "real artist" || job.Result != nil || job.Error != "" {
+		t.Fatalf("invalid cached metadata-only review: %+v", job)
+	}
+	if len(job.Candidates) == 0 || len(job.Queries) != 1 || job.Queries[0] != "real artist real title" {
+		t.Fatalf("discovery not populated: %+v", job)
+	}
+	for _, c := range job.Candidates {
+		if c.Result != nil || !strings.Contains(c.Error, "original Yandex audio is unavailable") {
+			t.Fatalf("candidate has fabricated evidence: %+v", c)
+		}
+	}
+	if err := b.runtime.compareCandidates(context.Background(), nil, &job); !errors.Is(err, ErrCensorConflict) {
+		t.Fatalf("comparison allowed without original: %v", err)
+	}
+	controlAPI(t, s, map[string]any{"action": "approve", "id": job.ID, "candidate_id": job.Candidates[0].ID}, 409)
+	p.mu.Lock()
+	analyzed := len(p.requests)
+	p.mu.Unlock()
+	if providerCalls.Load() != 0 || calls.Load() != 0 || analyzed != 0 {
+		t.Fatalf("metadata-only discovery made provider/public queue/audio calls: %d/%d/%d", providerCalls.Load(), calls.Load(), analyzed)
+	}
+}
+
+func TestNativeManualCachedMetadataRequiresAuthorizedUnavailableTrack(t *testing.T) {
+	for _, name := range []string{"available", "unknown", "missing title", "missing artist", "different track", "no access", "different state account", "job metadata only"} {
+		t.Run(name, func(t *testing.T) {
+			s, b, _, _ := nativeManualFixture(t)
+			unavailable := false
+			track := Track{ID: 42, Title: "cached title", Artist: "cached artist", Available: &unavailable}
+			s.mu.Lock()
+			s.state.HasAccess = true
+			u := s.session.User
+			s.state.User = &u
+			switch name {
+			case "available":
+				available := true
+				track.Available = &available
+			case "unknown":
+				track.Available = nil
+			case "missing title":
+				track.Title = " "
+			case "missing artist":
+				track.Artist = " "
+			case "different track":
+				track.ID = 99
+			case "no access":
+				s.state.HasAccess = false
+			case "different state account":
+				s.state.User = &User{ID: "other-user"}
+			}
+			if name != "job metadata only" {
+				s.state.Tracks = []Result{{Track: track}}
+			}
+			s.mu.Unlock()
+			b.runtime.mu.Lock()
+			b.runtime.disk.Jobs = []CensorJob{{Request: CensorRequest{ID: "manual:yandex:42", TrackID: 42, Origin: "manual", Title: "untrusted title", Artist: "untrusted artist", OriginalUnavailable: true}}}
+			b.runtime.mu.Unlock()
+			r, err := b.Request(context.Background(), CensorIdentity{UserID: b.runtime.uid}, "manual:yandex:42")
+			if err != nil || r.OriginalUnavailable || r.Title != "real title" || r.Artist != "real artist" || r.OriginalURL == "" {
+				t.Fatalf("did not resolve fresh provider audio: %+v, %v", r, err)
+			}
+		})
+	}
+}
+
 func TestNativeCheckTrackWithoutPublicQueueAndFreshReanalysis(t *testing.T) {
 	s, b, p, calls := nativeManualFixture(t)
 	// Queue RLS failures must not disable the explicit user-initiated path.
@@ -182,6 +297,64 @@ func TestNativeManualResolverBoundToAccountAndExistingJob(t *testing.T) {
 	defer func() { s.mu.Lock(); s.censorRuntime = b.runtime; s.mu.Unlock() }()
 	if _, err = b.Request(context.Background(), identity, "manual:yandex:42"); !errors.Is(err, ErrCensorDenied) {
 		t.Fatal("detached runtime still resolved manual job", err)
+	}
+}
+
+func TestNativeManualCommandAdmissionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		running bool
+		active  bool
+		failure string
+	}{
+		{name: "queue running", running: true},
+		{name: "command active", active: true},
+		{name: "storage unavailable", failure: "Censor storage is unavailable or owned by another process"},
+		{name: "persistence failed", failure: "Unable to persist censor state; processing is blocked"},
+		{name: "engine queue failed", failure: "Persistent engine queue failed; processing is blocked"},
+		{name: "failure takes precedence", active: true, failure: "Unable to persist censor state; processing is blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, b, _, calls := nativeManualFixture(t)
+			rt := b.runtime
+			rt.mu.Lock()
+			rt.running, rt.commandActive, rt.failure = tc.running, tc.active, tc.failure
+			beforeVersion := rt.stateVersion
+			rt.mu.Unlock()
+			defer func() {
+				rt.mu.Lock()
+				rt.running, rt.commandActive, rt.failure = false, false, ""
+				rt.mu.Unlock()
+			}()
+			wantErr, wantStatus, wantMessage := ErrCensorBusy, http.StatusConflict, ErrCensorBusy.Error()
+			if tc.failure != "" {
+				wantErr, wantStatus, wantMessage = ErrCensorUnavailable, http.StatusServiceUnavailable, tc.failure
+			}
+			assertError := func(err error) {
+				t.Helper()
+				if !errors.Is(err, wantErr) || errors.Is(err, ErrCensorConflict) || err.Error() != wantMessage {
+					t.Fatalf("admission error = %v; want %v / %q", err, wantErr, wantMessage)
+				}
+			}
+			assertError(b.checkTrack(context.Background(), CensorIdentity{UserID: rt.uid}, 42))
+			w := api(s, "POST", "/api/censor/control", `{"action":"check_track","track_id":42}`, "bridge-key")
+			if w.Code != wantStatus || !strings.Contains(w.Body.String(), wantMessage) || strings.Contains(w.Body.String(), "selection is stale") {
+				t.Fatalf("response = %d %s; want %d / %q", w.Code, w.Body, wantStatus, wantMessage)
+			}
+			// startCommand has its own admission gate after checkTrack persists.
+			if tc.active || tc.failure != "" {
+				assertError(rt.startCommand("unused", func(context.Context, CensorIdentity) error {
+					t.Error("blocked work started")
+					return nil
+				}))
+			}
+			rt.mu.Lock()
+			unchanged := len(rt.disk.Jobs) == 0 && rt.stateVersion == beforeVersion && rt.commandDone == nil && rt.failure == tc.failure
+			rt.mu.Unlock()
+			if !unchanged || calls.Load() != 0 {
+				t.Fatal("blocked command mutated state or contacted public source")
+			}
+		})
 	}
 }
 

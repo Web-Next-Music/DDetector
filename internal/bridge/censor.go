@@ -13,12 +13,13 @@ import (
 // grants permission to publish replacements.
 type CensorIdentity struct{ UserID, AccessToken string }
 type CensorRequest struct {
-	Origin      string `json:"origin,omitempty"`
-	ID          string `json:"id"`
-	TrackID     int64  `json:"track_id"`
-	Title       string `json:"title"`
-	Artist      string `json:"artist"`
-	OriginalURL string `json:"original_url"`
+	OriginalUnavailable bool   `json:"original_unavailable,omitempty"`
+	Origin              string `json:"origin,omitempty"`
+	ID                  string `json:"id"`
+	TrackID             int64  `json:"track_id"`
+	Title               string `json:"title"`
+	Artist              string `json:"artist"`
+	OriginalURL         string `json:"original_url"`
 }
 type CensorCandidate struct {
 	ID              string            `json:"id"`
