@@ -315,9 +315,17 @@ Item {
             compare(item.waveformData, samples);
             compare(item.waveformDuration, 2);
             tryVerify(function() { return waveform.width > 0 && waveform.height > 0 });
-            compare(findChild(item, "censorWaveformSeek").enabled, false);
+            const seekArea = findChild(item, "censorWaveformSeek");
+            compare(seekArea.enabled, true);
             compare(item.originalAudioUrl.toString(), "");
             verify(!item.candidate.result);
+            mouseClick(seekArea, seekArea.width / 2, seekArea.height / 2);
+            compare(item.pendingPosition, 1000);
+            compare(item.playing, false);
+            item.waveformSeek(-1);
+            compare(item.pendingPosition, 0);
+            item.waveformSeek(2);
+            compare(item.pendingPosition, 2000);
 
             backend.censorState = Object.assign({}, backend.censorState, {
                 jobs: [Object.assign({}, item.job, {result: {waveform: [], duration_seconds: 0}})]

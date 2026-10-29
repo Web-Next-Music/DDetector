@@ -62,7 +62,7 @@ Rectangle {
         return Math.max(0, Math.min(1, fraction)) * waveformDuration * 1000;
     }
     function waveformSeek(fraction) {
-        if (originalUnavailable || !(waveformDuration > 0) || !original.source.toString() || !isFinite(fraction)) return;
+        if (!playableSelection || !(waveformDuration > 0) || !isFinite(fraction)) return;
         seek(waveformTarget(fraction));
     }
     property var explicitTargetTrack: null
@@ -538,7 +538,7 @@ Rectangle {
                         }
                         MouseArea {
                             objectName: "censorWaveformSeek"
-                            anchors.fill: parent; enabled: !root.originalUnavailable && original.source.toString().length > 0 && waveform.duration > 0
+                            anchors.fill: parent; enabled: root.playableSelection && waveform.duration > 0
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: function(mouse) { root.waveformSeek(mouse.x / width); }
                         }
