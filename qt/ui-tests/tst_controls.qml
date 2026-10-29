@@ -89,8 +89,8 @@ Item {
         property var metadata: ({title: "Existing", artists: [{id: "42", name: "Artist"}], coverUri: "example.org/cover", durationMs: 123000})
         function trackMetadata(id) { return metadata }
         property var lastSend: ({})
-        function send(id, title, artist, url, patch) {
-            lastSend = {id: id, title: title, artist: artist, url: url, patch: patch}
+        function send(id, title, artist, url, patch, publication) {
+            lastSend = {id: id, title: title, artist: artist, url: url, patch: patch, publication: publication}
             busy = true; stateChanged();
         }
     }
@@ -336,6 +336,7 @@ Item {
             compare(findChild(dialog, "metadataDuration").text, "234567")
             findChild(dialog, "sendTrackButton").clicked()
             compare(JSON.stringify(fakeUploader.lastSend.patch), "{}")
+            compare(JSON.stringify(fakeUploader.lastSend.publication), JSON.stringify(original))
             fakeUploader.busy = false
             dialog.sending = false
             findChild(dialog, "editMetadata").checked = true

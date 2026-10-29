@@ -38,6 +38,32 @@ existing legacy bytes and staged/unstaged legacy edits are left untouched. A
 legacy-only checkout gets a new `list_v2.json` for the sent track; Send does not
 migrate the legacy catalog.
 
+## README publication
+
+The legacy server bullet behavior above is historical. Local Send follows the HTML
+tracks table in `/run/media/admin/DATA/FckCensorData/README.md`: within
+`## Автоматически подменяемые треки`, it appends a three-cell row before
+`</tbody>`, or replaces the row linking the same track ID. Existing rows, other
+sections (including artists/albums), BOM, surrounding whitespace and line endings
+are preserved. Skipped sends leave README untouched.
+
+The title links to the Yandex track and uses the separate Send title label.
+Send passes its already available original/player metadata as the optional sixth
+`publicationMetadata` argument, separately from the fifth argument's explicit v2
+metadata patch. README generation uses that snapshot as a base; fields in the first
+source-level `tracks[id]` object in the updated v2 list take precedence, including
+metadata overrides from this send. Publication metadata is never persisted to the
+v2 list. This avoids losing covers and artist IDs when override editing is disabled
+or only some override fields exist.
+HTTP(S) covers render at 40×40 pixels; scheme-less covers gain `https://` and
+`%%` becomes `100x100`. Missing/unsafe covers leave an empty cell. Artist names
+link using their string or numeric IDs; missing/invalid IDs render plain names.
+Without artist metadata, the separate Send artist label renders as plain text
+(no guessed IDs). Text and attributes are HTML-escaped. No metadata lookup or
+image download is performed. Legacy/custom READMEs without an identifiable
+tracks table and closing tbody retain the bullet-append fallback rather than
+converting existing content or modifying an unrelated table.
+
 ## Local API and exact rules
 
 ```cpp
@@ -192,8 +218,8 @@ installed PulseSync consumer's first-source-wins **whole-object** selection and
 storage-duration-created entries shadowing later source metadata.
 
 Changed metadata is committed even when the audio URL is unchanged. Such a send
-returns `updated` and follows the existing README/commit path using only the
-separate labels. JSON patching preserves untouched properties, unknown data,
+returns `updated` and updates the README tracks row as described above; commit
+text continues to use the separate labels. JSON patching preserves untouched properties, unknown data,
 indentation, line endings and BOM. Existing legacy isolation, dirty-target,
 concurrency and failure handling remain unchanged; this does not add automatic
 rollback or turn the existing write sequence into a transaction. The Go bridge

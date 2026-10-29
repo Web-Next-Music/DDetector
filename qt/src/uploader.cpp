@@ -370,6 +370,83 @@ QJsonObject editMetadata(QJsonObject doc, const QString &id, const QString &url,
     tracks.insert(id, track); source.insert("tracks", tracks); sources[target] = source;
     doc.insert("sources", sources); return doc;
 }
+QString updateReadme(QString text, const QString &id, const QString &title,
+                     const QString &artist, const QJsonObject &list, QJsonObject track) {
+    const QString eol = newline(text);
+    const QRegularExpression heading("^##[ \\t]+Автоматически подменяемые треки[ \\t]*\\r?$",
+                                     QRegularExpression::MultilineOption);
+    const auto section = heading.match(text);
+    if (section.hasMatch()) {
+        const auto next = QRegularExpression("^#{1,2}[ \\t]+", QRegularExpression::MultilineOption)
+                              .match(text, section.capturedEnd());
+        const auto limit = next.hasMatch() ? next.capturedStart() : text.size();
+        const QString body = text.mid(section.capturedEnd(), limit - section.capturedEnd());
+        const auto table = QRegularExpression("<table\\b[^>]*>.*?</table>",
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption).match(body);
+        if (table.hasMatch()) {
+            const QString html = table.captured();
+            const auto closing = QRegularExpression("</tbody\\s*>", QRegularExpression::CaseInsensitiveOption).match(html);
+            if (closing.hasMatch()) {
+
+                for (const auto source : list.value("sources").toArray()) {
+                    const auto tracks = source.toObject().value("tracks").toObject();
+                    if (tracks.contains(id)) {
+                                            const auto overrides = tracks.value(id).toObject();
+                                            for (auto it = overrides.begin(); it != overrides.end(); ++it)
+                                                track.insert(it.key(), it.value());
+                                            break;
+                                        }
+                }
+                QString cover = track.value("coverUri").toString().trimmed();
+                cover.replace("%%", "100x100");
+                if (!cover.isEmpty() && !cover.contains("://")) cover.prepend("https://");
+                const QUrl address(cover, QUrl::StrictMode);
+                if (!address.isValid() || address.host().isEmpty() || !address.userInfo().isEmpty()
+                    || (address.scheme() != "https" && address.scheme() != "http")) cover.clear();
+                QStringList artists;
+                for (const auto value : track.value("artists").toArray()) {
+                    const auto entry = value.toObject();
+                    const auto artistId = trackID(entry);
+                    const auto name = entry.value("name").toString();
+                    if (name.isEmpty()) continue;
+                    if (QRegularExpression("\\A[A-Za-z0-9_-]{1,128}\\z").match(artistId).hasMatch())
+                        artists << "<a href=\"https://music.yandex.ru/artist/" + artistId.toHtmlEscaped()
+                            + "\">" + name.toHtmlEscaped() + "</a>";
+                    else artists << name.toHtmlEscaped();
+                }
+                const QString image = cover.isEmpty() ? QString() : "<img width=\"40px\" height=\"40px\" src=\""
+                    + cover.toHtmlEscaped() + "\" alt=\"" + title.toHtmlEscaped() + "\">";
+                const QString row = QStringList{"\t\t<tr>", "\t\t\t<td>", "\t\t\t\t" + image,
+                    "\t\t\t</td>", "\t\t\t<td>", "\t\t\t\t<a href=\"https://music.yandex.ru/track/"
+                    + id + "\">" + title.toHtmlEscaped() + "</a>", "\t\t\t</td>", "\t\t\t<td>",
+                    "\t\t\t\t" + (artists.isEmpty() ? artist.toHtmlEscaped() : artists.join(", ")),
+                    "\t\t\t</td>", "\t\t</tr>"}.join(eol);
+                const auto offset = section.capturedEnd() + table.capturedStart();
+                auto rows = QRegularExpression("[ \\t]*<tr\\b[^>]*>.*?</tr>[^\\S\\r\\n]*",
+                    QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption
+                    | QRegularExpression::CaseInsensitiveOption).globalMatch(html);
+                const QRegularExpression link("href\\s*=\\s*[\"']https://music\\.yandex\\.ru/track/"
+                                              + id + "[\"']", QRegularExpression::CaseInsensitiveOption);
+                while (rows.hasNext()) {
+                    const auto existing = rows.next();
+                    if (link.match(existing.captured()).hasMatch()) {
+                        text.replace(offset + existing.capturedStart(), existing.capturedLength(), row);
+                        return text;
+                    }
+                }
+                auto position = offset + closing.capturedStart();
+                while (position > offset && (text[position - 1] == ' ' || text[position - 1] == '\t')) --position;
+                text.insert(position, (position > 0 && text[position - 1] != '\n' && text[position - 1] != '\r' ? eol : QString()) + row + eol);
+                return text;
+            }
+        }
+    }
+    // Legacy/custom READMEs have no safely identifiable tracks table to edit.
+    if (!text.isEmpty() && !text.endsWith('\n') && !text.endsWith('\r')
+        && text != QString(QChar(0xfeff))) text += eol;
+    return text + "- [" + title.toHtmlEscaped() + " - " + artist.toHtmlEscaped()
+        + "](https://music.yandex.ru/track/" + id + ")" + eol;
+}
 QJsonObject validateMetadata(const QVariantMap &metadata) {
     auto patch = QJsonObject::fromVariantMap(metadata);
     for (auto it = patch.begin(); it != patch.end(); ++it) {
@@ -508,7 +585,8 @@ QString patchJSON(const QString &text, const QJsonValue &before, const QJsonValu
     return text.left(1) + prefix + entries.join(QString()) + suffix + text.mid(pos);
 }
 Result perform(const QString &root, const QString &id, const QString &title,
-               const QString &artist, const QString &url, const QJsonObject &metadata) {
+               const QString &artist, const QString &url, const QJsonObject &metadata,
+                              const QJsonObject &publicationMetadata) {
     Result result;
     bool saved = false, overwritten = false;
     try {
@@ -631,10 +709,7 @@ Result perform(const QString &root, const QString &id, const QString &title,
         QString readme;
         if (result.action != "skipped") {
             readme = decode(read(root + "/README.md"), "README.md");
-            const QString eol = newline(readme);
-            if (!readme.isEmpty() && !readme.endsWith('\n') && !readme.endsWith('\r') &&
-                readme != QString(QChar(0xfeff))) readme += eol;
-            readme += "- [" + title + " - " + artist + "](https://music.yandex.ru/track/" + id + ")" + eol;
+            readme = updateReadme(readme, id, title, artist, updated, publicationMetadata);
         }
         // Downloading is outside the write phase; revalidate every target and Git
         // snapshot before any mutation. The lock is also respected by workspace saves.
@@ -688,7 +763,8 @@ bool Uploader::setDirectory(QString directory) {
     m_directory = directory;
     return true;
 }
-void Uploader::send(QString id, QString title, QString artist, QString url, QVariantMap metadata) {
+void Uploader::send(QString id, QString title, QString artist, QString url, QVariantMap metadata,
+                    QVariantMap publicationMetadata) {
     if (m_busy) return;
     if (m_sendValidator) {
         const auto rejection = m_sendValidator(id);
@@ -719,8 +795,9 @@ void Uploader::send(QString id, QString title, QString artist, QString url, QVar
     emit stateChanged();
     auto result = std::make_shared<Result>();
     const auto root = m_directory;
-    m_worker = QThread::create([root, id, title, artist, url = url.trimmed(), patch, result] {
-        *result = perform(root, id, title, artist, url, patch);
+    const auto publication = QJsonObject::fromVariantMap(publicationMetadata);
+    m_worker = QThread::create([root, id, title, artist, url = url.trimmed(), patch, publication, result] {
+        *result = perform(root, id, title, artist, url, patch, publication);
     });
     connect(m_worker, &QThread::finished, this, [this, result] {
         m_worker->deleteLater(); m_worker = nullptr;

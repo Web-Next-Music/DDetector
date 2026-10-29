@@ -24,7 +24,7 @@ public:
     void setDirectoryValidator(std::function<QString(const QString &)> validator) { m_directoryValidator = std::move(validator); }
     void setSendValidator(std::function<QString(const QString &)> validator) { m_sendValidator = std::move(validator); }
     Q_INVOKABLE bool setDirectory(QString directory);
-    Q_INVOKABLE void send(QString id, QString title, QString artist, QString mp3Url = {}, QVariantMap metadata = {});
+    Q_INVOKABLE void send(QString id, QString title, QString artist, QString mp3Url = {}, QVariantMap metadata = {}, QVariantMap publicationMetadata = {});
     Q_INVOKABLE QVariantMap trackMetadata(QString id) const;
     Q_INVOKABLE int requestDuration(QString id, QString mp3Url = {});
 signals:

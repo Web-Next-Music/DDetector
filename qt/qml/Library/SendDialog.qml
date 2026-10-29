@@ -335,7 +335,7 @@ SiteDialog {
                     dialog.sending = true
                     dialog.uploadBackend.send(dialog.trackId,
                                               titleInput.text.trim() || dialog.originalTitle || dialog.trackId,
-                                              artistInput.text, urlInput.text.trim(), dialog.metadataPatch())
+                                              artistInput.text, urlInput.text.trim(), dialog.metadataPatch(), dialog.originalMetadata)
                     if (!dialog.busy)
                         dialog.sending = false
                 }
