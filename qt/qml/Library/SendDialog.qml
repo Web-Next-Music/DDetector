@@ -292,7 +292,7 @@ SiteDialog {
                 Layout.fillWidth: true
             }
         }
-        Caption {
+        SiteQuote {
             Layout.fillWidth: true
             visible: text.length > 0
             objectName: "sendError"
@@ -300,8 +300,8 @@ SiteDialog {
                 : dialog.uploadBackend.error === "Wait for the configured repository to be ready before sending" ? "" : dialog.uploadBackend.error
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
-            color: "#ff9292"
-            wrapMode: Text.Wrap
+            textColor: "#ff9292"
+            borderColor: textColor
         }
 
         RowLayout {
