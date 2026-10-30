@@ -541,6 +541,7 @@ func (n *nativeSource) searchSite(ctx context.Context, site siteDefinition, quer
 	out := make([]CensorCandidate, 0, 4)
 	seen := map[string]bool{}
 	for _, page := range pages {
+		batchStart := len(out)
 		candidates, err := n.webDiscover(ctx, page)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -558,12 +559,20 @@ func (n *nativeSource) searchSite(ctx context.Context, site siteDefinition, quer
 			candidate.Metadata["track_match"] = "true"
 			out = append(out, candidate)
 		}
+		if callback, ok := ctx.Value(siteCandidatesContextKey{}).(siteCandidatesCallback); ok && len(out) > batchStart {
+			if err := callback(out[batchStart:]); err != nil {
+				return out
+			}
+		}
 	}
 	return out
 }
 
 type siteProgressCallback func(site string, completed, total int) error
 type siteProgressContextKey struct{}
+
+type siteCandidatesCallback func([]CensorCandidate) error
+type siteCandidatesContextKey struct{}
 
 func withSiteProgress(ctx context.Context, callback siteProgressCallback) context.Context {
 	return context.WithValue(ctx, siteProgressContextKey{}, callback)
@@ -578,15 +587,30 @@ func (n *nativeSource) siteSearch(ctx context.Context, query string) ([]CensorCa
 	defer cancel()
 
 	results := make([][]CensorCandidate, len(directSites))
-	done := make(chan int, len(directSites))
+	type siteEvent struct {
+		index      int
+		candidates []CensorCandidate
+	}
+	done := make(chan siteEvent, len(directSites))
 	var wg sync.WaitGroup
 	for i, site := range directSites {
 		i, site := i, site
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = n.searchSite(ctx, site, query)
-			done <- i
+			workerCtx := context.WithValue(ctx, siteCandidatesContextKey{}, siteCandidatesCallback(func(candidates []CensorCandidate) error {
+				select {
+				case done <- siteEvent{index: i, candidates: candidates}:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}))
+			results[i] = n.searchSite(workerCtx, site, query)
+			select {
+			case done <- siteEvent{index: i}:
+			case <-ctx.Done():
+			}
 		}()
 	}
 	go func() {
@@ -594,10 +618,19 @@ func (n *nativeSource) siteSearch(ctx context.Context, query string) ([]CensorCa
 		close(done)
 	}()
 	completed := 0
-	for index := range done {
+	for event := range done {
+		if event.candidates != nil {
+			if callback, ok := ctx.Value(siteCandidatesContextKey{}).(siteCandidatesCallback); ok {
+				if err := callback(event.candidates); err != nil {
+					cancel()
+					return nil, err
+				}
+			}
+			continue
+		}
 		completed++
 		if callback, ok := ctx.Value(siteProgressContextKey{}).(siteProgressCallback); ok {
-			if err := callback(directSites[index].host, completed, len(directSites)); err != nil {
+			if err := callback(directSites[event.index].host, completed, len(directSites)); err != nil {
 				cancel()
 				return nil, err
 			}

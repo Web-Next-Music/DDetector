@@ -39,6 +39,22 @@ type tracksCache struct {
 	Tracks              []Result         `json:"tracks"`
 }
 
+// Restore only local evidence; refreshing membership and metadata remains explicit.
+func (s *Server) restoreTracksCache(ctx context.Context, c *yandexClient, uid string) error {
+	path, release, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
+	if err != nil {
+		return err
+	}
+	defer release()
+	cache, err := readTracksCacheContext(ctx, path, uid, c.base+"/users/"+c.uid)
+	if err != nil {
+		return err
+	}
+	filterExcluded(&cache)
+	s.publishResults(cache.Tracks)
+	return nil
+}
+
 func readTracksCache(path, uid, base string) (tracksCache, error) {
 	return readTracksCacheContext(context.Background(), path, uid, base)
 }

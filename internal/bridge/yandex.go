@@ -293,7 +293,13 @@ func (s *Server) setYandexToken(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.yandex = c
 	s.state.YandexConnected = true
+	uid := s.session.User.ID
 	s.mu.Unlock()
+	if err := s.restoreTracksCache(ctx, c, uid); err != nil {
+		s.mu.Lock()
+		s.state.Error = "Unable to restore local track cache: " + err.Error()
+		s.mu.Unlock()
+	}
 	send(w, 200, map[string]any{"ok": true, "yandexConnected": true, "yandex_user_id": c.uid})
 }
 func lyricsUnavailable(err error) bool {

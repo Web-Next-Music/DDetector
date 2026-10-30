@@ -1344,7 +1344,8 @@ private slots:
         server.state.insert("authenticated", true);
         server.state.insert("hasAccess", true);
         QTRY_COMPARE(countPath("POST /api/yandex/token "), 1);
-        QTRY_COMPARE(countPath("POST /api/load "), 1);
+        QCOMPARE(countPath("POST /api/load "), 0);
+        QCOMPARE(countPath("POST /api/fetch "), 0);
         for (const auto &request : server.requests) {
             if (request.startsWith("POST /api/yandex/token ")) {
                 QVERIFY(request.contains("\"access_token\":\"test-yandex-token\""));
@@ -1711,6 +1712,28 @@ private slots:
         QVERIFY(stored.open(QIODevice::ReadOnly)); QCOMPARE(stored.readAll(), original); stored.close();
         failed.setMusicToken("retry-token"); QVERIFY(failed.flush()); QVERIFY(failed.error().isEmpty());
     }
+    void censorCommandWaitsForFetch() {
+        MockBackend server;
+        int attempts = 0;
+        server.wireHook = [&](const QByteArray &request, QTcpSocket *) -> std::optional<QByteArray> {
+            if (!request.startsWith("POST /api/censor/control ")) return std::nullopt;
+            const bool blocked = ++attempts <= 9;
+            const QByteArray body = blocked ? QByteArray("{\"error\":\"another operation is running\"}")
+                                            : QByteArray("{\"configured\":true,\"jobs\":[]}");
+            return QByteArray(blocked ? "HTTP/1.1 409 Conflict\r\n" : "HTTP/1.1 200 OK\r\n")
+                + "Content-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        };
+        Bridge bridge(server.url(), "key");
+        QSignalSpy finished(&bridge, &Bridge::censorCommandFinished);
+        bridge.censorCommand("stop");
+        QTRY_VERIFY_WITH_TIMEOUT(attempts >= 9, 7000);
+        QVERIFY(bridge.censorBusy());
+        QVERIFY(finished.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 3000);
+        QVERIFY(finished.first().at(1).toBool());
+        QVERIFY(!bridge.censorBusy());
+        QCOMPARE(attempts, 10);
+    }
     void tokenRetriesTransientFailure() {
         MockBackend server;
         int sends = 0;
@@ -1724,12 +1747,10 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(sends, 2, 5000);
         QTRY_COMPARE(bridge.m_yandexAttemptedToken, QString("test-token"));
         QVERIFY(!bridge.m_yandexRetry.isActive());
-        QTRY_VERIFY(std::any_of(server.requests.cbegin(), server.requests.cend(), [](const auto &request) {
-            return request.startsWith("POST /api/load ");
-        }));
-        int loads = 0;
-        for (const auto &request : server.requests) if (request.startsWith("POST /api/load ")) ++loads;
-        QCOMPARE(loads, 1);
+        for (const auto &request : server.requests) {
+            QVERIFY(!request.startsWith("POST /api/load "));
+            QVERIFY(!request.startsWith("POST /api/fetch "));
+        }
     }
     void logoutClearsUnacknowledgedTokenAndCancelsRetry() {
         MockBackend server; int sends = 0;

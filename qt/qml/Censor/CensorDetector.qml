@@ -17,6 +17,33 @@ Rectangle {
     readonly property string analysisStatus: "Analyzing - " + (job ? job.stage || "preparing" : "preparing")
     property string selectedId: ""
     property string candidateId: ""
+    property var pendingSubmission: null
+    function openSubmission(submission) {
+        if (submission.restore) approveDialog.openRestore(...submission.args);
+        else approveDialog.openCandidate(...submission.args);
+    }
+    function prepareSubmission(restore, args) {
+        openSubmission({restore: restore, args: args});
+    }
+    function prepareSend(proceed) {
+        if (censorState.running === true || (job && job.status === "running")) {
+            if (busy) { proceed(false); return; }
+            pendingSubmission = proceed;
+            bridge.censorCommand("stop", {});
+        } else proceed(true);
+    }
+    Connections {
+        target: root.bridge
+        ignoreUnknownSignals: true
+        function onCensorCommandFinished(action, success, error) {
+            if (action !== "stop" || !root.pendingSubmission) return;
+            const proceed = root.pendingSubmission;
+            Qt.callLater(function() {
+                proceed(success);
+                root.pendingSubmission = null;
+            });
+        }
+    }
     property var selectedDetail: bridge && bridge.censorSelectedJob !== undefined ? bridge.censorSelectedJob : ({})
     property var job: {
         // Legacy backends provide complete inline jobs and no paging envelope.
@@ -210,10 +237,10 @@ Rectangle {
     property var retryableErrors: jobs.filter(j => (j.status === "failed" || !!j.error)
         && !j.publication_key && ["running", "publishing", "rolling_back", "succeeded"].indexOf(j.status) < 0)
     color: "#09090b"
-    onSelectedIdChanged: { candidateId = ""; selectUnavailableCandidate(); stopPlayers(); approveDialog.close(); if (bridge && bridge.censorSelectJob !== undefined) bridge.censorSelectJob(selectedId); }
-    onCandidateIdChanged: { playing = false; resolvingPlayback = false; ++playbackRequestId; resolvedCandidateUrl = ""; playbackError = ""; original.pause(); replacement.stop(); approveDialog.close(); }
-    onJobChanged: { updateOriginalSource(); if (!job) approveDialog.close(); }
-    onCandidateChanged: if (!candidate) { replacement.stop(); approveDialog.close(); }
+    onSelectedIdChanged: { candidateId = ""; selectUnavailableCandidate(); stopPlayers(); if (!pendingSubmission) approveDialog.close(); if (bridge && bridge.censorSelectJob !== undefined) bridge.censorSelectJob(selectedId); }
+    onCandidateIdChanged: { playing = false; resolvingPlayback = false; ++playbackRequestId; resolvedCandidateUrl = ""; playbackError = ""; original.pause(); replacement.stop(); if (!pendingSubmission) approveDialog.close(); }
+    onJobChanged: { updateOriginalSource(); if (!job && !pendingSubmission) approveDialog.close(); }
+    onCandidateChanged: if (!candidate) { replacement.stop(); if (!pendingSubmission) approveDialog.close(); }
     onConfiguredChanged: if (!configured) { retryIds = []; stopPlayers(); }
     onVisibleChanged: if (!visible) stopPlayers()
     onPageActiveChanged: { if (!pageActive) stopPlayers(); else checkIpCountry(); }
@@ -640,7 +667,7 @@ Rectangle {
                         accentColor: root.restoreTarget ? "#3b82f6" : "#2bfef5"
                         accentedColor: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.08)
                         accentBorder: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.2)
-                        enabled: !root.disabledReason(root.restoreTarget ? "restore" : "send_candidate")
+                        enabled: !root.busy && !root.pendingSubmission && !root.disabledReason(root.restoreTarget ? "restore" : "send_candidate")
                         onClicked: {
                             if (root.restoreTarget) {
                                 const track = root.restoreMetadata;
@@ -648,20 +675,20 @@ Rectangle {
                                 const metadata = selected ? selected.metadata || ({}) : ({});
                                 const mp3Url = root.playableCandidate(selected)
                                     ? root.resolvedCandidateUrl.toString() || selected.url || "" : "";
-                                approveDialog.openRestore(root.restoreTrackId,
+                                root.prepareSubmission(true, [root.restoreTrackId,
                                     track.title || (selected ? selected.title || "" : ""),
                                     track.artist || (selected ? selected.artist || "" : ""),
-                                    track.cover || metadata.coverUri || metadata.cover || "", track, mp3Url);
+                                    track.cover || metadata.coverUri || metadata.cover || "", track, mp3Url]);
                                 return;
                             }
                             const request = root.job.request;
                             const cover = root.normalPlayer && String(root.normalPlayer.trackId || "") === String(request.track_id)
                                 && root.normalPlayer.cover ? "image://trackcovers/" + encodeURIComponent(root.normalPlayer.cover) : "";
-                            approveDialog.openCandidate(request.track_id, request.title || root.currentTitle,
+                            root.prepareSubmission(false, [request.track_id, request.title || root.currentTitle,
                                                         request.artist || root.currentArtist, cover,
                                                         root.candidate.url,
                                                         root.normalPlayer && String(root.normalPlayer.trackId || "") === String(request.track_id)
-                                                            ? root.normalPlayer.metadata : ({}));
+                                                            ? root.normalPlayer.metadata : ({})]);
                         }
                     }
                     SiteToolTip {
@@ -800,6 +827,7 @@ Rectangle {
     SendDialog {
         id: approveDialog
         uploadBackend: root.uploadBackend
+        prepareSend: function(proceed) { root.prepareSend(proceed); }
         approveSoundEnabled: root.approveSoundEnabled
                 volume: root.volume
     }

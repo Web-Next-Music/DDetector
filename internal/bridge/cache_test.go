@@ -10,6 +10,47 @@ import (
 	"testing"
 )
 
+func TestRestoreTracksCacheWithoutFetch(t *testing.T) {
+	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("cache restore must not access network: %s", r.URL)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	c := newYandexClient("test-token")
+	c.uid = "123"
+	path, release, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := tracksCache{UserID: "user-1", URL: c.base + "/users/" + c.uid,
+		Fingerprint: detectorFingerprint(), LyricsSourceVersion: lyricsSourceVersion,
+		Tracks: []Result{{Track: Track{ID: 42, Title: "Saved track"}, Status: "none"}}}
+	err = saveTracksCache(path, cache)
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewServer(s.client, s.key, s.base, s.path, s.customSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close(context.Background())
+	if err := restarted.restoreTracksCache(context.Background(), c, "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.state.Tracks) != 1 || restarted.state.Tracks[0].Title != "Saved track" {
+		t.Fatalf("saved tracks not restored: %+v", restarted.state.Tracks)
+	}
+	if restarted.state.Loading || restarted.state.Fetching {
+		t.Fatal("restore started a load or fetch")
+	}
+	if err := restarted.restoreTracksCache(context.Background(), c, "another-user"); err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.state.Tracks) != 0 {
+		t.Fatal("restored another user's tracks")
+	}
+}
+
 func TestFetchStopsWhenServerSyncFails(t *testing.T) {
 	syncCalls := 0
 	s := testServer(t, func(w http.ResponseWriter, r *http.Request) {

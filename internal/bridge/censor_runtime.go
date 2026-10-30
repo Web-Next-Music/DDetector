@@ -757,13 +757,47 @@ func (rt *censorRuntime) search(ctx context.Context, i CensorIdentity, j *Censor
 	found := []CensorCandidate{}
 	seen := map[string]bool{}
 	limit := rt.settings().CandidateLimit
+	admit := func(candidates []CensorCandidate) error {
+		if err := validateCensorCandidates(candidates); err != nil {
+			return err
+		}
+		for _, c := range candidates {
+			// Reserve these namespaces for inert, locally mapped metadata pages.
+			if strings.HasPrefix(c.ID, "musicbrainz:") || strings.HasPrefix(c.ID, "yandex-metadata:") {
+				continue
+			}
+			if !seen[c.ID] && len(found) < limit {
+				c.Result = nil
+				c.Error = ""
+				if !censorAudioCandidate(c) {
+					c.Error = "Manual review only: candidate is not downloadable full audio; comparison and approval are disabled"
+				}
+				found = append(found, c)
+				seen[c.ID] = true
+			}
+		}
+		if j.Status == "running" && j.ID != "" {
+			j.Candidates = append(append([]CensorCandidate(nil), found...), metadata...)
+		}
+		return nil
+	}
 	for index, query := range queries {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		searchCtx := ctx
 		if _, native := rt.backend.(*nativeBackend); native && j.Status == "running" && j.ID != "" {
-			searchCtx = withSiteProgress(ctx, func(site string, completed, total int) error {
+			searchCtx = context.WithValue(ctx, siteCandidatesContextKey{}, siteCandidatesCallback(func(candidates []CensorCandidate) error {
+				before := len(found)
+				if err := admit(candidates); err != nil {
+					return err
+				}
+				if len(found) != before {
+					return rt.updateProgress(*j)
+				}
+				return nil
+			}))
+			searchCtx = withSiteProgress(searchCtx, func(site string, completed, total int) error {
 				j.SearchSite = site
 				return rt.searchProgress(j, index*total+completed, len(queries)*total)
 			})
@@ -800,20 +834,8 @@ func (rt *censorRuntime) search(ctx context.Context, i CensorIdentity, j *Censor
 		if index < baseCount {
 			baseSuccess++
 		}
-		for _, c := range candidates {
-			// Reserve this namespace for inert, locally mapped metadata pages.
-			if strings.HasPrefix(c.ID, "musicbrainz:") || strings.HasPrefix(c.ID, "yandex-metadata:") {
-				continue
-			}
-			if !seen[c.ID] && len(found) < limit {
-				c.Result = nil
-				c.Error = ""
-				if !censorAudioCandidate(c) {
-					c.Error = "Manual review only: candidate is not downloadable full audio; comparison and approval are disabled"
-				}
-				found = append(found, c)
-				seen[c.ID] = true
-			}
+		if err := admit(candidates); err != nil {
+			return err
 		}
 		if _, native := rt.backend.(*nativeBackend); !native {
 			if err := rt.searchProgress(j, index+1, len(queries)); err != nil {

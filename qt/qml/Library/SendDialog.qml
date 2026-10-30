@@ -9,6 +9,19 @@ SiteDialog {
     id: dialog
 
     property var uploadBackend: null
+    property var prepareSend: null
+    function submit() {
+        if (!canSend) return
+        const args = [trackId, titleInput.text.trim() || originalTitle || trackId,
+                      artistInput.text, urlInput.text.trim(), metadataPatch(), originalMetadata, restoreMode]
+        sending = true
+        const proceed = function(success) {
+            if (success) dialog.uploadBackend.send(...args)
+            if (!dialog.busy) dialog.sending = false
+        }
+        if (prepareSend) prepareSend(proceed)
+        else proceed(true)
+    }
     readonly property bool busy: !!uploadBackend && uploadBackend.busy
     property string trackId: ""
     property bool restoreMode: false
@@ -246,7 +259,7 @@ SiteDialog {
     icon: "qrc:/assets/lucide-music-standard.svg"
     title: restoreMode ? "Restore" : "Send track"
     closeEnabled: !busy
-    closePolicy: busy ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    closePolicy: busy || sending ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     onOpened: restoreMode ? restoreIdInput.forceActiveFocus() : artistInput.forceActiveFocus()
     onClosed: {
@@ -554,21 +567,15 @@ SiteDialog {
                 enabled: !dialog.busy
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
-            ActionButton { id: cancelButton; objectName: "cancelSendButton"; text: "Cancel"; onClicked: dialog.close() }
+            ActionButton { id: cancelButton; objectName: "cancelSendButton"; text: "Cancel"; enabled: !dialog.sending && !dialog.busy; onClicked: dialog.close() }
             ActionButton {
                 objectName: "sendTrackButton"
                 text: dialog.restoreMode ? "Restore" : "Send"
-                loading: dialog.busy
+                loading: dialog.busy || dialog.sending
                 accented: true
                 enabled: dialog.canSend
                 onClicked: {
-                    if (!dialog.canSend) return
-                    dialog.sending = true
-                    dialog.uploadBackend.send(dialog.trackId,
-                                              titleInput.text.trim() || dialog.originalTitle || dialog.trackId,
-                                              artistInput.text, urlInput.text.trim(), dialog.metadataPatch(), dialog.originalMetadata, dialog.restoreMode)
-                    if (!dialog.busy)
-                        dialog.sending = false
+                    dialog.submit()
                 }
             }
         }

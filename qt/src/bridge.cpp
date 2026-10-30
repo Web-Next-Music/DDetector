@@ -354,7 +354,6 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
         drain();
         if (detail) m_censorDetailPolling = false;
         else if (get) m_censorPolling = false;
-        else { m_censorBusy = false; emit censorBusyChanged(); }
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QJsonParseError parse;
         const auto doc = QJsonDocument::fromJson(transfer->data, &parse);
@@ -365,11 +364,16 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
             reply->deleteLater();
             return;
         }
-        if (!get && status == 409 && doc.object().value("error").toString().contains("operation") && busyRetries < 8) {
+        if (!get && status == 409 && doc.object().value("error").toString() == "another operation is running"
+            && busyRetries < 600 && generation == m_censorGeneration && !m_signingOut) {
             reply->deleteLater();
-            QTimer::singleShot(150, this, [this, action, args, busyRetries] { censorRequest(action, args, busyRetries + 1); });
+            QTimer::singleShot(500, this, [this, action, args, busyRetries, generation] {
+                if (generation != m_censorGeneration || m_signingOut) return;
+                censorRequest(action, args, busyRetries + 1);
+            });
             return;
         }
+        if (!get) { m_censorBusy = false; emit censorBusyChanged(); }
         const bool ok = !transfer->oversized && reply->error() == QNetworkReply::NoError
             && status >= 200 && status < 300 && doc.isObject() && parse.error == QJsonParseError::NoError
                         && (detail ? doc.object().value("job").isObject() && doc.object().value("job").toObject().value("id").toString() == selectedId
@@ -414,6 +418,8 @@ void Bridge::censorRequest(const QString &action, const QVariantMap &args, int b
             // Polling identical snapshots must not reset QML models and control state.
             if (m_censorState != previousState) emit censorStateChanged();
             if (ok) {
+                const int pollInterval = m_censorState.value("running").toBool() ? 200 : 1500;
+                if (m_censorPoll.interval() != pollInterval) m_censorPoll.setInterval(pollInterval);
                 if (!doc.object().value("configured").toBool()) censorSelectJob({});
                 m_censorOffset = doc.object().value("offset").toInt();
                 QString revision;
@@ -552,10 +558,7 @@ void Bridge::request(const QString &path, const QJsonObject &body, bool get, int
                 m_yandexRejected = false;
                 m_yandexRejectedToken.clear(); m_yandexRejectedAccount.clear();
                 m_yandexRetryDelay = 1000;
-                if (!sentToken.isEmpty() && sentToken == m_config->musicToken()
-                    && sentAccount == m_state.value("user").toObject().value("id").toString()
-                    && m_state.value("authenticated").toBool() && m_state.value("hasAccess").toBool()
-                    && !m_state.value("isBanned").toBool()) request("/api/load");
+
                 syncYandexToken();
             } else if (status == 409 || status == 408 || status == 429 || status >= 500 || status == 0
                        || (status >= 200 && status < 400 && (transfer->timedOut || transfer->tooLarge

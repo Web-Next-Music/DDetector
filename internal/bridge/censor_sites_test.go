@@ -73,12 +73,27 @@ func TestSiteSearchFailSoftAggregationAndMetadata(t *testing.T) {
 		}
 	})}}
 
-	got, err := n.siteSearch(context.Background(), "Artist Song")
+	completedSites := map[string]bool{}
+	streamed := 0
+	ctx := withSiteProgress(context.Background(), func(site string, completed, total int) error {
+		completedSites[site] = true
+		return nil
+	})
+	ctx = context.WithValue(ctx, siteCandidatesContextKey{}, siteCandidatesCallback(func(candidates []CensorCandidate) error {
+		for _, candidate := range candidates {
+			if completedSites[candidate.Metadata["site"]] {
+				t.Fatal("candidate was delayed until after site completion")
+			}
+			streamed++
+		}
+		return nil
+	}))
+	got, err := n.siteSearch(ctx, "Artist Song")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("candidates = %+v", got)
+	if len(got) != 2 || streamed != len(got) {
+		t.Fatalf("candidates = %+v, streamed = %d", got, streamed)
 	}
 	for _, candidate := range got {
 		if candidate.Provider != "direct_web" || candidate.Metadata["discovery_provider"] != "direct_web" || candidate.Metadata["site"] == "" || candidate.Metadata["content_type"] != "audio/mpeg" {
@@ -141,15 +156,23 @@ func TestSiteSearchStartsAllSitesTogetherAndReportsRealProgress(t *testing.T) {
 		return siteTestResponse(r, "text/html", "no results"), nil
 	})}}
 	progress := []int{}
+	batches := 0
 	sites := map[string]bool{}
 	ctx := withSiteProgress(context.Background(), func(site string, completed, total int) error {
 		if total != len(directSites) {
 			t.Fatalf("progress total = %d", total)
 		}
+		if batches != 0 {
+			t.Fatalf("empty search must not publish candidate batches: %d", batches)
+		}
 		sites[site] = true
 		progress = append(progress, completed)
 		return nil
 	})
+	ctx = context.WithValue(ctx, siteCandidatesContextKey{}, siteCandidatesCallback(func(candidates []CensorCandidate) error {
+		batches++
+		return nil
+	}))
 	if _, err := n.siteSearch(ctx, "Strict Artist Exact Song"); err != nil {
 		t.Fatal(err)
 	}
