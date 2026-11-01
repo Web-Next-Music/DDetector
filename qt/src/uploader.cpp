@@ -499,6 +499,8 @@ QJsonObject validateMetadata(const QVariantMap &metadata) {
                 const auto address = text.contains("://") ? text : "https://" + text;
                 const QUrl cover(QString(address).replace("%%", "100x100"), QUrl::StrictMode);
                 require(cover.isValid() && !cover.host().isEmpty() && cover.userInfo().isEmpty() && (cover.scheme() == "https" || cover.scheme() == "http"), "Cover URI must be an HTTP(S) address; HTTPS is stored scheme-less");
+                if (cover.scheme() == "https" && (cover.host() == "images.genius.com" || cover.host() == "images.rapgenius.com"))
+                    text = "t2.genius.com/unsafe/1000x1000/" + QString::fromLatin1(QUrl::toPercentEncoding(address));
             }
             it.value() = text;
         }

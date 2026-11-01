@@ -124,8 +124,9 @@ private slots:
         const auto sources = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object()["sources"].toArray();
         QVERIFY(!sources.isEmpty());
         const auto saved = sources[0].toObject()["tracks"].toObject()["36045842"].toObject()["coverUri"].toString();
-        QCOMPARE(saved, noCover ? QString() : cover.mid(8));
-        QCOMPARE(get(dir.path() + "/README.md").contains(cover.toUtf8()), !noCover);
+        const QString proxy = "t2.genius.com/unsafe/1000x1000/" + QString::fromLatin1(QUrl::toPercentEncoding(cover));
+        QCOMPARE(saved, noCover ? QString() : proxy);
+        QCOMPARE(get(dir.path() + "/README.md").contains(proxy.toUtf8()), !noCover);
     }
 #endif
     void restoreInsertion_data() {
@@ -427,7 +428,8 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
         const auto readme = get(dir.path() + "/README.md");
-        QVERIFY(readme.contains("src=\"" + cover.toUtf8() + "\""));
+        const QString proxy = "t2.genius.com/unsafe/1000x1000/" + QString::fromLatin1(QUrl::toPercentEncoding(cover));
+        QVERIFY(readme.contains("src=\"https://" + proxy.toUtf8() + "\""));
         QVERIFY(readme.contains(QStringLiteral("Отсиди").toUtf8()));
         const auto persistedCover = [&] {
             const auto list = QJsonDocument::fromJson(get(dir.path() + "/list_v2.json")).object();
@@ -437,16 +439,17 @@ private slots:
             }
             return QString();
         };
-        QCOMPARE(persistedCover(), cover.mid(8));
+        QCOMPARE(persistedCover(), proxy);
         // Same canonical audio URL: a requested cover patch must not be skipped.
         const QString replacement = "https://images.genius.com/def456";
         uploader.send("36045842", QStringLiteral("Отсиди"), "Artist", {}, {{"coverUri", replacement}});
         QTRY_VERIFY_WITH_TIMEOUT(!uploader.busy(), 20000);
         QCOMPARE(uploader.error(), QString());
         QCOMPARE(uploader.action(), QString("updated"));
-        QCOMPARE(persistedCover(), replacement.mid(8));
+        const QString replacementProxy = "t2.genius.com/unsafe/1000x1000/" + QString::fromLatin1(QUrl::toPercentEncoding(replacement));
+        QCOMPARE(persistedCover(), replacementProxy);
         const auto repeated = get(dir.path() + "/README.md");
-        QVERIFY(repeated.contains("src=\"" + replacement.toUtf8() + "\""));
+        QVERIFY(repeated.contains("src=\"https://" + replacementProxy.toUtf8() + "\""));
         QVERIFY(!repeated.contains(cover.toUtf8()));
         QCOMPARE(repeated.count("https://music.yandex.ru/track/36045842"), 1);
         // An explicit user override wins over the publication snapshot.
