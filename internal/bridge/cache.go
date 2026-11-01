@@ -41,6 +41,10 @@ type tracksCache struct {
 
 // Restore only local evidence; refreshing membership and metadata remains explicit.
 func (s *Server) restoreTracksCache(ctx context.Context, c *yandexClient, uid string) error {
+	_, err := s.localExclusions(ctx, uid)
+	if err != nil {
+		return err
+	}
 	path, release, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
 	if err != nil {
 		return err
@@ -50,7 +54,6 @@ func (s *Server) restoreTracksCache(ctx context.Context, c *yandexClient, uid st
 	if err != nil {
 		return err
 	}
-	filterExcluded(&cache)
 	s.publishResults(cache.Tracks)
 	return nil
 }
@@ -93,7 +96,6 @@ func validateTracksCache(ctx context.Context, cache tracksCache, uid, base strin
 		return empty, nil
 	}
 	cache.Dirty = cache.LyricsSourceVersion != lyricsSourceVersion
-	filterExcluded(&cache)
 	seen := map[int64]bool{}
 	for i, r := range cache.Tracks {
 		if err := ctx.Err(); err != nil {
@@ -174,10 +176,21 @@ func saveTracksCacheLimit(path string, cache tracksCache, limit int64) error {
 func (s *Server) publishResults(results []Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Tracks = append([]Result{}, results...)
+	s.allTracks = append([]Result{}, results...)
+	s.projectResultsLocked()
+}
+
+func (s *Server) projectResultsLocked() {
+	visible := make([]Result, 0, len(s.allTracks))
+	for _, r := range s.allTracks {
+		if !s.exclusions[r.ID] {
+			visible = append(visible, r)
+		}
+	}
+	s.state.Tracks = visible
 	s.tracksRevision++
 	s.state.Processed, s.state.FoundCount = 0, 0
-	for _, r := range results {
+	for _, r := range visible {
 		if r.Status != "pending" {
 			s.state.Processed++
 		}

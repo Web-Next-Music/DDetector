@@ -164,7 +164,7 @@ func TestYandexAvailabilityDeletedMetadataFallback(t *testing.T) {
 		return response(404, ""), nil
 	})
 	s.yandex = c
-	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, `{"tracks":{}}`), nil })
+
 	if err := s.load(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}

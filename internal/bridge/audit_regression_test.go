@@ -168,9 +168,6 @@ func runningCheckpointJob(t *testing.T) (*Server, string, <-chan struct{}) {
 		}
 	})
 	s.yandex = c
-	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(200, `{"tracks":{}}`), nil
-	})
 	if w := api(s, "POST", "/api/fetch", "", "bridge-key"); w.Code != 202 {
 		t.Fatal(w.Body)
 	}
@@ -409,9 +406,6 @@ func TestLoadReportsPartialLyricsFailure(t *testing.T) {
 		return response(401, "secret upstream body"), nil
 	})
 	s.yandex = c
-	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(200, `{"tracks":{}}`), nil
-	})
 	if err := s.load(context.Background(), true); err != nil {
 		t.Fatal("best effort scan aborted", err)
 	}

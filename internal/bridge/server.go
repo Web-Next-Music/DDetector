@@ -55,23 +55,23 @@ type pendingLogin struct {
 	Expires        time.Time
 }
 type Server struct {
-	covers             *coverService
-	mu                 sync.Mutex
-	op                 sync.Mutex
-	refreshMu          sync.Mutex
-	client             *Client
-	yandex             *yandexClient
-	jobCancel          context.CancelFunc
-	operationCancel    context.CancelFunc
-	playbackCancels    map[chan struct{}]context.CancelFunc
-	jobDone            chan struct{}
-	lifecycle          context.Context
-	lifecycleCancel    context.CancelFunc
-	maintenanceDone    chan struct{}
-	closing            bool
-	logoutPending      int
-	yandexFactory      func(string) *yandexClient
-	exclusionTransport http.RoundTripper
+	covers          *coverService
+	mu              sync.Mutex
+	op              sync.Mutex
+	refreshMu       sync.Mutex
+	client          *Client
+	yandex          *yandexClient
+	jobCancel       context.CancelFunc
+	operationCancel context.CancelFunc
+	playbackCancels map[chan struct{}]context.CancelFunc
+	jobDone         chan struct{}
+	lifecycle       context.Context
+	lifecycleCancel context.CancelFunc
+	maintenanceDone chan struct{}
+	closing         bool
+	logoutPending   int
+	yandexFactory   func(string) *yandexClient
+
 	key, base, path    string
 	customSession      bool
 	session            *Session
@@ -83,8 +83,15 @@ type Server struct {
 	censorProcessor    censor.Processor
 	OpenBrowser        func(string) error
 	stateBuildMu       sync.Mutex
+	exclusionCachePath string
+	exclusionCacheHash [32]byte
+	exclusionCacheSet  bool
+	exclusionCacheData map[int64]bool
+	exclusionCacheErr  error
 	tracksJSON         []byte
 	tracksTag          string
+	allTracks          []Result
+	exclusions         map[int64]bool
 	tracksRevision     uint64
 	cachedRevision     uint64
 	cachedState        State
@@ -206,6 +213,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stateResponse(r *http.Request) ([]byte, string, error) {
 	s.stateBuildMu.Lock()
 	defer s.stateBuildMu.Unlock()
+	// A transient file error must not make the state endpoint unavailable.
+	// Loads still validate the file and report errors to the caller.
+	_ = s.refreshExclusionProjection()
 	s.mu.Lock()
 	current := s.state
 	current.Tracks = nil
@@ -399,6 +409,8 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				s.session = &sess
 				s.yandex = nil
+				s.allTracks = nil
+				s.exclusions = nil
 				u := sess.User
 				s.state = State{Authenticated: true, User: &u, Tracks: []Result{}}
 			}
@@ -428,6 +440,7 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 			}
 			s.state.HasAccess = false
 			s.state.Tracks = []Result{}
+			s.allTracks = nil
 			s.state.Processed = 0
 			s.state.FoundCount = 0
 			s.mu.Unlock()
@@ -497,6 +510,7 @@ func (s *Server) authorize(ctx context.Context) (token string, authErr error) {
 	s.state.IsBanned = banned
 	if !s.state.HasAccess {
 		s.state.Tracks = []Result{}
+		s.allTracks = nil
 		s.state.Processed = 0
 		s.state.FoundCount = 0
 	}
@@ -568,15 +582,15 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	if c == nil {
 		return errors.New("Yandex Music token required")
 	}
-	var excluded map[int64]bool
+	_, err = s.localExclusions(ctx, uid)
+	if err != nil {
+		return err
+	}
 	if fetch {
 		if err := s.client.request(ctx, http.MethodPost, "/functions/v1/sync-ddetector-tracks", token, struct{}{}, nil, nil); err != nil {
 			return fmt.Errorf("unable to synchronize track list: %w", err)
 		}
-		excluded, err = downloadExclusions(ctx, s.exclusionTransport)
-		if err != nil {
-			return err
-		}
+
 	}
 	cachePath, releaseStorage, err := acquireTracksStoragePath(s.path, c.uid, s.customSession)
 	if err != nil {
@@ -590,18 +604,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 		}
 		log.Print("Yandex cache unavailable; rebuilding")
 	}
-	purged := 0
-	if fetch {
-		cache.Excluded = excluded
-		beforePurge := len(cache.Tracks)
-		filterExcluded(&cache)
-		purged = beforePurge - len(cache.Tracks)
-		// Commit the new policy and purge before any subsequent fetch can fail.
-		if err := saveTracksCache(cachePath, cache); err != nil {
-			return fmt.Errorf("unable to persist exclusion list and purge cached tracks: %w", err)
-		}
-		cache.Dirty, cache.Rebuild = false, false
-	}
+	cache.Excluded = nil
 	s.publishResults(cache.Tracks)
 	cached := map[int64]Result{}
 	for _, r := range cache.Tracks {
@@ -611,13 +614,7 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	if err != nil {
 		return err
 	}
-	eligible := make([]Track, 0, len(tracks))
-	for _, t := range tracks {
-		if !cache.Excluded[t.ID] {
-			eligible = append(eligible, t)
-		}
-	}
-	tracks = eligible
+
 	missing := []string{}
 	for _, t := range tracks {
 		if t.ID <= 0 {
@@ -643,8 +640,8 @@ func (s *Server) load(ctx context.Context, fetch bool) (loadErr error) {
 	}
 	results := []Result{}
 	pending := []int{}
-	// The later membership-removal loop only sees tracks that survived the purge.
-	stats := FetchResult{Total: len(tracks), Removed: purged}
+
+	stats := FetchResult{Total: len(tracks)}
 	defer func() {
 		if loadErr != nil {
 			stats.Partial = true
@@ -760,6 +757,11 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 		if s.state.Tracks[i].ID == in.ID {
 			if s.state.Tracks[i].Ignored != *in.Ignored {
 				s.state.Tracks[i].Ignored = *in.Ignored
+				for j := range s.allTracks {
+					if s.allTracks[j].ID == in.ID {
+						s.allTracks[j].Ignored = *in.Ignored
+					}
+				}
 				s.tracksRevision++
 			}
 		}
@@ -814,6 +816,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.yandex = nil
 	s.login = nil
 	s.state = State{Tracks: []Result{}}
+	s.allTracks = nil
+	s.exclusions = nil
 	s.mu.Unlock()
 	send(w, 200, map[string]any{"ok": true})
 }

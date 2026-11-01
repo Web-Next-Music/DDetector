@@ -22,7 +22,7 @@ func TestLibraryGeniURLExistingCache(t *testing.T) {
 				return response(200, `{"result":[{"id":1,"title":"Отсиди","artists":[{"id":7,"name":"Овсянкин"}],"available":false,"coverUri":"avatars.yandex.net/get-music-content/broken/200x200"}]}`), nil
 			})
 			s.yandex = c
-			s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, `{"tracks":{}}`), nil })
+
 			calls := 0
 			p := s.coverService()
 			p.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {

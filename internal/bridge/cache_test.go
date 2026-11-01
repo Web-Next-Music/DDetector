@@ -181,9 +181,7 @@ func TestYandexIncrementalCache(t *testing.T) {
 	if lyricsCalls != 0 || lrclibCalls != 0 {
 		t.Fatal("normal load fetched lyrics")
 	}
-	s.exclusionTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(200, `{"tracks":{}}`), nil
-	})
+
 	if syncCalls != 0 {
 		t.Fatal("normal load must not trigger server synchronization")
 	}

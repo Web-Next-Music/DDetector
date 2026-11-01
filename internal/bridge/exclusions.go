@@ -2,68 +2,166 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"fmt"
 	"io"
-	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
-	"time"
 )
 
-const exclusionListURL = "https://raw.githubusercontent.com/Hazzz895/FckCensorData/refs/heads/main/list.json"
 const maxExclusionListBytes = 8 << 20
 
-func downloadExclusions(ctx context.Context, transport http.RoundTripper) (map[int64]bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	// This client has no cookie jar or provider credentials and never follows redirects.
-	client := &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, exclusionListURL, nil)
+// localExclusions reads the configured native repository without modifying it.
+func (s *Server) localExclusions(ctx context.Context, uid string) (map[int64]bool, error) {
+	s.stateBuildMu.Lock()
+	defer s.stateBuildMu.Unlock()
+	rt, err := s.currentCensorRuntime(ctx, uid)
+	if err != nil {
+		return nil, fmt.Errorf("exclusion repository unavailable: %w", err)
+	}
+	if err := s.refreshExclusionProjection(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.censorRuntime != rt {
+		return nil, fmt.Errorf("exclusion repository changed during load")
+	}
+	return s.exclusions, nil
+}
+
+// Caller holds stateBuildMu, serializing file reads with policy installation.
+func (s *Server) refreshExclusionProjection() error {
+	s.mu.Lock()
+	rt := s.censorRuntime
+	s.mu.Unlock()
+	if rt == nil {
+		return nil
+	}
+	rt.mu.Lock()
+	repo := rt.disk.RepositoryPath
+	_, native := rt.backend.(*nativeBackend)
+	var excluded map[int64]bool
+	var err error
+	if !native || repo == "" {
+		excluded = map[int64]bool{}
+	} else if !validNativeRepositoryPath(repo) {
+		err = fmt.Errorf("invalid native repository path")
+	} else {
+		var data []byte
+		data, err = readLocalExclusionFile(repo)
+		if err == nil {
+			hash := sha256.Sum256(data)
+			if !s.exclusionCacheSet || s.exclusionCachePath != repo || s.exclusionCacheHash != hash {
+				s.exclusionCacheData, s.exclusionCacheErr = parseLocalExclusions(data)
+				s.exclusionCachePath, s.exclusionCacheHash, s.exclusionCacheSet = repo, hash, true
+			}
+			excluded, err = s.exclusionCacheData, s.exclusionCacheErr
+		}
+	}
+	if err == nil {
+		s.mu.Lock()
+		if s.censorRuntime == rt && !reflect.DeepEqual(s.exclusions, excluded) {
+			s.exclusions = excluded
+			if s.allTracks != nil {
+				s.projectResultsLocked()
+			}
+		}
+		s.mu.Unlock()
+	}
+	rt.mu.Unlock()
+	return err
+}
+
+func localExclusions(repo string) (map[int64]bool, error) {
+	data, err := readLocalExclusionFile(repo)
 	if err != nil {
 		return nil, err
 	}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("exclusion list download failed; check connectivity to raw.githubusercontent.com and retry Fetch")
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("exclusion list download returned HTTP %d; retry Fetch when raw.githubusercontent.com is available", res.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, maxExclusionListBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("exclusion list read failed; check connectivity and retry Fetch")
-	}
-	if len(data) > maxExclusionListBytes {
-		return nil, fmt.Errorf("exclusion list exceeds 8 MiB; contact the list maintainer before retrying Fetch")
-	}
-	var list struct {
-		Tracks map[string]json.RawMessage `json:"tracks"`
-	}
-	if json.Unmarshal(data, &list) != nil || list.Tracks == nil {
-		return nil, fmt.Errorf("invalid exclusion list: expected a tracks object; contact the list maintainer and retry Fetch")
-	}
-	excluded := make(map[int64]bool, len(list.Tracks))
-	for key, value := range list.Tracks {
-		id, err := strconv.ParseInt(key, 10, 64)
-		var url string
-		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != key || json.Unmarshal(value, &url) != nil || string(value) == "null" {
-			return nil, fmt.Errorf("invalid exclusion list: expected positive track IDs mapped to URL strings; contact the list maintainer and retry Fetch")
-		}
-		excluded[id] = true
-	}
-	return excluded, nil
+	return parseLocalExclusions(data)
 }
 
-func filterExcluded(cache *tracksCache) {
-	tracks := make([]Result, 0, len(cache.Tracks))
-	for _, r := range cache.Tracks {
-		if cache.Excluded[r.ID] {
-			delete(cache.LyricsSources, r.ID)
-			cache.Dirty = true
+func readLocalExclusionFile(repo string) ([]byte, error) {
+	f, err := os.Open(filepath.Join(repo, "list_v2.json"))
+	if err != nil {
+		return nil, fmt.Errorf("unable to open local exclusion list: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxExclusionListBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("unable to read local exclusion list: %w", err)
+	}
+	if len(data) > maxExclusionListBytes {
+		return nil, fmt.Errorf("invalid exclusion list: exceeds 8 MiB")
+	}
+	return data, nil
+}
+
+func parseLocalExclusions(data []byte) (map[int64]bool, error) {
+	doc, err := nativeObject(data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid exclusion list: invalid JSON")
+	}
+	sources, ok := doc["sources"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid exclusion list: expected sources array")
+	}
+	excluded := map[int64]bool{}
+	add := func(key string) error {
+		id, err := strconv.ParseInt(key, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != key {
+			return fmt.Errorf("invalid exclusion list: invalid track ID")
+		}
+		excluded[id] = true
+		return nil
+	}
+	for _, raw := range sources {
+		source, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid exclusion list: expected source object")
+		}
+		rawStores, has := source["tracksStorages"]
+		if !has {
 			continue
 		}
-		tracks = append(tracks, r)
+		stores, ok := rawStores.([]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid exclusion list: expected tracksStorages array")
+		}
+		for _, raw := range stores {
+			store, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid exclusion list: expected storage object")
+			}
+
+			if raw, has := store["trackIds"]; has {
+				ids, ok := raw.([]any)
+				if !ok {
+					return nil, fmt.Errorf("invalid exclusion list: invalid trackIds")
+				}
+				for _, entry := range ids {
+					key := nativeID(entry)
+					if err := add(key); err != nil {
+						return nil, err
+					}
+
+				}
+			}
+			if raw, has := store["tracks"]; has {
+				tracks, ok := raw.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("invalid exclusion list: expected tracks object")
+				}
+				for key := range tracks {
+					if err := add(key); err != nil {
+						return nil, err
+					}
+
+				}
+			}
+		}
 	}
-	cache.Tracks = tracks
+	return excluded, nil
 }

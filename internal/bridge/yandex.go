@@ -265,6 +265,7 @@ func (s *Server) setYandexToken(w http.ResponseWriter, r *http.Request) {
 	s.yandex = nil
 	s.state.YandexConnected = false
 	s.state.Tracks = []Result{}
+	s.allTracks = nil
 	s.state.Processed = 0
 	s.state.FoundCount = 0
 	s.state.LastFetch = nil
