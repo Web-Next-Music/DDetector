@@ -85,7 +85,7 @@ build_appdir() {
     qtermwidget_data="${QTERMWIDGET_DATA_DIR:-/usr/share/qtermwidget6}"
     syntax_data="${SYNTAX_HIGHLIGHTING_DATA_DIR:-/usr/share/org.kde.syntax-highlighting}"
     rm -rf "$appdir"
-    install -Dm755 "$BUILD_DIR/linux/ddetector-backend" "$appdir/usr/lib/ddetector/ddetector-backend"
+
     install -Dm755 "$BUILD_DIR/linux/ddetector-qt" "$appdir/usr/lib/ddetector/ddetector-qt"
     install -Dm755 "$ffmpeg" "$appdir/usr/bin/ffmpeg"
     install -Dm644 "$SOURCE_DIR/qt/packaging/ddetector-qt.desktop" "$appdir/usr/share/applications/ddetector-qt.desktop"
@@ -143,26 +143,6 @@ build_appdir() {
     # Bundle the library bytes, not links that break outside the build machine.
     cp -aL "$wayland_integrations/"*.so "$bundled_integrations/"
 
-    # The Qt plugin hides ldd's stderr and the failing path; preserve both.
-    local ldd_wrapper ldd_log ldd_binary deploy_status=0
-    ldd_wrapper="$(mktemp -d)"
-    ldd_log="$ldd_wrapper/failures.log"
-    ldd_binary="$(command -v ldd)"
-    cat > "$ldd_wrapper/ldd" <<'EOF'
-#!/usr/bin/env bash
-stderr_file="$DDETECTOR_LDD_LOG.$$.stderr"
-"$DDETECTOR_LDD_BINARY" "$@" 2> "$stderr_file"
-status=$?
-cat "$stderr_file" >&2
-if (( status != 0 )); then
-    printf 'ldd failed (%s): %s\n' "$status" "$*" >> "$DDETECTOR_LDD_LOG"
-    cat "$stderr_file" >> "$DDETECTOR_LDD_LOG"
-fi
-rm -f "$stderr_file"
-exit "$status"
-EOF
-    chmod +x "$ldd_wrapper/ldd"
-    PATH="$ldd_wrapper:$PATH" DDETECTOR_LDD_BINARY="$ldd_binary" DDETECTOR_LDD_LOG="$ldd_log" \
     QMAKE="$qmake" \
     EXTRA_PLATFORM_PLUGINS="$platform_plugins" \
     QML_SOURCES_PATHS="$SOURCE_DIR/qt/qml" \
@@ -177,12 +157,9 @@ EOF
         --library "$libgpg_error" \
         --deploy-deps-only "$bundled_integrations" \
         --desktop-file "$appdir/usr/share/applications/ddetector-qt.desktop" \
-        --plugin qt || deploy_status=$?
-    if (( deploy_status != 0 )) && [[ -f "$ldd_log" ]]; then
-        cat "$ldd_log" >&2
-    fi
-    rm -rf "$ldd_wrapper"
-    (( deploy_status == 0 )) || return "$deploy_status"
+        --plugin qt
+    # The static Go backend has no dynamic dependencies; the Qt plugin's ldd scan rejects it.
+    install -Dm755 "$BUILD_DIR/linux/ddetector-backend" "$appdir/usr/lib/ddetector/ddetector-backend"
     python3 "$SOURCE_DIR/packaging/prune-qt-runtime.py" linux "$appdir"
     if [[ ! -f "$appdir/usr/lib/libsecret-1.so.0" ]]; then
         echo 'QtKeychain libsecret backend is missing from the bundle.' >&2
